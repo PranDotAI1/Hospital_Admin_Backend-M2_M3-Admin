@@ -1,0 +1,8 @@
+node_modules/
+.dccache
+package-lock.json
+git
+git.pub
+coverage
+envs/.env.prod
+.env

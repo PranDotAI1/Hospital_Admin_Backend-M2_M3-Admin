@@ -1,0 +1,36 @@
+{
+  "name": "express-ts-app",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/bin/www",
+    "build": "tsc",
+    "dev": "nodemon --watch src --ext ts --exec ts-node src/bin/www"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "~1.4.4",
+    "debug": "~2.6.9",
+    "dotenv": "^16.5.0",
+    "express": "~4.16.1",
+    "http-errors": "~1.6.3",
+    "jade": "~1.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.15.0",
+    "morgan": "~1.9.1"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/cookie-parser": "^1.4.8",
+    "@types/debug": "^4.1.12",
+    "@types/dotenv": "^8.2.3",
+    "@types/express": "^5.0.2",
+    "@types/http-errors": "^2.0.4",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^22.15.21",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
