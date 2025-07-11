@@ -6,3 +6,4 @@ git.pub
 coverage
 envs/.env.prod
 .env
+dist/*

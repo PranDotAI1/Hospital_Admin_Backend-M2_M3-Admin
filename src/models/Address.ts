@@ -1,5 +1,5 @@
 import { Schema, model, Document } from 'mongoose';
-import { ADDRESS_TYPE } from '../utils/constant'; 
+import { ADDRESS_TYPE } from '../utils/constant';
 export interface IAddress extends Document {
     user_id: number;
     type: number;

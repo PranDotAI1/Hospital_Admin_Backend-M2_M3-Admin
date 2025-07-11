@@ -5,11 +5,11 @@ import { ROLE, STATUS_CODE } from "../utils/constant";
 
 export const userListing = async (req: any, res: any) => {
     try {
-        let { page, limit = 2,role_id=ROLE.STAFF } = req.query;
+        let { page, limit = 2, role_id = ROLE.STAFF } = req.query;
 
         let offset = page > 0 ? (page - 1) * limit : 0;
 
-        let userList = await UserModel.find({role_id:role_id}).skip(offset).limit(limit).sort({ _id: -1 }).lean();
+        let userList = await UserModel.find({ role_id: role_id }).skip(offset).limit(limit).sort({ _id: -1 }).lean();
 
         return apiResponse(res, {
             data: userList,
@@ -19,7 +19,7 @@ export const userListing = async (req: any, res: any) => {
         }, STATUS_CODE.SUCCESS);
     }
     catch (error: any) {
-         res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message });
     }
 
 }
@@ -27,7 +27,7 @@ export const userListing = async (req: any, res: any) => {
 export const userAdd = async (req: any, res: any) => {
     try {
         let input = req.body;
-        let userExists = await UserModel.findOne({ email: input.email});
+        let userExists = await UserModel.findOne({ email: input.email });
         if (userExists) {
             return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
         }

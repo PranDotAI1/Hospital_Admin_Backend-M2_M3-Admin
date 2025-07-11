@@ -1,3 +1,4 @@
+import 'tsconfig-paths/register';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import cookieParser from 'cookie-parser';
@@ -6,6 +7,7 @@ import logger from 'morgan';
 import indexRouter from './routes/index';
 import usersRouter from './routes/users';
 import { connectDB } from './config/db';
+import webook from './routes/webhook';
 
 const app = express();
 
@@ -24,6 +26,8 @@ connectDB().then(() => {
   console.error('Database connection failed:', error.message);
 });
 
+
+app.use('/', webook);
 app.use('/api', indexRouter);
 app.use('/users', usersRouter);
 

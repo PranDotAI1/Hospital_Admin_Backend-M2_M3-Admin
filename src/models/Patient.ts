@@ -11,7 +11,7 @@ export interface IPatient extends Document {
     mobile: string;
     dob: string;
     hospital: object;
-    address:  object;
+    address: object;
     email: string;
     password: string;
     status?: number;
@@ -23,7 +23,7 @@ const PatientSchema = new Schema<IPatient>({
     uhid: {
         type: String,
         required: true,
-        unique:true,
+        unique: true,
         trim: true
     },
     insurance: {
@@ -55,8 +55,8 @@ const PatientSchema = new Schema<IPatient>({
         type: String,
         required: true,
         trim: true,
-        max:12,
-        min:10
+        max: 12,
+        min: 10
     },
     dob: {
         type: String,

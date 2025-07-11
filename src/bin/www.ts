@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const PORT: string | number = process.env.PORT || 4000;
+const PORT: string | number = process.env.PORT || 3000;
 
 const port = normalizePort(PORT);
 app.set('port', port);
