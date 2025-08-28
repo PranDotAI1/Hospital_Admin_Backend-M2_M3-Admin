@@ -11,7 +11,9 @@ export const ADDRESS_TYPE = {
 
 export const STATUS_CODE = {
     SUCCESS: 200,
+    CREATED: 202,
     ERROR: 500,
+    SERVER_STOP: 503,
     UNAUTHORIZED: 401,
     VALIDATION_ERROR: 1100,
 }
@@ -43,7 +45,19 @@ export const CLIENT_ID = "SBXID_009407";
 export const CLIENT_SECRET = "a924a27d-6305-47c1-b610-07bf5c629350"
 export const GRANT_TYPE = "client_credentials"
 export const GET_URL = "https://admin.pran.ai";
+//export const GET_URL = "https://webhook.site/b301f5f6-6229-4934-8568-4c7dfea7a960";
 export const HIP_NAME = "ABC hospital"
 export const facilityId = "IN0710001890"
 export const facilityName = "ABC hospital"
 export const bridgeId = "SBXID_009407"
+export const X_HIP_ID = "IN0710001890"
+
+export const HIP_TYPES = [
+    "Prescription",
+    "DiagnosticReport",
+    "OPConsultation",
+    "DischargeSummary",
+    "ImmunizationRecord",
+    "HealthDocumentRecord",
+    "WellnessRecord"
+];

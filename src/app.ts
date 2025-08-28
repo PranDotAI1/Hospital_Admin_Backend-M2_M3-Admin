@@ -1,12 +1,14 @@
-import 'tsconfig-paths/register';
-import express, { Request, Response, NextFunction } from 'express';
-import path from 'path';
 import cookieParser from 'cookie-parser';
+import express, { NextFunction, Request, Response } from 'express';
 import logger from 'morgan';
+import path from 'path';
+import 'tsconfig-paths/register';
 
+import { connectDB } from './config/db';
 import indexRouter from './routes/index';
 import usersRouter from './routes/users';
-import { connectDB } from './config/db';
+import V2router from './routes/v2';
+import v3router from './routes/v3';
 import webook from './routes/webhook';
 
 const app = express();
@@ -26,8 +28,16 @@ connectDB().then(() => {
   console.error('Database connection failed:', error.message);
 });
 
-
+// URL FOR RECEVIED THE DATA
 app.use('/', webook);
+
+// Use the v3 router for version 3 API routes
+app.use("/api/v3",v3router)
+
+// Use the v2 router for version 2 API routes
+app.use("/api/v2",V2router)
+
+// ALL OTHERS ROUTES
 app.use('/api', indexRouter);
 app.use('/users', usersRouter);
 

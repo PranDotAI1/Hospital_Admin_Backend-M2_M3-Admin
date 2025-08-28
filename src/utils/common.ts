@@ -60,3 +60,204 @@ export const verifyToken = (token: string) => {
         return null;
     }
 };
+export const FHIR_BUNDLES = [
+    {
+        type: "OP_CONSULT",
+        bundle: {
+            resourceType: "Bundle",
+            type: "document",
+            timestamp: "2025-08-09T10:00:00Z",
+            entry: [
+                {
+                    fullUrl: "urn:uuid:patient-1",
+                    resource: {
+                        resourceType: "Patient",
+                        id: "patient-1",
+                        name: [{ text: "Amit Verma" }],
+                        gender: "male",
+                        birthDate: "1990-04-15"
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:practitioner-1",
+                    resource: {
+                        resourceType: "Practitioner",
+                        id: "practitioner-1",
+                        name: [{ text: "Dr. Suresh Gupta" }],
+                        qualification: [{ code: { text: "MBBS, MD" } }]
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:encounter-1",
+                    resource: {
+                        resourceType: "Encounter",
+                        id: "encounter-1",
+                        status: "finished",
+                        subject: { reference: "urn:uuid:patient-1" },
+                        period: {
+                            start: "2025-08-08T09:00:00Z",
+                            end: "2025-08-08T09:30:00Z"
+                        }
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:observation-1",
+                    resource: {
+                        resourceType: "Observation",
+                        id: "observation-1",
+                        status: "final",
+                        code: { text: "Blood Pressure" },
+                        valueQuantity: { value: 120, unit: "mmHg" },
+                        subject: { reference: "urn:uuid:patient-1" }
+                    }
+                }
+            ]
+        }
+    },
+    {
+        type: "DISCHARGE_SUMMARY",
+        bundle: {
+            resourceType: "Bundle",
+            type: "document",
+            timestamp: "2025-08-09T10:00:00Z",
+            entry: [
+                {
+                    fullUrl: "urn:uuid:patient-2",
+                    resource: {
+                        resourceType: "Patient",
+                        id: "patient-2",
+                        name: [{ text: "Sunita Sharma" }],
+                        gender: "female",
+                        birthDate: "1975-12-05"
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:organization-1",
+                    resource: {
+                        resourceType: "Organization",
+                        id: "organization-1",
+                        name: "City Hospital"
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:encounter-2",
+                    resource: {
+                        resourceType: "Encounter",
+                        id: "encounter-2",
+                        status: "finished",
+                        subject: { reference: "urn:uuid:patient-2" },
+                        period: {
+                            start: "2025-08-01T08:00:00Z",
+                            end: "2025-08-07T14:00:00Z"
+                        }
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:composition-1",
+                    resource: {
+                        resourceType: "Composition",
+                        id: "composition-1",
+                        status: "final",
+                        type: { text: "Discharge Summary" },
+                        subject: { reference: "urn:uuid:patient-2" },
+                        date: "2025-08-07T14:00:00Z",
+                        author: [{ reference: "urn:uuid:organization-1" }],
+                        title: "Hospital Discharge Summary",
+                        section: [
+                            { title: "Diagnosis", text: { status: "generated", div: "<div>Pneumonia</div>" } },
+                            { title: "Treatment", text: { status: "generated", div: "<div>Antibiotics, Oxygen Support</div>" } }
+                        ]
+                    }
+                }
+            ]
+        }
+    },
+    {
+        type: "LAB_REPORT",
+        bundle: {
+            resourceType: "Bundle",
+            type: "document",
+            timestamp: "2025-08-09T10:00:00Z",
+            entry: [
+                {
+                    fullUrl: "urn:uuid:patient-3",
+                    resource: {
+                        resourceType: "Patient",
+                        id: "patient-3",
+                        name: [{ text: "Ravi Kumar" }],
+                        gender: "male",
+                        birthDate: "1985-05-20"
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:organization-2",
+                    resource: {
+                        resourceType: "Organization",
+                        id: "organization-2",
+                        name: "City Diagnostic Centre"
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:diagnosticreport-1",
+                    resource: {
+                        resourceType: "DiagnosticReport",
+                        id: "diagnosticreport-1",
+                        status: "final",
+                        category: [
+                            { coding: [{ system: "http://terminology.hl7.org/CodeSystem/v2-0074", code: "LAB" }] }
+                        ],
+                        code: { text: "Complete Blood Count" },
+                        subject: { reference: "urn:uuid:patient-3" },
+                        effectiveDateTime: "2025-08-08T09:00:00Z",
+                        issued: "2025-08-08T12:00:00Z",
+                        performer: [{ reference: "urn:uuid:organization-2" }],
+                        result: [{ reference: "urn:uuid:observation-1" }]
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:observation-1",
+                    resource: {
+                        resourceType: "Observation",
+                        id: "observation-1",
+                        status: "final",
+                        code: { text: "Hemoglobin" },
+                        valueQuantity: { value: 14.5, unit: "g/dL" },
+                        subject: { reference: "urn:uuid:patient-3" }
+                    }
+                }
+            ]
+        }
+    },
+    {
+        type: "IMMUNIZATION",
+        bundle: {
+            resourceType: "Bundle",
+            type: "document",
+            timestamp: "2025-08-09T10:00:00Z",
+            entry: [
+                {
+                    fullUrl: "urn:uuid:patient-4",
+                    resource: {
+                        resourceType: "Patient",
+                        id: "patient-4",
+                        name: [{ text: "Priya Singh" }],
+                        gender: "female",
+                        birthDate: "1992-03-12"
+                    }
+                },
+                {
+                    fullUrl: "urn:uuid:immunization-1",
+                    resource: {
+                        resourceType: "Immunization",
+                        id: "immunization-1",
+                        status: "completed",
+                        vaccineCode: { text: "COVID-19 Vaccine" },
+                        patient: { reference: "urn:uuid:patient-4" },
+                        occurrenceDateTime: "2025-07-01T10:00:00Z",
+                        primarySource: true
+                    }
+                }
+            ]
+        }
+    }
+];

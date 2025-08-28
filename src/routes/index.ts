@@ -1,17 +1,17 @@
 import { NextFunction, Request, Response, Router } from "express";
+import { addDepartment, departmentList, updateDepartment } from "../controllers/department.controller";
 import { add, listing, update } from "../controllers/hospital.controller";
 import { login, logout, userProfile } from "../controllers/login.controller";
 import { userAdd, userListing, userUpdate } from "../controllers/user.controller";
-import { addDepartment, departmentList, updateDepartment } from "../controllers/department.controller";
+import { tokenGeneration, userV2Onboard } from "../controllers/v2/abha.controller";
+import { hipNotifiy, linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";
-import { getLinkToken, tokenGeneration, tokenGeneration1 } from "../controllers/abha.controller";
-import { hipNotifiy, linkTokenGeneration } from "../controllers/webhook.controller";
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
   res.send("Welcome to the API");
 });
-//for testing purpose only
+
 router.get("/testing", (req: any, res: any) => {
   res.send("Welcome to the new API");
 });
@@ -36,13 +36,13 @@ router.post("/department", addDepartment);
 router.put("/department/:id", checkToken, updateDepartment);
 
 //ABHA Routes
-router.post("/registration", getLinkToken);
+router.post("/registration", userV2Onboard);
 router.post("/token-generation", tokenGeneration);
-router.post("/test-token", tokenGeneration1)
+//router.post("/test-token", tokenGeneration1)
 
 
 //Webhook hit
-router.post("/v3/hip/token/on-generate-token", linkTokenGeneration);
-router.post("/v3/consent/request/hip/notify", hipNotifiy);
+router.post("/token/generate-token", linkTokenGeneration);
+//router.post("/v3/consent/request/hip/notify", hipNotifiy);
 
 export default router;

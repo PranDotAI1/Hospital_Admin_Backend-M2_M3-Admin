@@ -17,7 +17,9 @@ export interface HealthRecord extends Document {
     updated_by?: string;
     patient_name?: string,
     access_token?: string
-
+    notify_callback_response: any,
+    version_m2?: any,
+    version_m3?: any,
 }
 
 const HealthSchema = new Schema<HealthRecord>(
@@ -91,6 +93,18 @@ const HealthSchema = new Schema<HealthRecord>(
         },
         access_token: {
             type: String,
+            required: false
+        },
+        notify_callback_response: {
+            type: Object,
+            required: false
+        },
+        version_m2: {
+            type: Object,
+            required: false
+        },
+        version_m3: {
+            type: Object,
             required: false
         }
     },
