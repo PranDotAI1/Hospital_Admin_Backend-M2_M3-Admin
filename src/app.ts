@@ -13,6 +13,13 @@ import webook from './routes/webhook';
 
 const app = express();
 
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS,PATCH");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  next();
+});
+
 app.set('views', path.join(__dirname, '../views'));
 app.set('view engine', 'jade');
 
@@ -32,10 +39,10 @@ connectDB().then(() => {
 app.use('/', webook);
 
 // Use the v3 router for version 3 API routes
-app.use("/api/v3",v3router)
+app.use("/api/v3", v3router)
 
 // Use the v2 router for version 2 API routes
-app.use("/api/v2",V2router)
+app.use("/api/v2", V2router)
 
 // ALL OTHERS ROUTES
 app.use('/api', indexRouter);

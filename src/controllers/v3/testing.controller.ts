@@ -2,12 +2,12 @@ import axios from "axios";
 import { GET_URL } from "../../utils/constant";
 import { ENDPOINTS } from "../../utils/endpoints";
 
-export const setBridgeUrlforTest = async ( req: any, res: any) => {
+export const setBridgeUrlforTest = async (req: any, res: any) => {
     try {
-        const { token , random32String} = req.body;
-        console.log("M3 Step-3",req.body, process.env.ABDM_BASE_URL+ENDPOINTS.SET_BRIDGE_URL)
+        const { token, random32String } = req.body;
+        console.log("setBridgeUrlforTest  step-1", req.body, process.env.ABDM_BASE_URL + ENDPOINTS.SET_BRIDGE_URL)
         const response = await axios.patch(
-            `${process.env.ABDM_BASE_URL+ENDPOINTS.SET_BRIDGE_URL}`,
+            `${process.env.ABDM_BASE_URL + ENDPOINTS.SET_BRIDGE_URL}`,
             { url: GET_URL },
             {
                 headers: {
@@ -19,12 +19,12 @@ export const setBridgeUrlforTest = async ( req: any, res: any) => {
                 },
             }
         );
-        console.log("M3 Step-3 status ", response.status)
-        console.log("M3 Step-3 Response1", response.data)
+        console.log("setBridgeUrlforTest  step-2 status ", response.status)
+        console.log("setBridgeUrlforTest  step-3 Response1", response.data)
         if (response.status == 202 || response.status == 200) {
-            console.log("M3 Step-3 Response")
+            console.log("setBridgeUrlforTest  step-4 Response")
             //await registrationService(token, req, res, url);
-            return res.status(response.status).json({ "status":"success"});
+            return res.status(response.status).json({ "status": "success" });
         } else {
             return res.status(response.status).json({ "status": response.status, "error": "getting error from api" + response.data, step: 2 });
         }

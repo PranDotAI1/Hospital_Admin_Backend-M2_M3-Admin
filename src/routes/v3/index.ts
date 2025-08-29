@@ -7,7 +7,9 @@ const router = Router();
 //ABHA Routes
 router.post("/registration", userOnboardingByĂbha);
 router.post("/request/init", userOnboardingByĂbha);
-router.post("/consent-int", consentRequestInitiate);
+
+//REQUEST INIT
+router.post("/consent-int", userOnboardingByĂbha); //consentRequestInitiate
 router.post("/get-consent-status", consentRequestInitiate);
 
 //Callback URL RECEIVED DATA
@@ -15,5 +17,8 @@ router.post("/get-consent-status", consentRequestInitiate);
 
 // For testing url only
 router.post("/test-bridge-url", setBridgeUrlforTest);
+
+
+
 
 export default router;
