@@ -20,10 +20,21 @@ export interface HealthRecord extends Document {
     notify_callback_response: any,
     version_m2?: any,
     version_m3?: any,
+    hiType?: string,
+    prescription?: any
 }
 
 const HealthSchema = new Schema<HealthRecord>(
     {
+        hiType: {
+            type: String,
+            required: false,
+            trim: true,
+        },
+        prescription: {
+            type: Object,
+            required: false
+        },
         hidn_number: {
             type: String,
             required: true,

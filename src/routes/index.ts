@@ -2,9 +2,9 @@ import { NextFunction, Request, Response, Router } from "express";
 import { addDepartment, departmentList, updateDepartment } from "../controllers/department.controller";
 import { add, listing, update } from "../controllers/hospital.controller";
 import { login, logout, userProfile } from "../controllers/login.controller";
-import { userAdd, userListing, userUpdate } from "../controllers/user.controller";
+import { abhauserListing, userAdd, userListing, userUpdate } from "../controllers/user.controller";
 import { tokenGeneration, userV2Onboard } from "../controllers/v2/abha.controller";
-import { hipNotifiy, linkTokenGeneration } from "../controllers/v2/webhook.controller";
+import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";
 const router = Router();
 
@@ -31,18 +31,21 @@ router.post("/user/add", checkToken, userAdd);
 router.put("/user/:id", checkToken, userUpdate);
 
 // Department Routes
-router.get("/departments", departmentList);
-router.post("/department", addDepartment);
+router.get("/departments", checkToken, departmentList);
+router.post("/department", checkToken, addDepartment);
 router.put("/department/:id", checkToken, updateDepartment);
 
 //ABHA Routes
-router.post("/registration", userV2Onboard);
-router.post("/token-generation", tokenGeneration);
+router.post("/registration", checkToken, userV2Onboard);
+router.post("/token-generation", checkToken, tokenGeneration);
 //router.post("/test-token", tokenGeneration1)
 
 
+// get ABHA user information
+router.get("/abha/user/listing", checkToken, abhauserListing);
+
 //Webhook hit
-router.post("/token/generate-token", linkTokenGeneration);
+router.post("/token/generate-token", checkToken, linkTokenGeneration);
 //router.post("/v3/consent/request/hip/notify", hipNotifiy);
 
 export default router;

@@ -16,6 +16,7 @@ export const STATUS_CODE = {
     SERVER_STOP: 503,
     UNAUTHORIZED: 401,
     VALIDATION_ERROR: 1100,
+    NOT_FOUND: 404
 }
 
 export const HEALTH_RISK = {

@@ -159,23 +159,23 @@ export const registrationService = async (token: string, req: any, res: any, url
                 },
             }
         );
-        console.log("step-5 M3 /MutipleHRPAddUpdateServices registrationService API  status", response.status)
+        console.log("step-5 M3 /MutipleHRPAddUpdateServices registrationService API  status", response)
         console.log("Step-5 M3 /MutipleHRPAddUpdateServices registrationService  API Response", response.data)
-        if (response.status == 202 || response.status == 200) {
+        if (response?.status == 202 || response?.status == 200) {
             await consentRequestInitiate(req, res, token);
             //return res.status(200).json({ "status": response.status, "cust_status": "Pending", "message": "Your data in process. please wait for some time..." })
         } else {
-            return res.status(response.status).json({ "status": response.status, "error": "getting error from api", step: 2 });
+            return res.status(response?.status).json({ "status": 200, "error": "getting error from api", step: 2 });
         }
 
     } catch (error: any) {
         console.log("M3 M3 /MutipleHRPAddUpdateServices registrationService  error.response", error.response)
         if (error.response) {
             return res
-                .status(error.response.status)
+                .status(403)
                 .json({ error: error.response.data });
         } else if (error.request) {
-            return res.status(error.response.status).json({ error: 'Service unavailable' });
+            return res.status(403).json({ error: 'Service unavailable' });
         } else {
             return res.status(500).json({ error: error.message });
         }
@@ -259,7 +259,9 @@ export const consentRequestInitiate = async (req: any, res: any, token: any) => 
                     }
                 );
             }
-            return res.status(response.status).json({ "status": response.status, "abha_api": "/hiecm/consent/v3/request/init", "message": "Your request has been successfully proceed" });
+            console.log("latestRecord", latestRecord)
+            await getConsentRequestStatus(req, res, latestRecord);
+            //return res.status(response.status).json({ "status": response.status, "abha_api": "/hiecm/consent/v3/request/init", "message": "Your request has been successfully proceed" });
         } else {
             return res.status(response.status).json({ "status": response.status, "error": "getting error from api " + response.data, step: 1 });
         }
@@ -278,11 +280,14 @@ export const consentRequestInitiate = async (req: any, res: any, token: any) => 
 };
 
 
-export const getConsentRequestStatus = async (req: any, res: any) => {
+export const getConsentRequestStatus = async (req: any, res: any, latestRecord: any) => {
     try {
-        let input = req.body;
         const params = {
-            "consentRequestId": ""
+            "consentRequestId": latestRecord?.version_m3?.consentId || ""
+        }
+
+        if (!params.consentRequestId) {
+            return res.status(200).json({ "abha_api": "/hiecm/consent/v3/request/status", "message": "Your request has been successfully proceed", status: 200, error: "Consent Request ID is missing" });
         }
 
         let random32String = generateUID();
@@ -302,23 +307,9 @@ export const getConsentRequestStatus = async (req: any, res: any) => {
         );
         console.log("M3 Step-1 Response requestInitiate", response.data)
         if (response.status == 202 || response.status == 200) {
-            const latestRecord = await HealthRecordModel.findOne({
-                hid_address: input.abha_id
-            }).sort({ updatedAt: -1 }).limit(1);
-            if (latestRecord) {
-                await HealthRecordModel.updateOne(
-                    { _id: latestRecord._id },
-                    {
-                        $set: {
-                            "version_m3.access_token": req.headers['authorization'],
-                            "version_m3.requested_data": input
-                        }
-                    }
-                );
-            }
-            return res.status(response.status).json({ "status": response.status, "message": "Success" });
+            return res.status(response.status).json({ "consent": "Consent status request initiated...", "status": response.status, "abha_api": "/hiecm/consent/v3/request/status", "message": "Your request has been successfully proceed" });
         } else {
-            return res.status(response.status).json({ "status": response.status, "error": "getting error from api " + response.data, step: 1 });
+            return res.status(response.status).json({ "status": response.status, "error": "getting error from api ---/hiecm/consent/v3/request/status " + response.data, step: 1 });
         }
     } catch (error: any) {
         console.log("M3 error-1", error.response)

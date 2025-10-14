@@ -1,3 +1,4 @@
+import { HealthRecordModel } from "../models/HealthRecord";
 import { UserModel } from "../models/User";
 import { apiResponse } from "../utils/common";
 import { ROLE, STATUS_CODE } from "../utils/constant";
@@ -60,6 +61,27 @@ export const userUpdate = async (req: any, res: any) => {
         } else {
             res.status(500).json({ error: error.message });
         }
+    }
+
+}
+
+export const abhauserListing = async (req: any, res: any) => {
+    try {
+        let { page, limit = 10 } = req.query;
+
+        let offset = page > 0 ? (page - 1) * limit : 0;
+
+        let userList = await HealthRecordModel.find().skip(offset).limit(limit).sort({ _id: -1 }).lean();
+
+        return apiResponse(res, {
+            data: userList,
+            total: await UserModel.countDocuments(),
+            page: parseInt(page),
+            limit: parseInt(limit)
+        }, STATUS_CODE.SUCCESS);
+    }
+    catch (error: any) {
+        res.status(500).json({ error: error.message });
     }
 
 }

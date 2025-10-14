@@ -219,7 +219,9 @@ export const tokenGeneration = async (req: any, res: any, token: any) => {
                 hid_address: request.abhaAddress,
                 patient_name: request.name,
                 abha_details: request,
-                version_m2: { access_token: token }
+                version_m2: { access_token: token },
+                prescription: request.prescription,
+                hiType: request.hiType
             })
             return res.status(response.status).json({ "status": response.status, "message": MSG.DATA_PROCESSING });
 

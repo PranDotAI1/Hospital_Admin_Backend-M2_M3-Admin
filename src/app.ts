@@ -10,6 +10,7 @@ import usersRouter from './routes/users';
 import V2router from './routes/v2';
 import v3router from './routes/v3';
 import webook from './routes/webhook';
+import V4router from './routes/v4';
 
 const app = express();
 
@@ -43,6 +44,10 @@ app.use("/api/v3", v3router)
 
 // Use the v2 router for version 2 API routes
 app.use("/api/v2", V2router)
+
+
+// Use the v4 router for version 2 API routes
+app.use("/api/v4", V4router)
 
 // ALL OTHERS ROUTES
 app.use('/api', indexRouter);
