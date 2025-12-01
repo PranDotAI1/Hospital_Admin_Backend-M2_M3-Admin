@@ -10,6 +10,9 @@ webook.post("/api/v3/hip/token/on-generate-token", linkTokenGeneration);
 // Calback url M2 Callback URL only-----------------------------------
 webook.post("/api/v3/link/on_carecontext", onCarecontext); //api/v3/link/on_carecontext
 webook.post("/api/v3/consent/request/hip/notify", hipNotifiy); //api/v3/consent/request/hip/notify
+
+webook.post("/api/v3/hiu/consent/request/notify", hipNotifiy); //api/v3/hiu/consent/request/hip/notify
+
 webook.post("/api/v3/hip/health-information/request", healthInformation) // to get the transcation id
 
 

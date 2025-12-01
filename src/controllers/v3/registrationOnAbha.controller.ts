@@ -14,16 +14,20 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
 
         let random32String = generateUID();
 
+        let headers = {
+            'Content-Type': 'application/json',
+            'REQUEST-ID': random32String,
+            'TIMESTAMP': new Date().toISOString(),
+            'X-CM-ID': 'sbx',
+        }
+
+        let url = process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_SESSION.trim();
+
         const response = await axios.post(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_SESSION}`,
+            url,
             params,
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'REQUEST-ID': random32String,
-                    'TIMESTAMP': new Date().toISOString(),
-                    'X-CM-ID': 'sbx',
-                },
+                headers: headers
             }
         );
         console.log("M3 Step-1 Session API  /hiecm/gateway/v3/sessions Response", response.data)
@@ -50,17 +54,22 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
 
 export const checkBridgeUrl = async (token: string, url: string, req: any, res: any, random32String: any) => {
     try {
-        console.log("M3 Session API  /hiecm/gateway/v3/bridge-services  checkBridgeUrl Step-2")
+        console.log("M3 Session API  /hiecm/gateway/v3/bridge-services  checkBridgeUrl Step-2");
+        let random32String1 = generateUID();
+        let headers = {
+            "Content-Type": "application/json",
+            "REQUEST-ID": random32String1,
+            "TIMESTAMP": new Date().toISOString(),
+            "X-CM-ID": "sbx",
+            "Authorization": "Bearer " + token
+        }
+
+        let url = process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_BRIDGE_URL.trim();
+        console.log("M3  checkBridgeUrl API URL", url)
         const response = await axios.get(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_BRIDGE_URL} `,
+            url,
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'REQUEST-ID': random32String,
-                    'TIMESTAMP': new Date().toISOString(),
-                    'X-CM-ID': 'sbx',
-                    "Authorization": "Bearer " + token
-                },
+                headers: headers
             }
         );
         console.log("M3 /hiecm/gateway/v3/bridge-services API RESPONSE  status ", response.status)
@@ -98,17 +107,18 @@ export const setBridgeUrl = async (token: string, req: any, res: any, random32St
         console.log("M3 Step-3 /hiecm/gateway/v3/bridge/url setBridgeUrl  Token", token)
         console.log("M3 Step-3 API BASE URL", url)
 
+        let headers = {
+            "Content-Type": "application/json",
+            "REQUEST-ID": generateUID(),
+            "TIMESTAMP": new Date().toISOString(),
+            "X-CM-ID": "sbx",
+            "Authorization": "Bearer " + token
+        }
         const response = await axios.patch(
             url,
             { url: GET_URL },
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'REQUEST-ID': generateUID(),
-                    'TIMESTAMP': new Date().toISOString(),
-                    'X-CM-ID': 'sbx',
-                    "Authorization": "Bearer " + token
-                },
+                headers: headers
             }
         );
         console.log("M3 Step-3  /hiecm/gateway/v3/bridge/url setBridgeUrl status ", response.status)
@@ -138,6 +148,10 @@ export const setBridgeUrl = async (token: string, req: any, res: any, random32St
 export const registrationService = async (token: string, req: any, res: any, url: any) => {
     try {
         console.log("M3 /MutipleHRPAddUpdateServices registrationService Step-4")
+        let headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+        }
         const response: any = await axios.post(
             `${process.env.REGISTRATION_URL + ENDPOINTS.MULTIPLE_HRP}`,
             {
@@ -153,10 +167,7 @@ export const registrationService = async (token: string, req: any, res: any, url
                 ]
             },
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    "Authorization": "Bearer " + token
-                },
+                headers: headers,
             }
         );
         console.log("step-5 M3 /MutipleHRPAddUpdateServices registrationService API  status", response)
@@ -229,18 +240,19 @@ export const consentRequestInitiate = async (req: any, res: any, token: any) => 
         console.log("Request Params  ", params)
 
         let random32String = generateUID();
+        let headers = {
+            'Content-Type': 'application/json',
+            'REQUEST-ID': random32String,
+            'TIMESTAMP': new Date().toISOString(),
+            'X-CM-ID': 'sbx',
+            "Authorization": "Bearer " + token
+        }
 
         const response = await axios.post(
             `${process.env.ABDM_BASE_URL + ENDPOINTS.REQ_INIT}`,
             params,
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'REQUEST-ID': random32String,
-                    'TIMESTAMP': new Date().toISOString(),
-                    'X-CM-ID': 'sbx',
-                    "Authorization": "Bearer " + token
-                },
+                headers: headers
             }
         );
         console.log("M3 Step-1 Response requestInitiate", response.data)
@@ -292,17 +304,18 @@ export const getConsentRequestStatus = async (req: any, res: any, latestRecord: 
 
         let random32String = generateUID();
 
+        let headers = {
+            "Content-Type": "application/json",
+            "REQUEST-ID": random32String,
+            "TIMESTAMP": new Date().toISOString(),
+            "X-CM-ID": "sbx",
+            "Authorization": "Bearer " + req.headers['authorization']
+        }
         const response = await axios.post(
             `${process.env.ABDM_BASE_URL + ENDPOINTS.GET_REQ_STATUS}`,
             params,
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'REQUEST-ID': random32String,
-                    'TIMESTAMP': new Date().toISOString(),
-                    'X-CM-ID': 'sbx',
-                    "Authorization": "Bearer " + req.headers['authorization']
-                },
+                headers: headers
             }
         );
         console.log("M3 Step-1 Response requestInitiate", response.data)

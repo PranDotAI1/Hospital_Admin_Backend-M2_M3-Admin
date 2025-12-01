@@ -1,6 +1,7 @@
 import { HealthRecordModel } from "../models/HealthRecord";
+import { NotifiyResponseModel } from "../models/NotifiyResponse";
 import { UserModel } from "../models/User";
-import { apiResponse } from "../utils/common";
+import { apiResponse, hashPassword } from "../utils/common";
 import { ROLE, STATUS_CODE } from "../utils/constant";
 
 
@@ -45,6 +46,23 @@ export const userAdd = async (req: any, res: any) => {
 
 }
 
+export const userNewAdd = async (req: any, res: any) => {
+    try {
+        let input = req.body;
+        input.password = await hashPassword(input.password); // Set a default password or generate one
+        let response = await UserModel.create(input);
+        return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "User has been suceesfully added");
+    }
+    catch (error: any) {
+        if (error.code === 11000) {
+            res.status(STATUS_CODE.ERROR).json({ error: error.message, message: "User already exists" });
+        } else {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+}
+
 export const userUpdate = async (req: any, res: any) => {
     try {
         let input = req.body;
@@ -71,14 +89,28 @@ export const abhauserListing = async (req: any, res: any) => {
 
         let offset = page > 0 ? (page - 1) * limit : 0;
 
-        let userList = await HealthRecordModel.find().skip(offset).limit(limit).sort({ _id: -1 }).lean();
-
+        let userList: any = await HealthRecordModel.find().skip(offset).limit(limit).sort({ _id: -1 }).lean();
+        // console.log("userList before filter", userList);
+        userList.data = userList?.data?.filter((item: any) => item?.version_m3 != undefined);
         return apiResponse(res, {
             data: userList,
             total: await UserModel.countDocuments(),
             page: parseInt(page),
             limit: parseInt(limit)
         }, STATUS_CODE.SUCCESS);
+    }
+    catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+
+}
+
+export const userNotifyResponse = async (req: any, res: any) => {
+    try {
+
+        let notifyDetails = await NotifiyResponseModel.find({ health_record_id: req.params.id });
+
+        return apiResponse(res, notifyDetails, STATUS_CODE.SUCCESS);
     }
     catch (error: any) {
         res.status(500).json({ error: error.message });

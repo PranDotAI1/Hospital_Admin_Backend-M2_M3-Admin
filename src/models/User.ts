@@ -40,7 +40,7 @@ export interface IUser extends Document {
     hospital?: any;
     permissions?: any;
     address: any;
-    email: string;
+    email?: string;
     password?: string;
     created_by?: string;
     deleted_by?: string;
@@ -79,60 +79,58 @@ const PermissionReferenceSchema = new Schema({
 
 const UserSchema = new Schema<IUser>({
     // ✅ Existing
-    f_name: { type: String, trim: false },
-    m_name: { type: String, trim: false },
-    l_name: { type: String, trim: false },
-    firstName: { type: String, trim: false },
-    middleName: { type: String, trim: false },
-    lastName: { type: String, trim: false },
-    name: { type: String, trim: false },
+    f_name: { type: String, trim: false, required: false },
+    m_name: { type: String, trim: false, required: false },
+    l_name: { type: String, trim: false, required: false },
+    firstName: { type: String, trim: false, required: false },
+    middleName: { type: String, trim: false, required: false },
+    lastName: { type: String, trim: false, required: false },
+    name: { type: String, trim: false, required: false },
 
     // ✅ ABDM specific
-    token: { type: String },
-    expiresIn: { type: Number },
-    refreshToken: { type: String },
-    refreshExpiresIn: { type: Number },
-    hprIdNumber: { type: String },
-    hprId: { type: String },
-    gender: { type: String },
-    yearOfBirth: { type: String },
-    monthOfBirth: { type: String },
-    dayOfBirth: { type: String },
-    stateCode: { type: String },
-    districtCode: { type: String },
-    stateName: { type: String },
-    districtName: { type: String },
-    kycPhoto: { type: String },
-    categoryId: { type: Number },
-    subCategoryId: { type: Number },
-    authMethods: { type: [String] },
+    token: { type: String, required: false },
+    expiresIn: { type: Number, required: false },
+    refreshToken: { type: String, required: false },
+    refreshExpiresIn: { type: Number, required: false },
+    hprIdNumber: { type: String, required: false },
+    hprId: { type: String, required: false },
+    gender: { type: String, required: false },
+    yearOfBirth: { type: String, required: false },
+    monthOfBirth: { type: String, required: false },
+    dayOfBirth: { type: String, required: false },
+    stateCode: { type: String, required: false },
+    districtCode: { type: String, required: false },
+    stateName: { type: String, required: false },
+    districtName: { type: String, required: false },
+    kycPhoto: { type: String, required: false },
+    categoryId: { type: Number, required: false },
+    subCategoryId: { type: Number, required: false },
+    authMethods: { type: [String], required: false },
     new: { type: Boolean },
-    categories: { type: Object },
+    categories: { type: Object, required: false },
 
     // ✅ Your system fields
     aadhaar: { type: String, required: false, trim: true },
-    reg_no: { type: String, trim: false },
-    mobile: { type: String, trim: false, max: 12, min: 10 },
-    specialize: { type: [SpecializeReferenceSchema] },
-    hospital: { type: [HospitalReferenceSchema] },
-    address: { type: [AddressReferenceSchema] },
-    permissions: { type: [PermissionReferenceSchema] },
-    is_active: { type: Boolean, default: true },
-    password: { type: String, minlength: 6 },
+    reg_no: { type: String, trim: false, required: false },
+    mobile: { type: String, trim: false, max: 12, min: 10, required: false },
+    specialize: { type: [SpecializeReferenceSchema], required: false },
+    hospital: { type: [HospitalReferenceSchema], required: false },
+    address: { type: [AddressReferenceSchema], required: false },
+    permissions: { type: [PermissionReferenceSchema], required: false },
+    is_active: { type: Boolean, default: true, required: false },
+    password: { type: String, minlength: 6, required: false },
     email: {
         type: String,
-        unique: true,
-        lowercase: true,
-        trim: true,
-        match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please fill a valid email address']
+        required: false,
+        default: ""
     },
-    status: { type: Number, default: 1 },
-    version_m4: { type: Object },
-    reset_otp: { type: Number, default: null },
-    role_id: { type: Number, default: 2 },
-    created_by: { type: String, trim: true },
-    updated_by: { type: String, trim: true },
-    deleted_by: { type: String, trim: true }
+    status: { type: Number, default: 1, required: false, },
+    version_m4: { type: Object, required: false, },
+    reset_otp: { type: Number, default: null, required: false },
+    role_id: { type: Number, default: 2, required: false },
+    created_by: { type: String, trim: true, required: false },
+    updated_by: { type: String, trim: true, required: false },
+    deleted_by: { type: String, trim: true, required: false }
 }, {
     timestamps: true,
     collection: 'users'
@@ -140,7 +138,8 @@ const UserSchema = new Schema<IUser>({
 
 
 // UserSchema.index({ email: 1 });
-UserSchema.index({ status: 1, email: 1, role_id: 1 });
+UserSchema.index({ status: 1, role_id: 1 });
+UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 // UserSchema.index({ role_id: 1 });
 
 export const UserModel = model<IUser>('User', UserSchema);

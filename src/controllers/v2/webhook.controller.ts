@@ -3,6 +3,7 @@ import { HealthRecordModel } from "../../models/HealthRecord";
 import { HIP_TYPES, STATUS_CODE, facilityId, generateUID } from "../../utils/constant";
 import { MSG } from "../../utils/msgs";
 import { getFinalData } from "../../utils/prepareAndEncryptFhirPayload";
+import { NotifiyResponseModel } from "../../models/NotifiyResponse";
 
 export const linkTokenGeneration = async (req: any, res: any) => {
     try {
@@ -164,7 +165,8 @@ export const onCarecontext = async (req: any, res: any) => {
 export const hipNotifiy = async (req: any, res: any) => {
     try {
         let postData = req.body;
-        let auth = req.headers['authorization'] || ""
+
+        console.log("request hipNotifiy /api/v3/hiu/consent/request/notify callback ---------------------", postData)
 
         console.log("hipNotifiy /api/v3/consent/request/hip/notify callback start here ----------------------------------")
 
@@ -174,24 +176,15 @@ export const hipNotifiy = async (req: any, res: any) => {
         let consentId = postData?.notification?.consentId;
         let abhaAddress = postData.notification?.consentDetail?.patient?.id || "";
 
-        console.log("auth ", auth);
         console.log("consentId ", consentId);
         console.log("abhaAddress ", abhaAddress);
-
-        await HealthRecordModel.findOneAndUpdate(
-            { hid_address: abhaAddress },
-            {
-                $set: {
-                    "version_m2.notify_callback_response": postData,
-                    "version_m2.consentId": consentId
-                }
-            },
-            { sort: { updatedAt: -1 } } // sort option is valid here
-        );
 
         const latestRecord: any = await HealthRecordModel.findOne({
             hid_address: abhaAddress
         }).sort({ updatedAt: -1 }).limit(1);
+
+        await NotifiyResponseModel.insertOne({ notification: postData, hiTypes: postData.notification?.consentDetail?.hiTypes, health_record_id: latestRecord._id });
+
 
         console.log("hipNotifiy-2 Response ", postData);
 
@@ -244,7 +237,7 @@ export const contextNotifiy = async (req: any, res: any, latestRecord: any) => {
                     'X-HIP-ID': facilityId,
                     'X-CM-ID': 'sbx',
                     'X-LINK-TOKEN': latestRecord.version_m2.token_link,
-                    "Authorization": req.headers['authorization']
+                    "Authorization": latestRecord.version_m2.access_token || req.headers['authorization']
                 },
             }
         );

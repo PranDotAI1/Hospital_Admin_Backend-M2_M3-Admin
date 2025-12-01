@@ -40,15 +40,7 @@ export const generateOTP = async (req: any, res: any) => {
         }
     } catch (error: any) {
         console.log("M4 Auth API Error-1 catch block", error)
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ status: error.response.status, error: error.response.data });
-        } else if (error.request) {
-            return res.status(STATUS_CODE.SERVER_STOP).json({ status: error.response.status, error: MSG.SERVICE_UNAVAILABLE });
-        } else {
-            return res.status(STATUS_CODE.ERROR).json({ status: error.response.status, error: error.message });
-        }
+        return res.status(STATUS_CODE.ERROR).json({ msg: "ABHA server not responding", status: error, error: error.message, });
     }
 };
 
@@ -69,7 +61,7 @@ export const generateOtpViaAadharNumber = async (req: any, res: any, token: stri
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    "Authorization": "Bearer " + token
+                    "Authorization": "bearer " + token
                 },
             }
         );
@@ -149,16 +141,8 @@ export const verifyOTP = async (req: any, res: any) => {
             return res.status(response.status).json({ api_url: url, "status": response.status, "error": "invalid or exipred OTP" });
         }
     } catch (error: any) {
-        console.log("M4 Auth API Error-1 catch block", error)
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ status: error.response.status, error: error.response.data });
-        } else if (error.request) {
-            return res.status(STATUS_CODE.SERVER_STOP).json({ status: error.response.status, error: MSG.SERVICE_UNAVAILABLE });
-        } else {
-            return res.status(STATUS_CODE.ERROR).json({ status: error.response.status, error: error.message });
-        }
+        console.log("M4 Auth API Error-1 catch block", error.message)
+        return res.status(STATUS_CODE.ERROR).json({ status: error.response.status, apierror: error.message, error: "invalid or exipred OTP,please enter the OTP within 30 seconds" });
     }
 };
 
@@ -345,12 +329,13 @@ export const getSuggestionOfUsernameFromHprid = async (req: any, res: any) => {
 export const createHprIdWithAadhaarOtp = async (req: any, res: any) => {
     try {
         let input = req.body;
-        console.log("Step-1 M4 createHprIdWithAadhaarOtp start here -----------")
+        console.log("Step-1 M4 createHprIdWithAadhaarOtp start here -----------", input)
 
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_CREATE_PRE_VERFIED_HPRID;
         console.log("Step-2 M4 createHprIdWithAadhaarOtp  URL", url)
 
-        let data: any = await UserModel.findOne({ aadhaar: input.aadhaar });
+        let data: any = await UserModel.findOne({ aadhaar: input.aadhar });
+        console.log("datadata", data)
         if (!data) {
             return res.status(STATUS_CODE.NOT_FOUND).json({ "status": STATUS_CODE.NOT_FOUND, "message": "Aadhaar number not found" });
         }
@@ -380,7 +365,7 @@ export const createHprIdWithAadhaarOtp = async (req: any, res: any) => {
             hpSubCategoryCode: 1
         }
 
-
+        console.log("postData", postData);
         const response = await axios.post(
             `${url}`,
             postData,
@@ -407,6 +392,6 @@ export const createHprIdWithAadhaarOtp = async (req: any, res: any) => {
         }
     } catch (error: any) {
         console.log("M4 M4 Verfiy Error-1 catch block", error)
-        return res.status(STATUS_CODE.ERROR).json({ status: error.response.status, error: error.message + " error" });
+        return res.status(STATUS_CODE.UNAUTHORIZED).json({ status: error.response.status, error: error.message + " error", "token": "Token invalid" });
     }
 };
