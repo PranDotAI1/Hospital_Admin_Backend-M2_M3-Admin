@@ -50,6 +50,7 @@ export interface IUser extends Document {
     role_id?: number;
     is_active?: boolean;
     version_m4?: any;
+    previous_passwords?:[];
 }
 
 
@@ -126,6 +127,7 @@ const UserSchema = new Schema<IUser>({
     },
     status: { type: Number, default: 1, required: false, },
     version_m4: { type: Object, required: false, },
+    previous_passwords: { type: [], required: false },
     reset_otp: { type: Number, default: null, required: false },
     role_id: { type: Number, default: 2, required: false },
     created_by: { type: String, trim: true, required: false },

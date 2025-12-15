@@ -1,7 +1,7 @@
 import { HealthRecordModel } from "../models/HealthRecord";
 import { NotifiyResponseModel } from "../models/NotifiyResponse";
 import { UserModel } from "../models/User";
-import { apiResponse, hashPassword } from "../utils/common";
+import { apiResponse, comparePassword, hashPassword } from "../utils/common";
 import { ROLE, STATUS_CODE } from "../utils/constant";
 
 
@@ -72,6 +72,46 @@ export const userUpdate = async (req: any, res: any) => {
         }
         await UserModel.updateOne({ _id: id }, input);
         return apiResponse(res, { id: id }, STATUS_CODE.SUCCESS, "User has been suceesfully updated");
+    }
+    catch (error: any) {
+        if (error.code === 11000) {
+            res.status(STATUS_CODE.ERROR).json({ error: error.message, message: "User already exists" });
+        } else {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+}
+
+export const updatePassword = async (req: any, res: any) => {
+    try {
+        let input = req.body;
+        let { id } = req.params;
+        if (!id) {
+            return apiResponse(res, "user ID is required", STATUS_CODE.ERROR);
+        }
+        let userDetails:any = await UserModel.findById(id);
+        const hashedNewPassword = await hashPassword(input.password);
+
+        if(userDetails?.previous_passwords){
+            for(let prevPassword of userDetails.previous_passwords){
+                 const isMatch = await comparePassword(input.password, prevPassword);
+                 if(isMatch){
+                    return apiResponse(res, "You cannot reuse your last 3 passwords", STATUS_CODE.ERROR);
+                 }
+            }
+            // Add current password to previous_passwords
+            userDetails.previous_passwords.push(userDetails.password);
+            // Keep only the last 3 passwords
+            if(userDetails.previous_passwords.length >= 3){
+                userDetails.previous_passwords = userDetails.previous_passwords.slice(-3);
+            }
+        } else {
+            userDetails.previous_passwords = [...userDetails.previous_passwords,hashedNewPassword];
+        }
+        // Update the user's password and previous_passwords
+        await UserModel.updateOne({ _id: id }, { password: hashedNewPassword, previous_passwords: userDetails.previous_passwords });
+        return apiResponse(res, { id: id }, STATUS_CODE.SUCCESS, "Password has been suceesfully updated");
     }
     catch (error: any) {
         if (error.code === 11000) {

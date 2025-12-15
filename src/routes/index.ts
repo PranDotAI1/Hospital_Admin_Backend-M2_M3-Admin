@@ -2,7 +2,7 @@ import { NextFunction, Request, Response, Router } from "express";
 import { addDepartment, departmentList, updateDepartment } from "../controllers/department.controller";
 import { add, listing, update } from "../controllers/hospital.controller";
 import { login, logout, userProfile } from "../controllers/login.controller";
-import { abhauserListing, userAdd, userListing, userNewAdd, userNotifyResponse, userUpdate } from "../controllers/user.controller";
+import { abhauserListing, updatePassword, userAdd, userListing, userNewAdd, userNotifyResponse, userUpdate } from "../controllers/user.controller";
 import { tokenGeneration, userV2Onboard } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";
@@ -29,6 +29,8 @@ router.put("/hospital/:id", checkToken, update);
 router.get("/users", checkToken, userListing);
 router.post("/user/add", checkToken, userAdd);
 router.put("/user/:id", checkToken, userUpdate);
+router.put("/user/update/password/:id", updatePassword);
+
 
 router.post("/user/new-add", userNewAdd);
 
