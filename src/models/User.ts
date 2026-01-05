@@ -9,6 +9,7 @@ export interface IUser extends Document {
     middleName?: string;
     lastName?: string;
     name?: string;
+    userPermissions?: Object;
 
     // ABDM specific
     token?: string;
@@ -51,6 +52,13 @@ export interface IUser extends Document {
     is_active?: boolean;
     version_m4?: any;
     previous_passwords?:[];
+    age:number;
+    contact: string;
+    pan: string;
+    shift: string;
+    department_id?:any,
+    is_super_admin?: boolean;
+    hospital_id?:any
 }
 
 
@@ -61,6 +69,10 @@ const SpecializeReferenceSchema = new Schema({
 
 const HospitalReferenceSchema = new Schema({
     id: { type: Schema.Types.ObjectId, ref: 'Hospital' },
+    name: { type: String },
+}, { _id: false });
+const DepartmentReferenceSchema = new Schema({
+    id: { type: Schema.Types.ObjectId, ref: 'Department' },
     name: { type: String },
 }, { _id: false });
 
@@ -87,6 +99,13 @@ const UserSchema = new Schema<IUser>({
     middleName: { type: String, trim: false, required: false },
     lastName: { type: String, trim: false, required: false },
     name: { type: String, trim: false, required: false },
+    age:{ type: Number, required: false },
+    contact: { type: String, trim: false, required: false },
+    pan: { type: String, trim: false, required: false },
+    shift: { type: String, trim: false, required: false },
+    department_id: { type: Schema.Types.ObjectId, ref: 'Department', required: false },
+    hospital_id: { type: Schema.Types.ObjectId, ref: 'Hospital', required: false },
+    is_super_admin: { type: Boolean, default: false, required: false },
 
     // ✅ ABDM specific
     token: { type: String, required: false },
@@ -109,6 +128,7 @@ const UserSchema = new Schema<IUser>({
     authMethods: { type: [String], required: false },
     new: { type: Boolean },
     categories: { type: Object, required: false },
+    userPermissions: { type: Object, required: false },
 
     // ✅ Your system fields
     aadhaar: { type: String, required: false, trim: true },

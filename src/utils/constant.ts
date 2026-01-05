@@ -2,7 +2,8 @@ export const USER_ENUM = {
     ACTIVE: 1,
     NOT_ACTIVE: 2,
     DELETED: 3,
-
+    ARCHIVED: 4,
+    LEAVE: 5
 }
 export const ADDRESS_TYPE = {
     USER: 1,

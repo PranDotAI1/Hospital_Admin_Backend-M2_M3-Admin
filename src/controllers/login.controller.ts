@@ -31,10 +31,7 @@ export const login = async (req: any, res: any) => {
 
 }
 
-export const userProfile = async (req: any, res: any) => {
-    const profile = decodeToken(req.headers['authorization']);
-    return apiResponse(res, profile, STATUS_CODE.SUCCESS);
-}
+
 export const logout = async (req: any, res: any) => {
     const token = req.headers['authorization'];
     expiredToken(token);

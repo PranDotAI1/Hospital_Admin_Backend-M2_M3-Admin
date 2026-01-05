@@ -2,19 +2,30 @@ import { Schema, model, Document } from 'mongoose';
 
 export interface IRole extends Document {
     name: string;
-    is_active?: boolean;
+    status?: boolean;
+    role_id:number,
+    permissions?:any
 }
 
 const RoleSchema = new Schema<IRole>({
+    role_id:{
+        type:Number,
+        required:true,
+        default:1
+    },
     name: {
         type: String,
         required: true,
         trim: true
     },
-    is_active: {
+    status: {
         type: Boolean,
         required: true,
         default: true
+    },
+    permissions:{
+        type:Object,
+        required:false,
     }
 }, {
     timestamps: true,

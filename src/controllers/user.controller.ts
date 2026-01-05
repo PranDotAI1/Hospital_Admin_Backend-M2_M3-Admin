@@ -1,23 +1,79 @@
 import { HealthRecordModel } from "../models/HealthRecord";
 import { NotifiyResponseModel } from "../models/NotifiyResponse";
 import { UserModel } from "../models/User";
-import { apiResponse, comparePassword, hashPassword } from "../utils/common";
+import { apiResponse, comparePassword, decodeToken, hashPassword } from "../utils/common";
 import { ROLE, STATUS_CODE } from "../utils/constant";
+import { Types } from "mongoose";
 
 
 export const userListing = async (req: any, res: any) => {
     try {
-        let { page, limit = 2, role_id = ROLE.STAFF } = req.query;
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.max(1, parseInt(req.query.limit) || 2);
+        const department_id = req.query.department_id;
+        const hospital_id = req.query.hospital_id;
+        const search = req.query.search;
 
-        let offset = page > 0 ? (page - 1) * limit : 0;
+        // Ensure role_id has the correct type (number) and fall back to default
+        let role_id = req.query.role_id !== undefined ? Number(req.query.role_id) : ROLE.STAFF;
+        if (isNaN(role_id)) role_id = ROLE.STAFF;
 
-        let userList = await UserModel.find({ role_id: role_id }).skip(offset).limit(limit).sort({ _id: -1 }).lean();
+        const offset = (page - 1) * limit;
+
+        const match: any = { role_id };
+
+        // Optional filters: department_id and hospital_id (if provided)
+        if (department_id) {
+            if (Types.ObjectId.isValid(department_id)) {
+                match.department_id = new Types.ObjectId(department_id);
+            } else {
+                match.department_id = department_id;
+            }
+        }
+        if (hospital_id) {
+            if (Types.ObjectId.isValid(hospital_id)) {
+                match.hospital_id = new Types.ObjectId(hospital_id);
+            } else {
+                match.hospital_id = hospital_id;
+            }
+        }
+        if(search){
+            match.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } },
+                { phone: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const pipeline = [
+            { $match: match },
+            { $lookup: {
+                from: 'departments',
+                localField: 'department_id',
+                foreignField: '_id',
+                as: 'department'
+            } },
+            { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+            { $lookup: {
+                from: 'hospitals',
+                localField: 'hospital_id',
+                foreignField: '_id',
+                as: 'hospital'
+            } },
+            { $unwind: { path: '$hospital', preserveNullAndEmptyArrays: true } },
+            { $project: { password: 0, previous_passwords: 0 } }
+        ];
+
+        const [userList, total] = await Promise.all([
+            UserModel.aggregate(pipeline).sort({ _id: -1 }).skip(offset).limit(limit),
+            UserModel.countDocuments(match)
+        ]);
 
         return apiResponse(res, {
             data: userList,
-            total: await UserModel.countDocuments(),
-            page: parseInt(page),
-            limit: parseInt(limit)
+            total,
+            page,
+            limit
         }, STATUS_CODE.SUCCESS);
     }
     catch (error: any) {
@@ -49,6 +105,10 @@ export const userAdd = async (req: any, res: any) => {
 export const userNewAdd = async (req: any, res: any) => {
     try {
         let input = req.body;
+        let userExists = await UserModel.findOne({ email: input.email });
+        if (userExists) {
+            return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
+        }
         input.password = await hashPassword(input.password); // Set a default password or generate one
         let response = await UserModel.create(input);
         return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "User has been suceesfully added");
@@ -154,6 +214,57 @@ export const userNotifyResponse = async (req: any, res: any) => {
     }
     catch (error: any) {
         res.status(500).json({ error: error.message });
+    }
+
+}
+
+export const userProfile = async (req: any, res: any) => {
+    const profile = decodeToken(req.headers['authorization']);
+    if(profile){
+        const users = await UserModel.aggregate([
+            { $match: { email: profile?.email } },
+            { $lookup: {
+                from: 'departments',
+                localField: 'department_id',
+                foreignField: '_id',
+                as: 'department'
+            } },
+            { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+            { $lookup: {
+                from: 'hospitals',
+                localField: 'hospital_id',
+                foreignField: '_id',
+                as: 'hospital'
+            } },
+            { $unwind: { path: '$hospital', preserveNullAndEmptyArrays: true } },
+            { $project: { password: 0, previous_passwords: 0 } }
+        ]);
+        const user = users && users.length ? users[0] : null;
+        return apiResponse(res, user, STATUS_CODE.SUCCESS);
+
+    }
+    
+    
+    return apiResponse(res, profile, STATUS_CODE.SUCCESS);
+}
+
+export const updateStatus = async (req: any, res: any) => {
+    try {
+        let input = req.body;
+        let { id } = req.params;
+        if (!id) {
+            return apiResponse(res, "user ID is required", STATUS_CODE.ERROR);
+        }
+        // Update the user's status
+        await UserModel.updateOne({ _id: id }, { status: input.status });
+        return apiResponse(res, { id: id }, STATUS_CODE.SUCCESS, "Status has been successfully updated");
+    }
+    catch (error: any) {
+        if (error.code === 11000) {
+            res.status(STATUS_CODE.ERROR).json({ error: error.message, message: "User already exists" });
+        } else {
+            res.status(500).json({ error: error.message });
+        }
     }
 
 }

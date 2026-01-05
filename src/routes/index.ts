@@ -1,8 +1,8 @@
 import { NextFunction, Request, Response, Router } from "express";
 import { addDepartment, departmentList, updateDepartment } from "../controllers/department.controller";
 import { add, listing, update } from "../controllers/hospital.controller";
-import { login, logout, userProfile } from "../controllers/login.controller";
-import { abhauserListing, updatePassword, userAdd, userListing, userNewAdd, userNotifyResponse, userUpdate } from "../controllers/user.controller";
+import { login, logout } from "../controllers/login.controller";
+import { abhauserListing, updatePassword, userAdd, userListing, userNewAdd, userNotifyResponse, userProfile, userUpdate } from "../controllers/user.controller";
 import { tokenGeneration, userV2Onboard } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";

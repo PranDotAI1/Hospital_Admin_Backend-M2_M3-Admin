@@ -51,7 +51,7 @@ app.use("/api/v4", V4router)
 
 // ALL OTHERS ROUTES
 app.use('/api', indexRouter);
-app.use('/users', usersRouter);
+app.use('/api/users', usersRouter);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   const err = new Error('Not Found');

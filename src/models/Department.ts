@@ -2,22 +2,22 @@ import { Schema, model, Document } from 'mongoose';
 
 export interface IDepartment extends Document {
     name: string;
-    type: number;
     description: string;
     status: boolean;
+    department_id:number
 }
 
 const DepartmentSchema = new Schema<IDepartment>({
+    department_id:{
+        type:Number,
+        required: true,
+        default:1
+    },
     name: {
         type: String,
         required: true,
         trim: true,
         unique: true
-    },
-    type: {
-        type: Number,
-        required: true,
-        trim: true
     },
     description: {
         type: String,
