@@ -261,3 +261,20 @@ export const FHIR_BUNDLES = [
         }
     }
 ];
+export const  generateUniqueAlphaNumericId = ()=>{
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const numbers = "0123456789";
+
+  let alpha = "";
+  let numeric = "";
+
+  const timeSeed = Date.now().toString();
+
+  for (let i = 0; i < 5; i++) {
+    alpha += letters[Math.floor(Math.random() * letters.length)];
+    numeric += numbers[(timeSeed + Math.random()).charCodeAt(i) % 10];
+  }
+
+  return alpha + numeric;
+}
+

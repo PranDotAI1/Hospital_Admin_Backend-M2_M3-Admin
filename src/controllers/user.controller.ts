@@ -1,7 +1,7 @@
 import { HealthRecordModel } from "../models/HealthRecord";
 import { NotifiyResponseModel } from "../models/NotifiyResponse";
 import { UserModel } from "../models/User";
-import { apiResponse, comparePassword, decodeToken, hashPassword } from "../utils/common";
+import { apiResponse, comparePassword, decodeToken, generateUniqueAlphaNumericId, hashPassword } from "../utils/common";
 import { ROLE, STATUS_CODE } from "../utils/constant";
 import { Types } from "mongoose";
 
@@ -89,6 +89,7 @@ export const userAdd = async (req: any, res: any) => {
         if (userExists) {
             return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
         }
+        input.unique_id = generateUniqueAlphaNumericId();
         let response = await UserModel.create(input);
         return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "User has been suceesfully added");
     }
@@ -109,6 +110,7 @@ export const userNewAdd = async (req: any, res: any) => {
         if (userExists) {
             return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
         }
+        input.unique_id = generateUniqueAlphaNumericId();
         input.password = await hashPassword(input.password); // Set a default password or generate one
         let response = await UserModel.create(input);
         return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "User has been suceesfully added");

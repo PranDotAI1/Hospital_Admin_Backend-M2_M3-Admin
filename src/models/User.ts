@@ -10,6 +10,7 @@ export interface IUser extends Document {
     lastName?: string;
     name?: string;
     userPermissions?: Object;
+    unique_id?: string;
 
     // ABDM specific
     token?: string;
@@ -106,6 +107,7 @@ const UserSchema = new Schema<IUser>({
     department_id: { type: Schema.Types.ObjectId, ref: 'Department', required: false },
     hospital_id: { type: Schema.Types.ObjectId, ref: 'Hospital', required: false },
     is_super_admin: { type: Boolean, default: false, required: false },
+    unique_id: { type: String, required: false, trim: true },
 
     // ✅ ABDM specific
     token: { type: String, required: false },
@@ -160,7 +162,7 @@ const UserSchema = new Schema<IUser>({
 
 
 // UserSchema.index({ email: 1 });
-UserSchema.index({ status: 1, role_id: 1 });
+UserSchema.index({ status: 1, role_id: 1,unique_id:1 });
 UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 // UserSchema.index({ role_id: 1 });
 
