@@ -1,9 +1,11 @@
 import cookieParser from 'cookie-parser';
+import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import logger from 'morgan';
 import path from 'path';
 import 'tsconfig-paths/register';
 
+import corsOptions from './config/cors';
 import { connectDB } from './config/db';
 import indexRouter from './routes/index';
 import usersRouter from './routes/users';
@@ -14,12 +16,7 @@ import V4router from './routes/v4';
 
 const app = express();
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS,PATCH");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  next();
-});
+app.use(cors(corsOptions));
 
 app.set('views', path.join(__dirname, '../views'));
 app.set('view engine', 'jade');
