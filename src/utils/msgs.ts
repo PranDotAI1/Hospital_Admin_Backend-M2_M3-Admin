@@ -4,5 +4,6 @@ export const MSG = {
     TOKEN_EXPIRED_MSG: "Token Expired, Please login again",
     API_ERROR: "getting error from api ",
     SERVICE_UNAVAILABLE: "Service unavailable",
-    DATA_PROCESSING: "Your data in process. please wait for some time..."
+    DATA_PROCESSING: "Your data in process. please wait for some time...",
+    INTERNAL_SERVER_ERROR: "Internal server error",
 }

@@ -1,4 +1,5 @@
 import bcrypt from 'bcrypt';
+import { Response } from 'express';
 import jwt from 'jsonwebtoken';
 const SALT_ROUNDS = 10;
 const SECRET_KEY = process.env.JWT_SECRET || '12345678'; // Use an environment variable
@@ -12,7 +13,7 @@ export const comparePassword = async (password: string, hash: string): Promise<b
     return bcrypt.compare(password, hash);
 };
 
-export const apiResponse = (res: any, data: any, code: number, msg?: string | "Success") => {
+export const apiResponse = (res: Response, data: any, code: number, msg?: string | "Success") => {
     return res.status(code).json({ "data": data, "msg": msg, "code": code })
 }
 
