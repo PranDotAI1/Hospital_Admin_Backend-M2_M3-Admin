@@ -1,14 +1,13 @@
 import { Request, Response } from "express";
+import { Types } from "mongoose";
 import { STATUS_CODE, USER_ENUM } from "../utils/constant";
 import { UserModel } from "../models/User";
-import {
-  comparePassword,
-  apiResponse,
-  generateToken,
-  expiredToken,
-} from "../utils/common";
+import { comparePassword, apiResponse, generateToken } from "../utils/common";
 import { MSG } from "../utils/msgs";
 import { LoginInput } from "../validations/auth.schema";
+import { createSession, invalidateSession } from "../services/session.service";
+import { extractClientIp } from "../services/geoip.service";
+import { SignInMethod } from "../models/Session";
 
 export const login = async (
   req: Request<unknown, unknown, LoginInput>,
@@ -48,11 +47,26 @@ export const login = async (
       );
     }
 
+    const userAgent = req.headers["user-agent"] || "unknown";
+    const ip = extractClientIp(req);
+
+    const sessionId = new Types.ObjectId();
+
     const accessToken = generateToken({
       sub: user._id.toString(),
       email: user.email,
       role: user.role_id,
       is_active: user.is_active,
+      sessionId: sessionId.toString(),
+    });
+
+    const session = await createSession({
+      _id: sessionId,
+      userId: user._id.toString(),
+      token: accessToken,
+      userAgent,
+      ip,
+      signInMethod: SignInMethod.PASSWORD,
     });
 
     return apiResponse(
@@ -62,10 +76,12 @@ export const login = async (
         email: user.email,
         name: user.name,
         accessToken,
+        sessionId: session._id.toString(),
       },
       STATUS_CODE.SUCCESS,
     );
-  } catch {
+  } catch (error) {
+    console.error("Login error:", error);
     return apiResponse(res, null, STATUS_CODE.ERROR, MSG.SERVICE_UNAVAILABLE);
   }
 };
@@ -74,14 +90,16 @@ export const logout = async (
   req: Request,
   res: Response,
 ): Promise<Response> => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : authHeader;
+  try {
+    const sessionId = req.auth?.sessionId;
 
-  if (token) {
-    expiredToken(token);
+    if (sessionId) {
+      await invalidateSession(sessionId, "user_logout");
+    }
+
+    return apiResponse(res, null, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
+  } catch (error) {
+    console.error("Logout error:", error);
+    return apiResponse(res, null, STATUS_CODE.ERROR, MSG.SERVICE_UNAVAILABLE);
   }
-
-  return apiResponse(res, null, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
 };

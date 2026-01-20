@@ -49,9 +49,10 @@ router.put("/hospital/:id", checkToken, update);
 router.get("/users", checkToken, userListing);
 router.post("/user/add", checkToken, userAdd);
 router.put("/user/:id", checkToken, userUpdate);
-router.put("/user/update/password/:id", updatePassword);
 
-router.post("/user/new-add", userNewAdd);
+// router.put("/user/update/password/:id", updatePassword); ## disabled this route as this has security issues - harshith
+
+// router.post("/user/new-add", userNewAdd);
 
 // Department Routes
 router.get("/departments", checkToken, departmentList);

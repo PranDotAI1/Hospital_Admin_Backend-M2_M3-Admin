@@ -8,7 +8,13 @@ import {
   verifyOtp,
   resetPasswordWithOtp,
 } from "../../../controllers/password.controller";
-import { checkToken } from "../../../middlewares/user.authentication";
+import {
+  getSessions,
+  revokeSession,
+  logoutAllDevices,
+  markSessionTrusted,
+} from "../../../controllers/session.controller";
+import { auth } from "../../../middlewares/user.authentication";
 import { validate } from "../../../middlewares/validate";
 import { asyncHandler } from "../../../utils/asyncHandler";
 import {
@@ -24,7 +30,7 @@ import {
 const router = Router();
 
 router.post("/login", validate(loginSchema), asyncHandler(login));
-router.get("/logout", checkToken, asyncHandler(logout));
+router.post("/logout", auth(), asyncHandler(logout));
 
 router.post(
   "/forgot-password",
@@ -44,7 +50,6 @@ router.post(
   asyncHandler(resetPassword),
 );
 
-// OTP Flow Routes
 router.post(
   "/forgot-password-otp",
   validate(requestOtpSchema),
@@ -57,6 +62,18 @@ router.post(
   "/reset-password-otp",
   validate(resetPasswordOtpSchema),
   asyncHandler(resetPasswordWithOtp),
+);
+
+router.get("/sessions", auth(), asyncHandler(getSessions));
+
+router.post("/sessions/logout-all", auth(), asyncHandler(logoutAllDevices));
+
+router.delete("/sessions/:sessionId", auth(), asyncHandler(revokeSession));
+
+router.post(
+  "/sessions/:sessionId/trust",
+  auth(),
+  asyncHandler(markSessionTrusted),
 );
 
 export default router;

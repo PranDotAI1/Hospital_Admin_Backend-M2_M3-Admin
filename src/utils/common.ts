@@ -2,7 +2,14 @@ import bcrypt from 'bcrypt';
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
 const SALT_ROUNDS = 10;
-const SECRET_KEY = process.env.JWT_SECRET || '12345678'; // Use an environment variable
+const SECRET_KEY = process.env.JWT_SECRET;
+const EFFECTIVE_JWT_SECRET = SECRET_KEY || "dev_insecure_secret";
+
+if (!SECRET_KEY) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET is required in production");
+  }
+}
 
 
 export const hashPassword = async (password: string): Promise<string> => {
@@ -19,7 +26,12 @@ export const apiResponse = (res: Response, data: any, code: number, msg?: string
 
 
 export const generateToken = (payload: object): string => {
-    return jwt.sign(payload, SECRET_KEY, { expiresIn: '24h' });
+    const expiresIn =
+      process.env.JWT_EXPIRES_IN ||
+      `${parseInt(process.env.SESSION_EXPIRY_HOURS || "24", 10)}h`;
+    return jwt.sign(payload, EFFECTIVE_JWT_SECRET, {
+      expiresIn: expiresIn as jwt.SignOptions["expiresIn"],
+    });
 };
 
 // A simple in-memory store for blacklisted tokens (use a database in production)
@@ -27,7 +39,7 @@ const tokenBlacklist = new Set<string>();
 
 export const expiredToken = (token: string) => {
     try {
-        const decoded = jwt.verify(token, SECRET_KEY);
+        const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
 
         tokenBlacklist.add(token);
 
@@ -54,12 +66,16 @@ export const decodeToken = (token: string) => {
 };
 
 export const verifyToken = (token: string) => {
-    try {
-        return jwt.verify(token, SECRET_KEY);
-    } catch (error) {
-        console.error('Invalid token:', (error as Error).message);
-        return null;
+  try {
+    if (tokenBlacklist.has(token)) {
+      console.log("Token is blacklisted");
+      return null;
     }
+    return jwt.verify(token, EFFECTIVE_JWT_SECRET);
+  } catch (error) {
+    console.error("Invalid token:", (error as Error).message);
+    return null;
+  }
 };
 export const FHIR_BUNDLES = [
     {
@@ -262,7 +278,7 @@ export const FHIR_BUNDLES = [
         }
     }
 ];
-export const  generateUniqueAlphaNumericId = ()=>{
+export const generateUniqueAlphaNumericId = () => {
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const numbers = "0123456789";
 
@@ -277,5 +293,4 @@ export const  generateUniqueAlphaNumericId = ()=>{
   }
 
   return alpha + numeric;
-}
-
+};

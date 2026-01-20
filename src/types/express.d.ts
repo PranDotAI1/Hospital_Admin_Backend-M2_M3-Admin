@@ -5,6 +5,7 @@ export interface AuthPayload {
   email: string;
   role: number;
   is_active: boolean;
+  sessionId: string;
   iat?: number;
   exp?: number;
 }
