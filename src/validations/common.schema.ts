@@ -36,7 +36,7 @@ export const strongPasswordSchema = z
 
 export const passwordSchema = z
   .string()
-  .min(6, { message: "Password must be at least 6 characters" });
+  .min(8, { message: "Password must be at least 8 characters" });
 
 export const idParamSchema = z.object({
   id: mongoIdSchema,

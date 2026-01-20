@@ -1,97 +1,115 @@
-import { Document, Schema, model } from 'mongoose';
+import { Document, Schema, model } from "mongoose";
 
 export interface IUser extends Document {
-    // Existing fields
-    f_name?: string;
-    m_name?: string;
-    l_name?: string;
-    firstName?: string;
-    middleName?: string;
-    lastName?: string;
-    name?: string;
-    userPermissions?: Object;
-    unique_id?: string;
+  // Existing fields
+  f_name?: string;
+  m_name?: string;
+  l_name?: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  name?: string;
+  userPermissions?: Object;
+  unique_id?: string;
 
-    // ABDM specific
-    token?: string;
-    expiresIn?: number;
-    refreshToken?: string;
-    refreshExpiresIn?: number;
-    hprIdNumber?: string;
-    hprId?: string;
-    gender?: string;
-    yearOfBirth?: string;
-    monthOfBirth?: string;
-    dayOfBirth?: string;
-    stateCode?: string;
-    districtCode?: string;
-    stateName?: string;
-    districtName?: string;
-    kycPhoto?: string;
-    categoryId?: number;
-    subCategoryId?: number;
-    authMethods?: string[];
-    new?: boolean;
-    categories?: Record<string, any>;
+  // ABDM specific
+  token?: string;
+  expiresIn?: number;
+  refreshToken?: string;
+  refreshExpiresIn?: number;
+  hprIdNumber?: string;
+  hprId?: string;
+  gender?: string;
+  yearOfBirth?: string;
+  monthOfBirth?: string;
+  dayOfBirth?: string;
+  stateCode?: string;
+  districtCode?: string;
+  stateName?: string;
+  districtName?: string;
+  kycPhoto?: string;
+  categoryId?: number;
+  subCategoryId?: number;
+  authMethods?: string[];
+  new?: boolean;
+  categories?: Record<string, any>;
 
-    // Your existing system fields
-    aadhaar?: string;
-    reg_no?: string;
-    mobile?: string;
-    specialize?: any;
-    hospital?: any;
-    permissions?: any;
-    address: any;
-    email?: string;
-    password?: string;
-    created_by?: string;
-    deleted_by?: string;
-    updated_by?: string;
-    status?: number;
-    reset_otp?: number;
-    role_id?: number;
-    is_active?: boolean;
-    version_m4?: any;
-    previous_passwords?:[];
-    age:number;
-    contact: string;
-    pan: string;
-    shift: string;
-    department_id?:any,
-    is_super_admin?: boolean;
-    hospital_id?:any
+  // Your existing system fields
+  aadhaar?: string;
+  reg_no?: string;
+  mobile?: string;
+  specialize?: any;
+  hospital?: any;
+  permissions?: any;
+  address: any;
+  email?: string;
+  password?: string;
+  created_by?: string;
+  deleted_by?: string;
+  updated_by?: string;
+  status?: number;
+  reset_otp?: number;
+  role_id?: number;
+  is_active?: boolean;
+  version_m4?: any;
+  previous_passwords?: [];
+  age: number;
+  contact: string;
+  pan: string;
+  shift: string;
+  department_id?: any;
+  is_super_admin?: boolean;
+  hospital_id?: any;
+  passwordResetToken?: string;
+  passwordResetExpires?: Date;
+  passwordResetAttempts?: number;
+  passwordResetLastAttempt?: Date;
 }
 
-
-const SpecializeReferenceSchema = new Schema({
-    id: { type: Schema.Types.ObjectId, ref: 'Specialize' },
+const SpecializeReferenceSchema = new Schema(
+  {
+    id: { type: Schema.Types.ObjectId, ref: "Specialize" },
     name: { type: String },
-}, { _id: false });
+  },
+  { _id: false },
+);
 
-const HospitalReferenceSchema = new Schema({
-    id: { type: Schema.Types.ObjectId, ref: 'Hospital' },
+const HospitalReferenceSchema = new Schema(
+  {
+    id: { type: Schema.Types.ObjectId, ref: "Hospital" },
     name: { type: String },
-}, { _id: false });
-const DepartmentReferenceSchema = new Schema({
-    id: { type: Schema.Types.ObjectId, ref: 'Department' },
+  },
+  { _id: false },
+);
+const DepartmentReferenceSchema = new Schema(
+  {
+    id: { type: Schema.Types.ObjectId, ref: "Department" },
     name: { type: String },
-}, { _id: false });
+  },
+  { _id: false },
+);
 
-const AddressReferenceSchema = new Schema({
-    id: { type: Schema.Types.ObjectId, ref: 'Address' },
+const AddressReferenceSchema = new Schema(
+  {
+    id: { type: Schema.Types.ObjectId, ref: "Address" },
     add1: { type: String },
     city: { type: String },
     state: { type: String },
-    pincode: { type: Number }
+    pincode: { type: Number },
+  },
+  { _id: false },
+);
 
-}, { _id: false });
-
-const PermissionReferenceSchema = new Schema({
-    id: { type: Schema.Types.ObjectId, ref: 'Permission' },
+const PermissionReferenceSchema = new Schema(
+  {
+    id: { type: Schema.Types.ObjectId, ref: "Permission" },
     name: { type: String },
-}, { _id: false });
+  },
+  { _id: false },
+);
 
-const UserSchema = new Schema<IUser>({
+const UserSchema = new Schema<IUser>(
+  {
     // ✅ Existing
     f_name: { type: String, trim: false, required: false },
     m_name: { type: String, trim: false, required: false },
@@ -100,12 +118,20 @@ const UserSchema = new Schema<IUser>({
     middleName: { type: String, trim: false, required: false },
     lastName: { type: String, trim: false, required: false },
     name: { type: String, trim: false, required: false },
-    age:{ type: Number, required: false },
+    age: { type: Number, required: false },
     contact: { type: String, trim: false, required: false },
     pan: { type: String, trim: false, required: false },
     shift: { type: String, trim: false, required: false },
-    department_id: { type: Schema.Types.ObjectId, ref: 'Department', required: false },
-    hospital_id: { type: Schema.Types.ObjectId, ref: 'Hospital', required: false },
+    department_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Department",
+      required: false,
+    },
+    hospital_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Hospital",
+      required: false,
+    },
     is_super_admin: { type: Boolean, default: false, required: false },
     unique_id: { type: String, required: false, trim: true },
 
@@ -143,27 +169,32 @@ const UserSchema = new Schema<IUser>({
     is_active: { type: Boolean, default: true, required: false },
     password: { type: String, minlength: 6, required: false },
     email: {
-        type: String,
-        required: false,
-        default: ""
+      type: String,
+      required: false,
+      default: "",
     },
-    status: { type: Number, default: 1, required: false, },
-    version_m4: { type: Object, required: false, },
+    status: { type: Number, default: 1, required: false },
+    version_m4: { type: Object, required: false },
     previous_passwords: { type: [], required: false },
     reset_otp: { type: Number, default: null, required: false },
     role_id: { type: Number, default: 2, required: false },
     created_by: { type: String, trim: true, required: false },
     updated_by: { type: String, trim: true, required: false },
-    deleted_by: { type: String, trim: true, required: false }
-}, {
+    deleted_by: { type: String, trim: true, required: false },
+    passwordResetToken: { type: String, required: false },
+    passwordResetExpires: { type: Date, required: false },
+    passwordResetAttempts: { type: Number, default: 0, required: false },
+    passwordResetLastAttempt: { type: Date, required: false },
+  },
+  {
     timestamps: true,
-    collection: 'users'
-});
-
+    collection: "users",
+  },
+);
 
 // UserSchema.index({ email: 1 });
-UserSchema.index({ status: 1, role_id: 1,unique_id:1 });
+UserSchema.index({ status: 1, role_id: 1, unique_id: 1 });
 UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 // UserSchema.index({ role_id: 1 });
 
-export const UserModel = model<IUser>('User', UserSchema);
+export const UserModel = model<IUser>("User", UserSchema);
