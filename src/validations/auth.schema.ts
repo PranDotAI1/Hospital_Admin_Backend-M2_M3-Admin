@@ -38,3 +38,36 @@ export const resetPasswordSchema = z
   });
 
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+
+export const requestOtpSchema = z.object({
+  email: emailSchema,
+});
+
+export type RequestOtpInput = z.infer<typeof requestOtpSchema>;
+
+export const verifyOtpSchema = z.object({
+  email: emailSchema,
+  otp: z
+    .string()
+    .length(6, { message: "OTP must be exactly 6 digits" })
+    .regex(/^\d+$/, { message: "OTP must contain only numbers" }),
+});
+
+export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
+
+export const resetPasswordOtpSchema = z
+  .object({
+    email: emailSchema,
+    otp: z
+      .string()
+      .length(6, { message: "OTP must be exactly 6 digits" })
+      .regex(/^\d+$/, { message: "OTP must contain only numbers" }),
+    password: passwordSchema,
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
+
+export type ResetPasswordOtpInput = z.infer<typeof resetPasswordOtpSchema>;
