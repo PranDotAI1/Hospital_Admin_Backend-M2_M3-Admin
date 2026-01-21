@@ -72,3 +72,20 @@ export const HIP_TYPES = [
   "HealthDocumentRecord",
   "WellnessRecord",
 ];
+
+export const REDIS_LOGS = {
+  DISCONNECTED: "Redis disconnected successfully",
+};
+
+export const REDIS_EVENTS = {
+  ERROR: "error",
+  CONNECT: "connect",
+  READY: "ready",
+  RECONNECTING: "reconnecting",
+  END: "end",
+};
+
+export const PROCESS_EVENTS = {
+  SIGINT: "SIGINT",
+  SIGTERM: "SIGTERM",
+};

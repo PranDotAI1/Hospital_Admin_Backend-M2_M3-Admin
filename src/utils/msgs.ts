@@ -13,4 +13,7 @@ export const MSG = {
   PASSWORD_RATE_LIMITED:
     "Too many password reset requests. Please try again later.",
   PASSWORD_RECENTLY_USED: "Cannot use a recently used password",
+  UNAUTHORIZED: "Unauthorized access",
+  USER_NOT_FOUND: "User not found",
+  INVALID_PASSWORD: "Invalid current password",
 };

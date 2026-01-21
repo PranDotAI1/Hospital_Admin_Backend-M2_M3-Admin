@@ -15,6 +15,7 @@ import type {
   RequestOtpInput,
   VerifyOtpInput,
   ResetPasswordOtpInput,
+  ChangePasswordInput,
 } from "../validations/auth.schema";
 
 const PASSWORD_RESET_EXPIRY_MINUTES = parseInt(
@@ -415,6 +416,89 @@ export const resetPasswordWithOtp = async (
     );
   } catch (error) {
     console.error("Reset password with OTP error:", error);
+    return apiResponse(res, null, STATUS_CODE.ERROR, MSG.INTERNAL_SERVER_ERROR);
+  }
+};
+
+export const changePassword = async (
+  req: Request<unknown, unknown, ChangePasswordInput>,
+  res: Response,
+): Promise<Response> => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return apiResponse(res, null, STATUS_CODE.UNAUTHORIZED, MSG.UNAUTHORIZED);
+    }
+
+    const user = await UserModel.findById(userId).select(
+      "+password previous_passwords",
+    );
+
+    if (!user) {
+      return apiResponse(res, null, STATUS_CODE.NOT_FOUND, MSG.USER_NOT_FOUND);
+    }
+
+    if (!user.password) {
+      return apiResponse(
+        res,
+        null,
+        STATUS_CODE.BAD_REQUEST,
+        "User does not have a password set",
+      );
+    }
+
+    const isMatch = await comparePassword(currentPassword, user.password);
+    if (!isMatch) {
+      return apiResponse(
+        res,
+        null,
+        STATUS_CODE.BAD_REQUEST,
+        MSG.INVALID_PASSWORD,
+      );
+    }
+
+    if (await comparePassword(newPassword, user.password)) {
+      return apiResponse(
+        res,
+        null,
+        STATUS_CODE.BAD_REQUEST,
+        "New password cannot be the same as the current password",
+      );
+    }
+
+    if (await isPasswordInHistory(newPassword, user.previous_passwords || [])) {
+      return apiResponse(
+        res,
+        null,
+        STATUS_CODE.BAD_REQUEST,
+        MSG.PASSWORD_RECENTLY_USED,
+      );
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+
+    const previousPasswords: string[] = [...(user.previous_passwords || [])];
+    previousPasswords.unshift(user.password);
+    const trimmedHistory = previousPasswords.slice(0, PASSWORD_HISTORY_COUNT);
+
+    await UserModel.findByIdAndUpdate(userId, {
+      password: hashedPassword,
+      passwordResetToken: null,
+      passwordResetExpires: null,
+      passwordResetAttempts: 0,
+      previous_passwords: trimmedHistory,
+    });
+
+    return apiResponse(
+      res,
+      null,
+      STATUS_CODE.SUCCESS,
+      MSG.PASSWORD_RESET_SUCCESS,
+    );
+  } catch (error) {
+    console.error("Change password error:", error);
     return apiResponse(res, null, STATUS_CODE.ERROR, MSG.INTERNAL_SERVER_ERROR);
   }
 };

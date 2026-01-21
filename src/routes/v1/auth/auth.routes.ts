@@ -7,6 +7,7 @@ import {
   requestOtp,
   verifyOtp,
   resetPasswordWithOtp,
+  changePassword,
 } from "../../../controllers/password.controller";
 import {
   getSessions,
@@ -25,6 +26,7 @@ import {
   requestOtpSchema,
   verifyOtpSchema,
   resetPasswordOtpSchema,
+  changePasswordSchema,
 } from "../../../validations/auth.schema";
 
 const router = Router();
@@ -62,6 +64,13 @@ router.post(
   "/reset-password-otp",
   validate(resetPasswordOtpSchema),
   asyncHandler(resetPasswordWithOtp),
+);
+
+router.post(
+  "/change-password",
+  auth(),
+  validate(changePasswordSchema),
+  asyncHandler(changePassword),
 );
 
 router.get("/sessions", auth(), asyncHandler(getSessions));
