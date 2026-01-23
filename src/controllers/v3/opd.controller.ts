@@ -123,6 +123,7 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
 
     const tokenNumber = queueDoc.lastIssuedToken.toString().padStart(4, "0");
 
+    const addressArray = patient?.address || [];
     let addressObj: any = {};
     if (Array.isArray(patient?.address)) {
       addressObj = patient.address.length > 0 ? patient.address[0] : {};
@@ -140,6 +141,8 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
       dob = `${patient.yearOfBirth}-${patient.monthOfBirth}-${patient.dayOfBirth}`;
     }
 
+    const metaData = webhookBody?.metaData || {};
+
     const opdVisitData: Partial<IOPDVisit> = {
       tokenNumber,
       visitStatus: VisitStatus.PENDING,
@@ -153,7 +156,11 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
       gender: patient?.gender,
       dob: dob,
       mobile: patient?.mobile || patient?.phoneNumber,
-      aadhaarNumber: patient?.aadhaarNumber || patient?.aadhaar,
+      aadhaarNumber:
+        patient?.aadhaarNumber || patient?.aadhaar || patient?.kycId,
+      hprId: metaData?.hprId,
+      latitude: metaData?.latitude,
+      longitude: metaData?.longitude,
       address:
         addressObj?.line || addressObj?.line1
           ? {
@@ -265,18 +272,28 @@ export const getPendingTokens = async (req: Request, res: Response) => {
         $lte: endOfToday,
       },
     })
-      .select("name mobile tokenNumber visitDate dob")
       .sort({ visitDate: -1 })
       .lean();
 
     const visitsWithAge = pendingVisits.map((visit: any) => {
       const age = visit.dob ? calculateAge(visit.dob) : undefined;
       return {
+        _id: visit._id,
         name: visit.name,
         mobile: visit.mobile,
         tokenNumber: visit.tokenNumber,
         visitDate: visit.visitDate,
         age: age,
+        gender: visit.gender,
+        abhaAddress: visit.abhaAddress,
+        aadhaarNumber: visit.aadhaarNumber,
+        hprId: visit.hprId,
+        latitude: visit.latitude,
+        longitude: visit.longitude,
+        address: visit.address,
+        abhaNumber: visit.abhaNumber,
+        counterId: visit.counterId,
+        visitStatus: visit.visitStatus,
       };
     });
 
@@ -296,17 +313,18 @@ export const getPendingTokens = async (req: Request, res: Response) => {
 
 export const completeRegistration = async (req: Request, res: Response) => {
   try {
+    const { id } = req.params;
     const { tokenNumber, ...manualFields } = req.body;
 
-    if (!tokenNumber) {
+    if (!id) {
       return res.status(STATUS_CODE.ERROR).json({
         status: "error",
-        message: "tokenNumber is required",
+        message: "id is required",
       });
     }
 
     const opdVisit = await OPDVisitModel.findOne({
-      tokenNumber,
+      _id: id,
       visitStatus: VisitStatus.PENDING,
     });
 

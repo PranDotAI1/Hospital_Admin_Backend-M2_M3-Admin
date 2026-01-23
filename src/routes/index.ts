@@ -63,7 +63,7 @@ router.post("/token/generate-token", checkToken, linkTokenGeneration);
 //router.post("/v3/consent/request/hip/notify", hipNotifiy);
 
 router.get("/opd/pending-tokens", checkToken, getPendingTokens);
-router.post("/opd/complete-registration", checkToken, completeRegistration);
+router.post("/opd/complete-registration/:id", checkToken, completeRegistration);
 router.post("/internal/next-patient", checkToken, nextPatient);
 router.get("/opd/queue-status", checkToken, getQueueStatusDetails);
 router.get("/opd/token-details", checkToken, getTokenDetails);
