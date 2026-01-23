@@ -13,6 +13,7 @@ import {
   getQueueStatusDetails,
   getTokenDetails,
   updateCurrentServing,
+  generateQrCode,
 } from "../controllers/v3/opd.controller";
 const router = Router();
 
@@ -67,5 +68,7 @@ router.post("/internal/next-patient", checkToken, nextPatient);
 router.get("/opd/queue-status", checkToken, getQueueStatusDetails);
 router.get("/opd/token-details", checkToken, getTokenDetails);
 router.post("/opd/update-serving", checkToken, updateCurrentServing);
+
+router.get("/opd/qr-code", checkToken, generateQrCode);
 
 export default router;

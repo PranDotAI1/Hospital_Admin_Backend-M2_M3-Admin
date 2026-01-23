@@ -63,3 +63,6 @@ export const HIP_TYPES = [
     "HealthDocumentRecord",
     "WellnessRecord"
 ];
+
+export const ABDM_PHR_WEB_BASE_URL =
+  process.env.ABDM_PHR_WEB_BASE_URL || "https://phrsbx.abdm.gov.in";

@@ -1,8 +1,14 @@
 import axios from "axios";
+import QRCode from "qrcode";
 import { Request, Response } from "express";
 import { OPDVisitModel, VisitStatus, IOPDVisit } from "../../models/OPDVisit";
 import { DailyOpdQueueModel } from "../../models/DailyOpdQueue";
-import { generateUID, X_HIP_ID } from "../../utils/constant";
+import {
+  generateUID,
+  X_HIP_ID,
+  HIP_NAME,
+  ABDM_PHR_WEB_BASE_URL,
+} from "../../utils/constant";
 import { ENDPOINTS } from "../../utils/endpoints";
 import { STATUS_CODE } from "../../utils/constant";
 
@@ -117,8 +123,22 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
 
     const tokenNumber = queueDoc.lastIssuedToken.toString().padStart(4, "0");
 
-    const addressArray = patient?.address || [];
-    const addressObj = addressArray.length > 0 ? addressArray[0] : {};
+    let addressObj: any = {};
+    if (Array.isArray(patient?.address)) {
+      addressObj = patient.address.length > 0 ? patient.address[0] : {};
+    } else if (patient?.address) {
+      addressObj = patient.address;
+    }
+
+    let dob = patient?.dateOfBirth || patient?.dob;
+    if (
+      !dob &&
+      patient?.yearOfBirth &&
+      patient?.monthOfBirth &&
+      patient?.dayOfBirth
+    ) {
+      dob = `${patient.yearOfBirth}-${patient.monthOfBirth}-${patient.dayOfBirth}`;
+    }
 
     const opdVisitData: Partial<IOPDVisit> = {
       tokenNumber,
@@ -131,7 +151,7 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
         patient?.name ||
         `${patient?.firstName || ""} ${patient?.lastName || ""}`.trim(),
       gender: patient?.gender,
-      dob: patient?.dateOfBirth || patient?.dob,
+      dob: dob,
       mobile: patient?.mobile || patient?.phoneNumber,
       aadhaarNumber: patient?.aadhaarNumber || patient?.aadhaar,
       address:
@@ -485,7 +505,7 @@ export const nextPatient = async (req: Request, res: Response) => {
     const { counterId } = req.body;
 
     if (!counterId) {
-      return res.status(STATUS_CODE.VALIDATION_ERROR).json({
+      return res.status(STATUS_CODE.ERROR).json({
         status: "error",
         message: "counterId is required",
       });
@@ -560,7 +580,7 @@ export const getTokenDetails = async (req: Request, res: Response) => {
     const { tokenNumber, date } = req.query;
 
     if (!tokenNumber) {
-      return res.status(STATUS_CODE.VALIDATION_ERROR).json({
+      return res.status(STATUS_CODE.ERROR).json({
         status: "error",
         message: "tokenNumber is required",
       });
@@ -617,7 +637,7 @@ export const updateCurrentServing = async (req: Request, res: Response) => {
     const { counterId, currentServingToken } = req.body;
 
     if (!counterId || currentServingToken === undefined) {
-      return res.status(STATUS_CODE.VALIDATION_ERROR).json({
+      return res.status(STATUS_CODE.ERROR).json({
         status: "error",
         message: "counterId and currentServingToken are required",
       });
@@ -651,6 +671,40 @@ export const updateCurrentServing = async (req: Request, res: Response) => {
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",
       message: error.message || "Failed to update serving token",
+    });
+  }
+};
+
+export const generateQrCode = async (req: Request, res: Response) => {
+  try {
+    const { counterId } = req.query;
+
+    if (!counterId) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "counterId is required",
+      });
+    }
+
+    const hipId = X_HIP_ID;
+    const counterIdStr = counterId.toString().trim();
+
+    const payloadString = `${ABDM_PHR_WEB_BASE_URL}/share-profile?hip-id=${hipId}&counter-id=${counterIdStr}`;
+
+    const qrCodeImage = await QRCode.toDataURL(payloadString);
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      data: {
+        qrCode: qrCodeImage,
+        payload: payloadString,
+      },
+    });
+  } catch (error: any) {
+    console.error("Generate QR Code error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to generate QR code",
     });
   }
 };
