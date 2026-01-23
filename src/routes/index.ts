@@ -6,7 +6,14 @@ import { abhauserListing, updatePassword, userAdd, userListing, userNewAdd, user
 import { tokenGeneration, userV2Onboard } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";
-import { getPendingTokens, completeRegistration, nextPatient } from "../controllers/v3/opd.controller";
+import {
+  getPendingTokens,
+  completeRegistration,
+  nextPatient,
+  getQueueStatusDetails,
+  getTokenDetails,
+  updateCurrentServing,
+} from "../controllers/v3/opd.controller";
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
@@ -57,5 +64,8 @@ router.post("/token/generate-token", checkToken, linkTokenGeneration);
 router.get("/opd/pending-tokens", checkToken, getPendingTokens);
 router.post("/opd/complete-registration", checkToken, completeRegistration);
 router.post("/internal/next-patient", checkToken, nextPatient);
+router.get("/opd/queue-status", checkToken, getQueueStatusDetails);
+router.get("/opd/token-details", checkToken, getTokenDetails);
+router.post("/opd/update-serving", checkToken, updateCurrentServing);
 
 export default router;
