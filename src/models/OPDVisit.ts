@@ -3,6 +3,8 @@ import { Schema, model, Document } from "mongoose";
 export enum VisitStatus {
   PENDING = "PENDING",
   REGISTERED = "REGISTERED",
+  COMPLETED = "COMPLETED",
+  CANCELLED = "CANCELLED",
 }
 
 export interface IAddress {

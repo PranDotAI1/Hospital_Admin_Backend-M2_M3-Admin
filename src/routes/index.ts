@@ -1,9 +1,25 @@
 import { NextFunction, Request, Response, Router } from "express";
-import { addDepartment, departmentList, updateDepartment } from "../controllers/department.controller";
+import {
+  addDepartment,
+  departmentList,
+  updateDepartment,
+} from "../controllers/department.controller";
 import { add, listing, update } from "../controllers/hospital.controller";
 import { login, logout } from "../controllers/login.controller";
-import { abhauserListing, updatePassword, userAdd, userListing, userNewAdd, userNotifyResponse, userProfile, userUpdate } from "../controllers/user.controller";
-import { tokenGeneration, userV2Onboard } from "../controllers/v2/abha.controller";
+import {
+  abhauserListing,
+  updatePassword,
+  userAdd,
+  userListing,
+  userNewAdd,
+  userNotifyResponse,
+  userProfile,
+  userUpdate,
+} from "../controllers/user.controller";
+import {
+  tokenGeneration,
+  userV2Onboard,
+} from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";
 import {
@@ -14,6 +30,11 @@ import {
   getTokenDetails,
   updateCurrentServing,
   generateQrCode,
+  generateQrCodePreview,
+  getOPDStats,
+  getAllVisits,
+  cancelVisit,
+  getPatientVisitHistory,
 } from "../controllers/v3/opd.controller";
 const router = Router();
 
@@ -25,9 +46,9 @@ router.get("/testing", (req: any, res: any) => {
   res.send("Welcome to the new API");
 });
 // onboarding Routes
-router.post("/login", login)
-router.get("/logout", checkToken, logout)
-router.get("/profile", checkToken, userProfile)
+router.post("/login", login);
+router.get("/logout", checkToken, logout);
+router.get("/profile", checkToken, userProfile);
 
 //Hospital Routes
 router.get("/hospital", checkToken, listing);
@@ -40,7 +61,6 @@ router.post("/user/add", checkToken, userAdd);
 router.put("/user/:id", checkToken, userUpdate);
 router.put("/user/update/password/:id", updatePassword);
 
-
 router.post("/user/new-add", userNewAdd);
 
 // Department Routes
@@ -52,7 +72,6 @@ router.put("/department/:id", checkToken, updateDepartment);
 router.post("/registration", checkToken, userV2Onboard);
 router.post("/token-generation", checkToken, tokenGeneration);
 //router.post("/test-token", tokenGeneration1)
-
 
 // get ABHA user information
 router.get("/abha/user/listing", abhauserListing);
@@ -69,6 +88,16 @@ router.get("/opd/queue-status", checkToken, getQueueStatusDetails);
 router.get("/opd/token-details", checkToken, getTokenDetails);
 router.post("/opd/update-serving", checkToken, updateCurrentServing);
 
-router.get("/opd/qr-code", checkToken, generateQrCode);
+router.get("/opd/qr-code", generateQrCode);
+router.get("/opd/qr-preview", generateQrCodePreview);
+
+router.get("/opd/stats", checkToken, getOPDStats);
+router.get("/opd/visits", checkToken, getAllVisits);
+router.put("/opd/visits/:id/cancel", checkToken, cancelVisit);
+router.get(
+  "/opd/visits/patient/:abhaAddress",
+  checkToken,
+  getPatientVisitHistory,
+);
 
 export default router;

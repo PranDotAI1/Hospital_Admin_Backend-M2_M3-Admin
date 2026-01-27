@@ -16,8 +16,11 @@ export const handleRunningTokenStatus = async (
   res: Response,
 ): Promise<void> => {
   try {
-    console.log("Running token status request received:", req.body); 
-    console.log("Headers:", req.headers);
+    console.log(
+      "Running token status request received:",
+      JSON.stringify(req.body, null, 2),
+    );
+    // console.log("Headers:", req.headers);
 
     res.status(202).json({
       status: "Accepted",

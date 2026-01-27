@@ -726,3 +726,247 @@ export const generateQrCode = async (req: Request, res: Response) => {
     });
   }
 };
+
+export const generateQrCodePreview = async (req: Request, res: Response) => {
+  try {
+    const { counterId } = req.query;
+
+    if (!counterId) {
+      return res.status(STATUS_CODE.ERROR).send("counterId is required");
+    }
+
+    const hipId = X_HIP_ID;
+    const counterIdStr = counterId.toString().trim();
+
+    const payloadString = `${ABDM_PHR_WEB_BASE_URL}/share-profile?hip-id=${hipId}&counter-id=${counterIdStr}`;
+
+    const qrCodeBuffer = await QRCode.toBuffer(payloadString, {
+      type: "png",
+      width: 400,
+      margin: 2,
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="qr-code-${counterIdStr}.png"`,
+    );
+
+    return res.status(STATUS_CODE.SUCCESS).send(qrCodeBuffer);
+  } catch (error: any) {
+    console.error("Generate QR Code Preview error:", error);
+    return res
+      .status(STATUS_CODE.ERROR)
+      .send("Failed to generate QR code preview");
+  }
+};
+
+export const getOPDStats = async (req: Request, res: Response) => {
+  try {
+    const todayDate = getTodayDateString();
+    const startOfToday = new Date(todayDate);
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(todayDate);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const matchQuery = {
+      visitDate: {
+        $gte: startOfToday,
+        $lte: endOfToday,
+      },
+    };
+
+    const stats = await OPDVisitModel.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          pending: {
+            $sum: {
+              $cond: [{ $eq: ["$visitStatus", VisitStatus.PENDING] }, 1, 0],
+            },
+          },
+          registered: {
+            $sum: {
+              $cond: [{ $eq: ["$visitStatus", VisitStatus.REGISTERED] }, 1, 0],
+            },
+          },
+          completed: {
+            $sum: {
+              $cond: [{ $eq: ["$visitStatus", VisitStatus.COMPLETED] }, 1, 0],
+            },
+          },
+          cancelled: {
+            $sum: {
+              $cond: [{ $eq: ["$visitStatus", VisitStatus.CANCELLED] }, 1, 0],
+            },
+          },
+        },
+      },
+    ]);
+
+    const data =
+      stats.length > 0
+        ? stats[0]
+        : {
+            total: 0,
+            pending: 0,
+            registered: 0,
+            completed: 0,
+            cancelled: 0,
+          };
+    delete data._id;
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      data: data,
+    });
+  } catch (error: any) {
+    console.error("Get OPD Stats error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to fetch OPD stats",
+    });
+  }
+};
+
+export const getAllVisits = async (req: Request, res: Response) => {
+  try {
+    const {
+      fromDate,
+      toDate,
+      search,
+      status,
+      page = 1,
+      limit = 10,
+    } = req.query;
+
+    const query: any = {};
+
+    if (fromDate && toDate) {
+      const start = new Date(String(fromDate));
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(String(toDate));
+      end.setHours(23, 59, 59, 999);
+      query.visitDate = { $gte: start, $lte: end };
+    }
+
+    if (status) {
+      query.visitStatus = status;
+    }
+
+    if (search) {
+      const searchRegex = { $regex: search, $options: "i" };
+      query.$or = [
+        { name: searchRegex },
+        { mobile: searchRegex },
+        { abhaAddress: searchRegex },
+        { tokenNumber: searchRegex },
+      ];
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const visits = await OPDVisitModel.find(query)
+      .sort({ visitDate: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .lean();
+
+    const total = await OPDVisitModel.countDocuments(query);
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      data: visits,
+      meta: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / Number(limit)),
+      },
+    });
+  } catch (error: any) {
+    console.error("Get All Visits error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to fetch visits",
+    });
+  }
+};
+
+export const cancelVisit = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Visit ID is required",
+      });
+    }
+
+    const visit = await OPDVisitModel.findById(id);
+
+    if (!visit) {
+      return res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Visit not found",
+      });
+    }
+
+    if (
+      visit.visitStatus === VisitStatus.COMPLETED ||
+      visit.visitStatus === VisitStatus.CANCELLED
+    ) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: `Cannot cancel visit with status ${visit.visitStatus}`,
+      });
+    }
+
+    visit.visitStatus = VisitStatus.CANCELLED;
+    await visit.save();
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      message: "Visit cancelled successfully",
+      data: visit,
+    });
+  } catch (error: any) {
+    console.error("Cancel Visit error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to cancel visit",
+    });
+  }
+};
+
+export const getPatientVisitHistory = async (req: Request, res: Response) => {
+  try {
+    const { abhaAddress } = req.params;
+
+    if (!abhaAddress) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "ABHA address is required",
+      });
+    }
+
+    const visits = await OPDVisitModel.find({ abhaAddress })
+      .sort({ visitDate: -1 })
+      .lean();
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      count: visits.length,
+      data: visits,
+    });
+  } catch (error: any) {
+    console.error("Get Patient History error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to fetch patient history",
+    });
+  }
+};
