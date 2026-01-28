@@ -41,6 +41,12 @@ const calculateAge = (dob: string): number | undefined => {
 export const scanAndShareWebhook = async (req: Request, res: Response) => {
   try {
     console.log("entry on scan", JSON.stringify(req.body, null, 2));
+console.log({
+  ip: req.ip,
+  origin: req.headers.origin,
+  referer: req.headers.referer,
+  userAgent: req.headers["user-agent"],
+});
 
     const authorization = req.headers["authorization"];
 
