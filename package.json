@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "start": "node dist/app.js",
+    "start": "node dist/bin/www",
     "build": "tsc",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/bin/www"
   },
