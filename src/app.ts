@@ -1,4 +1,5 @@
 import cookieParser from 'cookie-parser';
+import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import logger from 'morgan';
 import path from 'path';
@@ -18,23 +19,39 @@ import V4router from './routes/v4';
 const app = express();
 
 // CORS Configuration
-const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || ['*'];
+const corsOptions = {
+  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+    const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map((o: string) => o.trim()) || ['*'];
+    
+    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS not allowed'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200
+};
 
+app.use(cors(corsOptions));
+
+// Fallback CORS headers for additional security
 app.use((req, res, next) => {
+  const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map((o: string) => o.trim()) || ['*'];
   const origin = req.headers.origin || '';
-  if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin || '*');
+  
+  if (allowedOrigins.includes('*')) {
+    res.header("Access-Control-Allow-Origin", "*");
+  } else if (allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
   }
+  
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.header("Access-Control-Allow-Credentials", "true");
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
+  next();
 });
 
 app.set('views', path.join(__dirname, '../views'));
