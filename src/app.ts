@@ -3,6 +3,9 @@ import express, { NextFunction, Request, Response } from 'express';
 import logger from 'morgan';
 import path from 'path';
 import 'tsconfig-paths/register';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 import { connectDB } from './config/db';
 import indexRouter from './routes/index';
@@ -14,11 +17,24 @@ import V4router from './routes/v4';
 
 const app = express();
 
+// CORS Configuration
+const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || ['*'];
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS,PATCH");
+  const origin = req.headers.origin || '';
+  if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin || '*');
+  }
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  next();
+  res.header("Access-Control-Allow-Credentials", "true");
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
 });
 
 app.set('views', path.join(__dirname, '../views'));
