@@ -18,39 +18,40 @@ import V4router from './routes/v4';
 
 const app = express();
 
-// CORS Configuration
-const corsOptions = {
-  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-    const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map((o: string) => o.trim()) || ['*'];
-    
+// CORS Configuration - Allow specific origins
+const allowedOrigins = (process.env.CORS_ORIGIN || '*').split(',').map((origin: string) => origin.trim());
+
+app.use(cors({
+  origin: function (origin: string | undefined, callback: Function) {
+    // Allow requests with no origin (like curl, Postman, etc.)
     if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('CORS not allowed'));
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  optionsSuccessStatus: 200
-};
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', '*'],
+  optionsSuccessStatus: 200,
+  maxAge: 3600
+}));
 
-app.use(cors(corsOptions));
-
-// Fallback CORS headers for additional security
+// Additional CORS headers middleware for extra safety
 app.use((req, res, next) => {
-  const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map((o: string) => o.trim()) || ['*'];
-  const origin = req.headers.origin || '';
-  
-  if (allowedOrigins.includes('*')) {
-    res.header("Access-Control-Allow-Origin", "*");
-  } else if (allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
+  const origin = req.headers.origin;
+  if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
   }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, *');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '3600');
   
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.header("Access-Control-Allow-Credentials", "true");
+  // Handle preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
 });
 
