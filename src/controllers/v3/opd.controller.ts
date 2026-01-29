@@ -38,15 +38,61 @@ const calculateAge = (dob: string): number | undefined => {
   }
 };
 
+const isValidObjectId = (id: string): boolean => {
+  return /^[a-fA-F0-9]{24}$/.test(id);
+};
+
+const sanitizeString = (
+  value: unknown,
+  maxLength: number = 500,
+): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const str = String(value).trim();
+  if (str.length === 0) return undefined;
+  return str.slice(0, maxLength);
+};
+
+const safeNumber = (value: unknown): number | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const num = Number(value);
+  if (isNaN(num) || !isFinite(num)) return undefined;
+  return num;
+};
+
+const safeBoolean = (value: unknown): boolean | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  return undefined;
+};
+
+const isValidMobile = (mobile: string): boolean => {
+  return /^[6-9]\d{9}$/.test(mobile);
+};
+
+const isValidPincode = (pincode: string): boolean => {
+  return /^\d{6}$/.test(pincode);
+};
+
+const isValidGender = (gender: string): boolean => {
+  return ["M", "F", "O", "Male", "Female", "Other"].includes(gender);
+};
+
+const isValidDate = (dateStr: string): boolean => {
+  const date = new Date(dateStr);
+  return !isNaN(date.getTime()) && date <= new Date();
+};
+
 export const scanAndShareWebhook = async (req: Request, res: Response) => {
   try {
     console.log("entry on scan", JSON.stringify(req.body, null, 2));
-console.log({
-  ip: req.ip,
-  origin: req.headers.origin,
-  referer: req.headers.referer,
-  userAgent: req.headers["user-agent"],
-});
+    console.log({
+      ip: req.ip,
+      origin: req.headers.origin,
+      referer: req.headers.referer,
+      userAgent: req.headers["user-agent"],
+    });
 
     const authorization = req.headers["authorization"];
 
@@ -284,22 +330,8 @@ export const getPendingTokens = async (req: Request, res: Response) => {
     const visitsWithAge = pendingVisits.map((visit: any) => {
       const age = visit.dob ? calculateAge(visit.dob) : undefined;
       return {
-        _id: visit._id,
-        name: visit.name,
-        mobile: visit.mobile,
-        tokenNumber: visit.tokenNumber,
-        visitDate: visit.visitDate,
-        age: age,
-        gender: visit.gender,
-        abhaAddress: visit.abhaAddress,
-        aadhaarNumber: visit.aadhaarNumber,
-        hprId: visit.hprId,
-        latitude: visit.latitude,
-        longitude: visit.longitude,
-        address: visit.address,
-        abhaNumber: visit.abhaNumber,
-        counterId: visit.counterId,
-        visitStatus: visit.visitStatus,
+        ...visit,
+        age,
       };
     });
 
@@ -322,16 +354,83 @@ export const completeRegistration = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { tokenNumber, ...manualFields } = req.body;
 
-    if (!id) {
+    if (!id || Array.isArray(id)) {
       return res.status(STATUS_CODE.ERROR).json({
         status: "error",
-        message: "id is required",
+        message: "Visit ID is required",
+      });
+    }
+
+    const visitId = String(id);
+
+    if (!isValidObjectId(visitId)) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Invalid visit ID format",
+      });
+    }
+
+    const validationErrors: string[] = [];
+
+    const mobile = sanitizeString(manualFields.mobile, 15);
+    if (mobile && !isValidMobile(mobile)) {
+      validationErrors.push(
+        "Invalid mobile number format (must be 10 digits starting with 6-9)",
+      );
+    }
+
+    const gender = sanitizeString(manualFields.gender, 10);
+    if (gender && !isValidGender(gender)) {
+      validationErrors.push(
+        "Invalid gender (must be M, F, O, Male, Female, or Other)",
+      );
+    }
+
+    const dob = sanitizeString(manualFields.dob, 20);
+    if (dob && !isValidDate(dob)) {
+      validationErrors.push("Invalid date of birth format or future date");
+    }
+
+    const pincode = sanitizeString(manualFields.address?.pincode, 10);
+    if (pincode && !isValidPincode(pincode)) {
+      validationErrors.push("Invalid pincode format (must be 6 digits)");
+    }
+
+    const consultationFee = safeNumber(manualFields.consultationFee);
+    if (
+      manualFields.consultationFee !== undefined &&
+      consultationFee === undefined
+    ) {
+      validationErrors.push(
+        "Invalid consultation fee (must be a valid number)",
+      );
+    }
+    if (consultationFee !== undefined && consultationFee < 0) {
+      validationErrors.push("Consultation fee cannot be negative");
+    }
+
+    const paymentAmount = safeNumber(manualFields.payment?.amount);
+    if (
+      manualFields.payment?.amount !== undefined &&
+      paymentAmount === undefined
+    ) {
+      validationErrors.push("Invalid payment amount (must be a valid number)");
+    }
+    if (paymentAmount !== undefined && paymentAmount < 0) {
+      validationErrors.push("Payment amount cannot be negative");
+    }
+
+    if (validationErrors.length > 0) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Validation failed",
+        errors: validationErrors,
       });
     }
 
     const opdVisit = await OPDVisitModel.findOne({
-      _id: id,
-      visitStatus: VisitStatus.PENDING,
+      _id: visitId,
+      // visitStatus: VisitStatus.PENDING,
     });
 
     if (!opdVisit) {
@@ -342,54 +441,77 @@ export const completeRegistration = async (req: Request, res: Response) => {
     }
 
     const updateData: Partial<IOPDVisit> = {
-      visitStatus: VisitStatus.REGISTERED,
+      visitStatus:
+        opdVisit?.visitStatus === VisitStatus.COMPLETED
+          ? VisitStatus.COMPLETED
+          : VisitStatus.REGISTERED,
     };
 
-    if (manualFields.department !== undefined)
-      updateData.department = manualFields.department;
-    if (manualFields.doctorName !== undefined)
-      updateData.doctorName = manualFields.doctorName;
-    if (manualFields.consultationFee !== undefined) {
-      updateData.consultationFee = Number(manualFields.consultationFee);
-    }
-    if (manualFields.complaint !== undefined)
-      updateData.complaint = manualFields.complaint;
-    if (manualFields.isEmergency !== undefined)
-      updateData.isEmergency = Boolean(manualFields.isEmergency);
+    const department = sanitizeString(manualFields.department, 100);
+    if (department) updateData.department = department;
 
-    if (manualFields.insurance) {
-      updateData.insurance = {
-        provider: manualFields.insurance.provider,
-        policyNumber: manualFields.insurance.policyNumber,
-      };
+    const doctorName = sanitizeString(manualFields.doctorName, 100);
+    if (doctorName) updateData.doctorName = doctorName;
+
+    if (consultationFee !== undefined) {
+      updateData.consultationFee = consultationFee;
     }
 
-    if (manualFields.payment) {
-      updateData.payment = {
-        mode: manualFields.payment.mode,
-        amount: manualFields.payment.amount
-          ? Number(manualFields.payment.amount)
-          : undefined,
-      };
+    const complaint = sanitizeString(manualFields.complaint, 1000);
+    if (complaint) updateData.complaint = complaint;
+
+    const isEmergency = safeBoolean(manualFields.isEmergency);
+    if (isEmergency !== undefined) updateData.isEmergency = isEmergency;
+
+    if (manualFields.insurance && typeof manualFields.insurance === "object") {
+      const provider = sanitizeString(manualFields.insurance.provider, 100);
+      const policyNumber = sanitizeString(
+        manualFields.insurance.policyNumber,
+        50,
+      );
+      if (provider || policyNumber) {
+        updateData.insurance = {
+          provider: provider || "",
+          policyNumber: policyNumber || "",
+        };
+      }
     }
 
-    if (manualFields.address) {
-      updateData.address = {
-        line: manualFields.address.line || "",
-        district: manualFields.address.district || "",
-        state: manualFields.address.state || "",
-        pincode: manualFields.address.pincode || "",
-      };
+    if (manualFields.payment && typeof manualFields.payment === "object") {
+      const mode = sanitizeString(manualFields.payment.mode, 20);
+      if (mode || paymentAmount !== undefined) {
+        updateData.payment = {
+          mode: mode || "",
+          amount: paymentAmount,
+        };
+      }
     }
 
-    if (manualFields.name !== undefined) updateData.name = manualFields.name;
-    if (manualFields.mobile !== undefined)
-      updateData.mobile = manualFields.mobile;
-    if (manualFields.aadhaarNumber !== undefined)
-      updateData.aadhaarNumber = manualFields.aadhaarNumber;
-    if (manualFields.dob !== undefined) updateData.dob = manualFields.dob;
-    if (manualFields.gender !== undefined)
-      updateData.gender = manualFields.gender;
+    if (manualFields.address && typeof manualFields.address === "object") {
+      const line = sanitizeString(manualFields.address.line, 200);
+      const district = sanitizeString(manualFields.address.district, 50);
+      const state = sanitizeString(manualFields.address.state, 50);
+      if (line || district || state || pincode) {
+        updateData.address = {
+          line: line || "",
+          district: district || "",
+          state: state || "",
+          pincode: pincode || "",
+        };
+      }
+    }
+
+    const name = sanitizeString(manualFields.name, 100);
+    if (name) updateData.name = name;
+
+    if (mobile) updateData.mobile = mobile;
+
+    const aadhaarNumber = sanitizeString(manualFields.aadhaarNumber, 12);
+    if (aadhaarNumber) updateData.aadhaarNumber = aadhaarNumber;
+
+    if (dob) updateData.dob = dob;
+
+    if (gender) updateData.gender = gender;
 
     const updatedVisit = await OPDVisitModel.findByIdAndUpdate(
       opdVisit._id,
@@ -403,10 +525,14 @@ export const completeRegistration = async (req: Request, res: Response) => {
       data: updatedVisit,
     });
   } catch (error: any) {
-    console.error("Complete Registration error:", error);
+    console.error("Complete Registration error:", {
+      message: error.message,
+      stack: error.stack,
+      id: req.params?.id,
+    });
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",
-      message: error.message || "Failed to complete registration",
+      message: "Failed to complete registration. Please try again.",
     });
   }
 };
@@ -839,64 +965,137 @@ export const getOPDStats = async (req: Request, res: Response) => {
 
 export const getAllVisits = async (req: Request, res: Response) => {
   try {
-    const {
-      fromDate,
-      toDate,
-      search,
-      status,
-      page = 1,
-      limit = 10,
-    } = req.query;
+    const { from, to, search, status, page, limit } = req.query;
 
-    const query: any = {};
+    const validationErrors: string[] = [];
+    const pageNum = page ? Number(page) : 1;
+    const limitNum = limit ? Number(limit) : 10;
+    const MAX_LIMIT = 100;
 
-    if (fromDate && toDate) {
-      const start = new Date(String(fromDate));
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(String(toDate));
-      end.setHours(23, 59, 59, 999);
-      query.visitDate = { $gte: start, $lte: end };
+    if (isNaN(pageNum) || pageNum < 1) {
+      validationErrors.push("Invalid page number (must be a positive integer)");
     }
+    if (isNaN(limitNum) || limitNum < 1) {
+      validationErrors.push("Invalid limit (must be a positive integer)");
+    }
+    // if (limitNum > MAX_LIMIT) {
+    //   validationErrors.push(`Limit cannot exceed ${MAX_LIMIT}`);
+    // }
+
+    const validStatuses = Object.values(VisitStatus) as string[];
+    let normalizedStatus: string | undefined;
 
     if (status) {
-      query.visitStatus = status;
+      const statusStr = String(status).toUpperCase().trim();
+      if (statusStr !== "ALL" && !validStatuses.includes(statusStr)) {
+        validationErrors.push(
+          `Invalid status. Must be one of: ${validStatuses.join(", ")}, or ALL`,
+        );
+      } else if (statusStr !== "ALL") {
+        normalizedStatus = statusStr;
+      }
+    }
+
+    let startDate: Date;
+    let endDate: Date;
+
+    if (from) {
+      const fromStr = sanitizeString(String(from), 20);
+      if (!fromStr || !isValidDate(fromStr)) {
+        validationErrors.push("Invalid from date format");
+      } else {
+        startDate = new Date(fromStr);
+        startDate.setHours(0, 0, 0, 0);
+      }
+
+      if (to) {
+        const toStr = sanitizeString(String(to), 20);
+        if (!toStr || !isValidDate(toStr)) {
+          validationErrors.push("Invalid to date format");
+        } else {
+          endDate = new Date(toStr);
+          endDate.setHours(23, 59, 59, 999);
+        }
+      } else {
+        endDate = new Date();
+        endDate.setHours(23, 59, 59, 999);
+      }
+
+      if (startDate! && endDate! && startDate! > endDate!) {
+        validationErrors.push("from date cannot be after to date");
+      }
+    } else {
+      startDate = new Date();
+      startDate.setHours(0, 0, 0, 0);
+      endDate = new Date();
+      endDate.setHours(23, 59, 59, 999);
+    }
+
+    if (validationErrors.length > 0) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Validation failed",
+        errors: validationErrors,
+      });
+    }
+
+    const query: Record<string, unknown> = {
+      visitDate: { $gte: startDate!, $lte: endDate! },
+    };
+
+    if (normalizedStatus) {
+      query.visitStatus = normalizedStatus;
     }
 
     if (search) {
-      const searchRegex = { $regex: search, $options: "i" };
-      query.$or = [
-        { name: searchRegex },
-        { mobile: searchRegex },
-        { abhaAddress: searchRegex },
-        { tokenNumber: searchRegex },
-      ];
+      const searchStr = sanitizeString(String(search), 100);
+      if (searchStr) {
+        const escapedSearch = searchStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const searchRegex = { $regex: escapedSearch, $options: "i" };
+        query.$or = [
+          { name: searchRegex },
+          { mobile: searchRegex },
+          { abhaAddress: searchRegex },
+          { tokenNumber: searchRegex },
+        ];
+      }
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const safePage = Math.max(1, pageNum);
+    const safeLimit = Math.min(Math.max(1, limitNum), MAX_LIMIT);
+    const skip = (safePage - 1) * safeLimit;
+    const [visits, total] = await Promise.all([
+      OPDVisitModel.find(query)
+        .sort({ visitDate: -1, tokenNumber: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .lean(),
+      OPDVisitModel.countDocuments(query),
+    ]);
 
-    const visits = await OPDVisitModel.find(query)
-      .sort({ visitDate: -1 })
-      .skip(skip)
-      .limit(Number(limit))
-      .lean();
-
-    const total = await OPDVisitModel.countDocuments(query);
+    const totalPages = Math.ceil(total / safeLimit);
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       data: visits,
       meta: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit)),
+        page: safePage,
+        limit: safeLimit,
+        totalPages,
+        hasNextPage: safePage < totalPages,
+        hasPrevPage: safePage > 1,
       },
     });
   } catch (error: any) {
-    console.error("Get All Visits error:", error);
+    console.error("Get All Visits error:", {
+      message: error.message,
+      stack: error.stack,
+      query: req.query,
+    });
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",
-      message: error.message || "Failed to fetch visits",
+      message: "Failed to fetch visits. Please try again.",
     });
   }
 };
