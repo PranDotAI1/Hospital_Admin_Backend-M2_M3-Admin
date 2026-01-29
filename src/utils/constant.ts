@@ -89,3 +89,7 @@ export const PROCESS_EVENTS = {
   SIGINT: "SIGINT",
   SIGTERM: "SIGTERM",
 };
+
+
+export const ABDM_PHR_WEB_BASE_URL =
+  process.env.ABDM_PHR_WEB_BASE_URL || "https://phrsbx.abdm.gov.in";

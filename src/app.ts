@@ -1,9 +1,12 @@
-import cookieParser from "cookie-parser";
-import cors from "cors";
-import express, { NextFunction, Request, Response } from "express";
-import logger from "morgan";
-import path from "path";
-import "tsconfig-paths/register";
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
+import express, { NextFunction, Request, Response } from 'express';
+import logger from 'morgan';
+import path from 'path';
+import 'tsconfig-paths/register';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 import corsOptions from "./config/cors";
 import { connectDB } from "./config/db";
@@ -16,7 +19,31 @@ import V4router from "./routes/v4";
 
 const app = express();
 
-app.use(cors(corsOptions));
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  : ['http://localhost:3000', 'http://localhost:3001'];
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+      "Cache-Control",
+    ],
+    exposedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 200,
+    maxAge: 86400,
+    preflightContinue: false,
+  }),
+);
 
 app.set("views", path.join(__dirname, "../views"));
 app.set("view engine", "jade");

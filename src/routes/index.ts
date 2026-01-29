@@ -22,6 +22,20 @@ import {
 } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken } from "../middlewares/user.authentication";
+import {
+  getPendingTokens,
+  completeRegistration,
+  nextPatient,
+  getQueueStatusDetails,
+  getTokenDetails,
+  updateCurrentServing,
+  generateQrCode,
+  generateQrCodePreview,
+  getOPDStats,
+  getAllVisits,
+  cancelVisit,
+  getPatientVisitHistory,
+} from "../controllers/v3/opd.controller";
 
 import authRoutes from "./v1/auth/auth.routes";
 
@@ -49,8 +63,7 @@ router.put("/hospital/:id", checkToken, update);
 router.get("/users", checkToken, userListing);
 router.post("/user/add", checkToken, userAdd);
 router.put("/user/:id", checkToken, userUpdate);
-
-// router.put("/user/update/password/:id", updatePassword); ## disabled this route as this has security issues - harshith
+router.put("/user/update/password/:id", updatePassword);
 
 // router.post("/user/new-add", userNewAdd);
 
@@ -71,5 +84,24 @@ router.get("/abha/user/notify-response/:id", checkToken, userNotifyResponse);
 //Webhook hit
 router.post("/token/generate-token", checkToken, linkTokenGeneration);
 //router.post("/v3/consent/request/hip/notify", hipNotifiy);
+
+router.get("/opd/pending-tokens", checkToken, getPendingTokens);
+router.post("/opd/complete-registration/:id", checkToken, completeRegistration);
+router.post("/internal/next-patient", checkToken, nextPatient);
+router.get("/opd/queue-status", checkToken, getQueueStatusDetails);
+router.get("/opd/token-details", checkToken, getTokenDetails);
+router.post("/opd/update-serving", checkToken, updateCurrentServing);
+
+router.get("/opd/qr-code", generateQrCode);
+router.get("/opd/qr-preview", generateQrCodePreview);
+
+router.get("/opd/stats", checkToken, getOPDStats);
+router.get("/opd/visits", checkToken, getAllVisits);
+router.put("/opd/visits/:id/cancel", checkToken, cancelVisit);
+router.get(
+  "/opd/visits/patient/:abhaAddress",
+  checkToken,
+  getPatientVisitHistory,
+);
 
 export default router;
