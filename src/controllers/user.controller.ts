@@ -90,6 +90,10 @@ export const userAdd = async (req: any, res: any) => {
             return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
         }
         input.unique_id = generateUniqueAlphaNumericId();
+        // Hash password before saving
+        if (input.password) {
+            input.password = await hashPassword(input.password);
+        }
         let response = await UserModel.create(input);
         return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "User has been suceesfully added");
     }

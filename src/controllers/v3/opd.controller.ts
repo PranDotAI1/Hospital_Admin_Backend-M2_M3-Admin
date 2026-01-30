@@ -1,12 +1,13 @@
 import axios from "axios";
 import QRCode from "qrcode";
 import { Request, Response } from "express";
+import { Types } from "mongoose";
 import { OPDVisitModel, VisitStatus, IOPDVisit } from "../../models/OPDVisit";
 import { DailyOpdQueueModel } from "../../models/DailyOpdQueue";
+import { PatientModel, IPatientVisitRef } from "../../models/Patient";
 import {
   generateUID,
   X_HIP_ID,
-  HIP_NAME,
   ABDM_PHR_WEB_BASE_URL,
 } from "../../utils/constant";
 import { ENDPOINTS } from "../../utils/endpoints";
@@ -142,25 +143,63 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
         $gte: startOfToday,
         $lte: endOfToday,
       },
-    });
+    }).sort({ createdAt: -1 });
 
     if (existingVisit) {
+      const existingTokenNum = parseInt(existingVisit.tokenNumber, 10);
+      const existingStatus = existingVisit.visitStatus;
+
       console.log(
-        "Duplicate scan detected for ABHA:",
+        "Existing visit found for ABHA:",
         abhaAddress,
-        "Existing token:",
+        "Token:",
         existingVisit.tokenNumber,
+        "Status:",
+        existingStatus
       );
-      const existingTokenNumber = existingVisit.tokenNumber;
-      await callAbdmOnShare(
-        abhaAddress,
-        context,
-        existingTokenNumber,
-        requestId,
-        req,
-        authorization,
-      );
-      return;
+
+      if (
+        existingStatus === VisitStatus.COMPLETED ||
+        existingStatus === VisitStatus.CANCELLED ||
+        existingStatus === VisitStatus.MISSED ||
+        existingStatus === VisitStatus.REGISTERED
+      ) {
+        console.log(
+          `Visit status is ${existingStatus}, allowing new token generation`
+        );
+      } else {
+        const queueDoc = await DailyOpdQueueModel.findOne({
+          date: todayDate,
+          counterId: context,
+        });
+
+        const currentServingToken = queueDoc?.currentServingToken || 0;
+
+        if (currentServingToken > existingTokenNum) {
+          console.log(
+            `Token ${existingVisit.tokenNumber} missed. Current serving: ${currentServingToken}. Marking as MISSED and issuing new token.`
+          );
+
+          await OPDVisitModel.findByIdAndUpdate(existingVisit._id, {
+            $set: { visitStatus: VisitStatus.MISSED },
+          });
+
+        } else {
+          console.log(
+            `Token ${existingVisit.tokenNumber} still valid. Current serving: ${currentServingToken}. Returning existing token.`
+          );
+
+          await callAbdmOnShare(
+            abhaAddress,
+            context,
+            existingVisit.tokenNumber,
+            requestId,
+            req,
+            authorization
+          );
+          return;
+        }
+      }
     }
 
     const queueDoc = await DailyOpdQueueModel.findOneAndUpdate(
@@ -175,7 +214,6 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
 
     const tokenNumber = queueDoc.lastIssuedToken.toString().padStart(4, "0");
 
-    const addressArray = patient?.address || [];
     let addressObj: any = {};
     if (Array.isArray(patient?.address)) {
       addressObj = patient.address.length > 0 ? patient.address[0] : {};
@@ -278,7 +316,9 @@ const callAbdmOnShare = async (
     };
 
     const onShareResponse = await axios.post(
-      `${process.env.ABDM_BASE_URL || "https://dev.abdm.gov.in"}${ENDPOINTS.HIP_PATIENT_SHARE_ON_SHARE}`,
+      `${process.env.ABDM_BASE_URL || "https://dev.abdm.gov.in"}${
+        ENDPOINTS.HIP_PATIENT_SHARE_ON_SHARE
+      }`,
       onSharePayload,
       {
         headers: {
@@ -324,7 +364,7 @@ export const getPendingTokens = async (req: Request, res: Response) => {
         $lte: endOfToday,
       },
     })
-      .sort({ visitDate: -1 })
+      .sort({ tokenNumber: 1 })
       .lean();
 
     const visitsWithAge = pendingVisits.map((visit: any) => {
@@ -375,14 +415,14 @@ export const completeRegistration = async (req: Request, res: Response) => {
     const mobile = sanitizeString(manualFields.mobile, 15);
     if (mobile && !isValidMobile(mobile)) {
       validationErrors.push(
-        "Invalid mobile number format (must be 10 digits starting with 6-9)",
+        "Invalid mobile number format (must be 10 digits starting with 6-9)"
       );
     }
 
     const gender = sanitizeString(manualFields.gender, 10);
     if (gender && !isValidGender(gender)) {
       validationErrors.push(
-        "Invalid gender (must be M, F, O, Male, Female, or Other)",
+        "Invalid gender (must be M, F, O, Male, Female, or Other)"
       );
     }
 
@@ -402,7 +442,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
       consultationFee === undefined
     ) {
       validationErrors.push(
-        "Invalid consultation fee (must be a valid number)",
+        "Invalid consultation fee (must be a valid number)"
       );
     }
     if (consultationFee !== undefined && consultationFee < 0) {
@@ -516,8 +556,150 @@ export const completeRegistration = async (req: Request, res: Response) => {
     const updatedVisit = await OPDVisitModel.findByIdAndUpdate(
       opdVisit._id,
       { $set: updateData },
-      { new: true },
+      { new: true }
     );
+
+    if (opdVisit.counterId && opdVisit.tokenNumber) {
+      const todayDate = getTodayDateString();
+      const tokenNum = parseInt(opdVisit.tokenNumber, 10);
+
+      if (!isNaN(tokenNum)) {
+        await DailyOpdQueueModel.findOneAndUpdate(
+          { date: todayDate, counterId: opdVisit.counterId },
+          { $set: { currentServingToken: tokenNum } },
+          { upsert: false }
+        );
+      }
+    }
+
+    if (updatedVisit && opdVisit.abhaNumber) {
+      try {
+        const visitRef: IPatientVisitRef = {
+          visitId: updatedVisit._id as Types.ObjectId,
+          tokenNumber: updatedVisit.tokenNumber,
+          visitDate: updatedVisit.visitDate,
+          visitStatus: updatedVisit.visitStatus,
+          department: updatedVisit.department,
+          doctorName: updatedVisit.doctorName,
+        };
+
+        const fullName = updatedVisit.name || opdVisit.name || "";
+        const nameParts = fullName.trim().split(/\s+/);
+        const firstName = nameParts[0] || "";
+        const middleName =
+          nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : undefined;
+        const lastName =
+          nameParts.length > 1 ? nameParts[nameParts.length - 1] : undefined;
+
+        let addressString = "";
+        const addr = updatedVisit.address || opdVisit.address;
+        if (addr) {
+          const parts = [
+            addr.line,
+            addr.district,
+            addr.state,
+            addr.pincode,
+          ].filter(Boolean);
+          addressString = parts.join(", ");
+        }
+
+        const existingPatient = await PatientModel.findOne({
+          ABHANumber: opdVisit.abhaNumber,
+        });
+
+        const visitInsurance = updatedVisit.insurance;
+        const hasNewInsurance =
+          visitInsurance?.provider || visitInsurance?.policyNumber;
+
+        let patientId: Types.ObjectId;
+
+        if (existingPatient) {
+          let shouldAddInsurance = false;
+          if (hasNewInsurance) {
+            const existingInsurances = existingPatient.insurance || [];
+            const insuranceExists = existingInsurances.some(
+              (ins) =>
+                ins.provider === visitInsurance?.provider &&
+                ins.policyNumber === visitInsurance?.policyNumber
+            );
+            shouldAddInsurance = !insuranceExists;
+          }
+
+          const updateOps: any = {
+            $push: { visits: visitRef },
+            $set: {
+              lastVisitDate: updatedVisit.visitDate,
+              ...(fullName && { name: fullName }),
+              ...(updatedVisit.mobile && { mobile: updatedVisit.mobile }),
+              ...(updatedVisit.dob && { dob: updatedVisit.dob }),
+              ...(updatedVisit.gender && { gender: updatedVisit.gender }),
+              ...(addressString && { address: addressString }),
+              ...(addr?.pincode && { pincode: addr.pincode }),
+              ...(opdVisit.abhaAddress && {
+                abhaaddress: opdVisit.abhaAddress,
+              }),
+              ...(updatedVisit.aadhaarNumber && {
+                aadhaarNumber: updatedVisit.aadhaarNumber,
+              }),
+            },
+            $inc: { totalVisits: 1 },
+          };
+
+          if (shouldAddInsurance) {
+            updateOps.$push.insurance = {
+              provider: visitInsurance?.provider,
+              policyNumber: visitInsurance?.policyNumber,
+              addedOn: new Date(),
+            };
+          }
+
+          await PatientModel.findByIdAndUpdate(existingPatient._id, updateOps);
+          patientId = existingPatient._id as Types.ObjectId;
+          console.log("Patient record updated:", existingPatient._id);
+        } else {
+          const initialInsurance = hasNewInsurance
+            ? [
+                {
+                  provider: visitInsurance?.provider,
+                  policyNumber: visitInsurance?.policyNumber,
+                  addedOn: new Date(),
+                },
+              ]
+            : [];
+
+          const newPatient = await PatientModel.create({
+            f_name: firstName || "Unknown",
+            m_name: middleName,
+            l_name: lastName,
+            name: fullName || "Unknown",
+            mobile: updatedVisit.mobile || opdVisit.mobile || "0000000000",
+            dob: updatedVisit.dob || opdVisit.dob || "1900-01-01",
+            address: addressString,
+            ABHANumber: opdVisit.abhaNumber,
+            abhaaddress: opdVisit.abhaAddress,
+            gender: updatedVisit.gender || opdVisit.gender,
+            status: "active",
+            pincode: addr?.pincode,
+            aadhaarNumber: updatedVisit.aadhaarNumber || opdVisit.aadhaarNumber,
+            visits: [visitRef],
+            lastVisitDate: updatedVisit.visitDate,
+            totalVisits: 1,
+            insurance: initialInsurance,
+          });
+          patientId = newPatient._id as Types.ObjectId;
+          console.log("New patient record created:", newPatient._id);
+        }
+
+        await OPDVisitModel.findByIdAndUpdate(updatedVisit._id, {
+          $set: { patientId: patientId },
+        });
+      } catch (patientError: any) {
+        console.error("Error updating patient record:", {
+          message: patientError.message,
+          abhaNumber: opdVisit.abhaNumber,
+        });
+      }
+    }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
@@ -541,7 +723,7 @@ export const queueStatus = async (req: Request, res: Response) => {
   try {
     console.log(
       "Queue Status request received:",
-      JSON.stringify(req.body, null, 2),
+      JSON.stringify(req.body, null, 2)
     );
 
     res.status(202).json({
@@ -572,7 +754,7 @@ export const queueStatus = async (req: Request, res: Response) => {
         "Queue not found for context:",
         context,
         "date:",
-        todayDate,
+        todayDate
       );
       await callAbdmRunningTokenStatus(context, "0", 10, requestId, req);
       return;
@@ -588,7 +770,7 @@ export const queueStatus = async (req: Request, res: Response) => {
       currentServingToken,
       avgServiceTime,
       requestId,
-      req,
+      req
     );
   } catch (error: any) {
     console.error("Queue Status error:", {
@@ -604,7 +786,7 @@ const callAbdmRunningTokenStatus = async (
   tokenNumber: string,
   avgServiceTime: number,
   requestId: string,
-  req: Request,
+  req: Request
 ) => {
   try {
     const random32String = generateUID();
@@ -621,7 +803,9 @@ const callAbdmRunningTokenStatus = async (
     };
 
     const statusResponse = await axios.post(
-      `${process.env.ABDM_BASE_URL || "https://dev.abdm.gov.in"}${ENDPOINTS.HIP_RUNNING_TOKEN_ON_STATUS}`,
+      `${process.env.ABDM_BASE_URL || "https://dev.abdm.gov.in"}${
+        ENDPOINTS.HIP_RUNNING_TOKEN_ON_STATUS
+      }`,
       statusPayload,
       {
         headers: {
@@ -632,13 +816,13 @@ const callAbdmRunningTokenStatus = async (
           Authorization: req.headers["authorization"] || "",
         },
         timeout: 10000,
-      },
+      }
     );
 
     console.log(
       "ABDM running token status response:",
       statusResponse.status,
-      statusResponse.data,
+      statusResponse.data
     );
   } catch (statusError: any) {
     console.error("ABDM running token status call failed (non-blocking):", {
@@ -669,7 +853,7 @@ export const nextPatient = async (req: Request, res: Response) => {
       {
         upsert: false,
         new: true,
-      },
+      }
     );
 
     if (!queueDoc) {
@@ -801,7 +985,7 @@ export const updateCurrentServing = async (req: Request, res: Response) => {
       {
         upsert: false,
         new: true,
-      },
+      }
     );
 
     if (!queueDoc) {
@@ -881,7 +1065,7 @@ export const generateQrCodePreview = async (req: Request, res: Response) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="qr-code-${counterIdStr}.png"`,
+      `inline; filename="qr-code-${counterIdStr}.png"`
     );
 
     return res.status(STATUS_CODE.SUCCESS).send(qrCodeBuffer);
@@ -934,6 +1118,11 @@ export const getOPDStats = async (req: Request, res: Response) => {
               $cond: [{ $eq: ["$visitStatus", VisitStatus.CANCELLED] }, 1, 0],
             },
           },
+          missed: {
+            $sum: {
+              $cond: [{ $eq: ["$visitStatus", VisitStatus.MISSED] }, 1, 0],
+            },
+          },
         },
       },
     ]);
@@ -947,6 +1136,7 @@ export const getOPDStats = async (req: Request, res: Response) => {
             registered: 0,
             completed: 0,
             cancelled: 0,
+            missed: 0,
           };
     delete data._id;
 
@@ -989,7 +1179,7 @@ export const getAllVisits = async (req: Request, res: Response) => {
       const statusStr = String(status).toUpperCase().trim();
       if (statusStr !== "ALL" && !validStatuses.includes(statusStr)) {
         validationErrors.push(
-          `Invalid status. Must be one of: ${validStatuses.join(", ")}, or ALL`,
+          `Invalid status. Must be one of: ${validStatuses.join(", ")}, or ALL`
         );
       } else if (statusStr !== "ALL") {
         normalizedStatus = statusStr;

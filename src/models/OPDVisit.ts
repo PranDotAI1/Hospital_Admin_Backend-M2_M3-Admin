@@ -1,10 +1,11 @@
-import { Schema, model, Document } from "mongoose";
+import { Schema, model, Document, Types } from "mongoose";
 
 export enum VisitStatus {
   PENDING = "PENDING",
   REGISTERED = "REGISTERED",
   COMPLETED = "COMPLETED",
   CANCELLED = "CANCELLED",
+  MISSED = "MISSED",
 }
 
 export interface IAddress {
@@ -48,6 +49,8 @@ export interface IOPDVisit extends Document {
   isEmergency?: boolean;
   payment?: IPayment;
   insurance?: IInsurance;
+
+  patientId?: Types.ObjectId;
 }
 
 const AddressSchema = new Schema<IAddress>(
@@ -123,6 +126,8 @@ const OPDVisitSchema = new Schema<IOPDVisit>(
     isEmergency: { type: Boolean, required: false, default: false },
     payment: { type: PaymentSchema, required: false },
     insurance: { type: InsuranceSchema, required: false },
+
+    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: false, index: true },
   },
   {
     timestamps: true,

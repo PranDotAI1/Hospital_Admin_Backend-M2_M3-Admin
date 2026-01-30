@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { healthInformation, hipNotifiy, linkTokenGeneration, onCarecontext } from "../controllers/v2/webhook.controller";
 import { consentOnFetchCallback, receivedConsentRequestStatus, requestOnInitCallback } from "../controllers/v3/webhook.controller";
-import { scanAndShareWebhook, queueStatus } from "../controllers/v3/opd.controller";
+import { scanAndShareWebhook } from "../controllers/v3/opd.controller";
 import { handleRunningTokenStatus } from "../controllers/v3/status.controller";
 
 const webook = Router();
