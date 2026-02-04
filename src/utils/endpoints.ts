@@ -9,8 +9,8 @@ export const ENDPOINTS = {
     ON_NOTIFY: "/hiecm/consent/v3/request/hiu/on-notify",
     CONSENT_FETCH: "/hiecm/consent/v3/fetch",
     CALLING_DATA_PUSH_URL_V3: "/hiecm/data-flow/v3/health-information/request",
-    HIP_PATIENT_SHARE_ON_SHARE: "/api/hiecm/patient-share/v3/on-share",
-    HIP_RUNNING_TOKEN_ON_STATUS: "/api/hiecm/patient-share/v3/running-token/on-status",
+    HIP_PATIENT_SHARE_ON_SHARE: "/hiecm/patient-share/v3/on-share",
+    HIP_RUNNING_TOKEN_ON_STATUS: "/hiecm/patient-share/v3/running-token/on-status",
 
 
     /// m4 endpoints
