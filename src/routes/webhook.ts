@@ -19,7 +19,7 @@ webook.post("/api/v3/hip/health-information/request", healthInformation) // to g
 
 
 // M3 Call back url 
-webook.post("/api/v3/hiu/consent/request/on-init", requestOnInitCallback);
+webook.post("/api/v3/hiu/consent/request/on-init", requestOnInitCallback); // note - harshith
 webook.post("/:requestid/api/v3/hiu/consent/on-fetch", consentOnFetchCallback); ///api/v3/hiu/consent/on-fetch
 webook.post("/api/v3/hiu/consent/request/on-status", receivedConsentRequestStatus); // /api/v3/hiu/consent/request/on-status
 

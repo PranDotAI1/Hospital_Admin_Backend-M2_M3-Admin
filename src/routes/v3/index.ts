@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { consentRequestInitiate, userOnboardingByĂbha } from "../../controllers/v3/registrationOnAbha.controller";
 import { setBridgeUrlforTest } from "../../controllers/v3/testing.controller";
+import { consentInitRequest } from "../../controllers/v3/Consent.controller";
 
 const router = Router();
 
@@ -9,7 +10,7 @@ router.post("/registration", userOnboardingByĂbha);
 router.post("/request/init", userOnboardingByĂbha);
 
 //REQUEST INIT
-router.post("/consent-int", userOnboardingByĂbha); //consentRequestInitiate
+router.post("/consent-int", consentInitRequest);
 router.post("/get-consent-status", consentRequestInitiate);
 
 //Callback URL RECEIVED DATA

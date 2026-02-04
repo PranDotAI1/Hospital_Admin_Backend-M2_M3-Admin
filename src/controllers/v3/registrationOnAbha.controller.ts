@@ -11,18 +11,18 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
             clientSecret: CLIENT_SECRET,
             grantType: GRANT_TYPE,
         };
-
+        console.log(1)
         let random32String = generateUID();
-
+        console.log(2)
         let headers = {
             'Content-Type': 'application/json',
             'REQUEST-ID': random32String,
             'TIMESTAMP': new Date().toISOString(),
             'X-CM-ID': 'sbx',
-        }
-
+        } 
+        console.log(3)
         let url = process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_SESSION.trim();
-
+        console.log(4, url)
         const response = await axios.post(
             url,
             params,
@@ -30,9 +30,10 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
                 headers: headers
             }
         );
+        console.log(5)
         console.log("M3 Step-1 Session API  /hiecm/gateway/v3/sessions Response", response.data)
         if (response.data.accessToken) {
-
+            console.log(6)
             await checkBridgeUrl(response.data.accessToken, GET_URL, req, res, random32String);
             return;
         } else {
@@ -52,7 +53,7 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
     }
 };
 
-export const checkBridgeUrl = async (token: string, url: string, req: any, res: any, random32String: any) => {
+export const checkBridgeUrl = async (token: string, brdgeurl: string, req: any, res: any, random32String: any) => {
     try {
         console.log("M3 Session API  /hiecm/gateway/v3/bridge-services  checkBridgeUrl Step-2");
         let random32String1 = generateUID();
@@ -74,15 +75,16 @@ export const checkBridgeUrl = async (token: string, url: string, req: any, res: 
         );
         console.log("M3 /hiecm/gateway/v3/bridge-services API RESPONSE  status ", response.status)
         console.log("M3 /hiecm/gateway/v3/bridge-services API RESPONSE  checkBridgeUrl Step-2.2 data", response.data)
-        if (response?.data?.bridge?.url != url) {
-            await setBridgeUrl(token, req, res, random32String);
-            return;
-        }
-        else {
-            console.log("M3 /hiecm/gateway/v3/bridge-services Step-2 else response")
-            await setBridgeUrl(token, req, res, random32String);
-            return;
-            //return res.status(response.status).json({ "status": response.status, "error": "getting error from api" + response.data, step: 2 });
+        if (response?.data?.bridge?.url != brdgeurl) {
+          await setBridgeUrl(token, req, res, random32String);
+          return;
+        } else {
+          console.log(
+            "M3 /hiecm/gateway/v3/bridge-services Step-2 else response",
+          );
+          await setBridgeUrl(token, req, res, random32String);
+          return;
+          //return res.status(response.status).json({ "status": response.status, "error": "getting error from api" + response.data, step: 2 });
         }
 
     } catch (error: any) {
@@ -202,7 +204,7 @@ export const consentRequestInitiate = async (req: any, res: any, token: any) => 
                 "purpose": {
                     "text": "Care Management",
                     "code": "CAREMGT",
-                    "refUri": "http://admin.pran.ai/"
+                    "refUri": "https://admin.pran.ai/"
                 },
                 "patient": {
                     "id": input.abha_id //abha address
