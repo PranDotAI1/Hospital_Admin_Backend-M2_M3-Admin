@@ -5,11 +5,12 @@ import {
   generateUID,
   GET_URL,
   GRANT_TYPE,
+  facilityName,
 } from "../../utils/constant";
-import { getConsentRequestStatus } from "./registrationOnAbha.controller";
 import { ENDPOINTS } from "../../utils/endpoints";
 import axios from "axios";
-import { HealthRecordModel } from "../../models/HealthRecord";
+import { ConsentRequestModel } from "../../models/ConsentRequest";
+import { PatientModel } from "../../models/Patient";
 
 const getUrls = {
   sessionToken: process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_SESSION,
@@ -36,7 +37,7 @@ const getIdentifier = () => {
   };
 };
 
-const getSessionToken = async () => {
+export const getSessionToken = async () => {
   try {
     const response = await axios.post(
       getUrls.sessionToken,
@@ -120,25 +121,53 @@ export const consentInitRequest = async (req: Request, res: Response) => {
     console.log("consent api response status", response.status);
 
     if (response.status == 202 || response.status == 200) {
-      const healthRecord = await HealthRecordModel.findOne({
-        hid_address: body.abha_id,
+      let patientDetails: any = {};
+
+      const cleanInput = body.abha_id.replace(/-/g, "");
+      const formattedInput =
+        cleanInput.length === 14
+          ? `${cleanInput.slice(0, 2)}-${cleanInput.slice(2, 6)}-${cleanInput.slice(6, 10)}-${cleanInput.slice(10, 14)}`
+          : body.abha_id;
+
+      const searchCriteria: any[] = [
+        { abhaaddress: body.abha_id },
+        { uhid: body.abha_id },
+        { ABHANumber: cleanInput },
+        { ABHANumber: formattedInput },
+      ];
+
+      const localPatient = await PatientModel.findOne({
+        $or: searchCriteria,
       });
 
-      console.log("healthRecord", healthRecord);
-
-      if (healthRecord) {
-        const updatedHealthRecord = await HealthRecordModel.updateOne(
-          { _id: healthRecord._id },
-          {
-            $set: {
-              status: "Requested",
-              "version_m3.access_token": req.headers["authorization"],
-              "version_m3.requested_data": body,
-            },
-          },
-        );
-        console.log("updatedHealthRecord", updatedHealthRecord);
+      if (localPatient) {
+        patientDetails = {
+          patientName:
+            localPatient.name ||
+            `${localPatient.f_name} ${localPatient.l_name}`,
+          abhaAddress: localPatient.abhaaddress,
+          abhaNumber: localPatient.ABHANumber,
+          gender: localPatient.gender,
+          dob: localPatient.dob,
+        };
       }
+
+      const newConsentRequest = await ConsentRequestModel.create({
+        requestId: headers["REQUEST-ID"],
+        status: "INITIATED",
+        patientAbhaId: body.abha_id,
+
+        ...patientDetails,
+        facilityName: facilityName,
+
+        hiuId: params.consent.hiu.id,
+        requester: params.consent.requester,
+        purpose: params.consent.purpose,
+        hiTypes: params.consent.hiTypes,
+        permission: params.consent.permission,
+      });
+
+      console.log("Created Consent Request:", newConsentRequest);
 
       return res.status(response.status).json({
         status: "REQUESTED",
@@ -153,7 +182,7 @@ export const consentInitRequest = async (req: Request, res: Response) => {
       });
     }
   } catch (error: any) {
-    console.log("consent error", error.response, error.message);
+    console.log("consent error", error.response.data, error.message);
     if (error.response) {
       return res
         .status(error.response.status)
@@ -165,5 +194,32 @@ export const consentInitRequest = async (req: Request, res: Response) => {
     } else {
       return res.status(500).json({ error: error.message, details: error });
     }
+  }
+};
+
+export const getConsentRequests = async (req: Request, res: Response) => {
+  try {
+    const { limit = 25, skip = 0 } = req.query;
+
+    const query: any = {};
+
+    const requests = await ConsentRequestModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip(Number(skip))
+      .limit(Number(limit));
+
+    const total = await ConsentRequestModel.countDocuments(query);
+
+    return res.status(200).json({
+      status: "success",
+      data: requests,
+      total,
+      page: { limit: Number(limit), skip: Number(skip) },
+    });
+  } catch (error: any) {
+    console.error("Error fetching consent requests:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch requests", details: error.message });
   }
 };

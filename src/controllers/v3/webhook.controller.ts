@@ -16,7 +16,7 @@ export const requestOnInitCallback = async (req: any, res: any) => {
         );
         //
         let postData = req.body;
-        console.log("linkTokenGeneration-1 Request ", postData);
+        console.log("linkTokenGeneration-1 Request ", JSON.stringify(postData));
         const latestRecord = await HealthRecordModel.findOne({
             "version_m3.access_token": req.headers["authorization"].split(" ")[1],
         })

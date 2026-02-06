@@ -36,6 +36,14 @@ import {
   cancelVisit,
   getPatientVisitHistory,
 } from "../controllers/v3/opd.controller";
+
+import {
+  registerPatient,
+  linkAbha,
+  mergeAbhaPatient,
+  getPatient,
+  listPatients,
+} from "../controllers/v3/patient.controller";
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
@@ -99,5 +107,11 @@ router.get(
   checkToken,
   getPatientVisitHistory,
 );
+
+router.post("/patient/register", checkToken, registerPatient);
+router.post("/patient/:id/link-abha", checkToken, linkAbha);
+router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);
+router.get("/patient/:id", checkToken, getPatient);
+router.get("/patients", checkToken, listPatients);
 
 export default router;

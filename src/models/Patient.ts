@@ -1,12 +1,14 @@
 import { Schema, model, Document, Types } from "mongoose";
 
 export interface IPatientVisitRef {
-  visitId: Types.ObjectId;
-  tokenNumber: string;
+  visitId?: Types.ObjectId;
+  tokenNumber?: string;
   visitDate: Date;
   visitStatus: string;
   department?: string;
+  departmentId?: Types.ObjectId;
   doctorName?: string;
+  doctorId?: Types.ObjectId;
 }
 
 export interface IPatientInsurance {
@@ -16,14 +18,16 @@ export interface IPatientInsurance {
 }
 
 export interface IPatient extends Document {
+  uhid?: string;
   f_name: string;
   m_name?: string;
   l_name?: string;
   name?: string;
   mobile: string;
-  dob: string;
+  dob?: string;
+  age?: string;
   address?: string;
-  ABHANumber: string;
+  ABHANumber?: string;
   abhaaddress?: string;
   gender?: string;
   status?: string;
@@ -38,18 +42,30 @@ export interface IPatient extends Document {
   email?: string;
   bloodGroup?: string;
   emergencyContact?: string;
+  abhaLinkedAt?: Date;
+  allergies?: string;
+  existingMedicalConditions?: string;
+  ongoingMedications?: string;
+  lastVisitedDoctor?: string;
+  profilePhoto?: string;
 }
 
 const PatientVisitRefSchema = new Schema<IPatientVisitRef>(
   {
-    visitId: { type: Schema.Types.ObjectId, ref: "OPDVisit", required: true },
-    tokenNumber: { type: String, required: true },
+    visitId: { type: Schema.Types.ObjectId },
+    tokenNumber: { type: String },
     visitDate: { type: Date, required: true },
     visitStatus: { type: String, required: true },
     department: { type: String },
+    departmentId: {
+      type: Schema.Types.ObjectId,
+      required: false,
+      ref: "Department",
+    },
     doctorName: { type: String },
+    doctorId: { type: Schema.Types.ObjectId, required: false, ref: "Doctor" },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const PatientInsuranceSchema = new Schema<IPatientInsurance>(
@@ -58,11 +74,17 @@ const PatientInsuranceSchema = new Schema<IPatientInsurance>(
     policyNumber: { type: String, trim: true },
     addedOn: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const PatientSchema = new Schema<IPatient>(
   {
+    uhid: {
+      type: String,
+      unique: true,
+      trim: true,
+      index: true,
+    },
     f_name: {
       type: String,
       required: true,
@@ -87,7 +109,11 @@ const PatientSchema = new Schema<IPatient>(
     },
     dob: {
       type: String,
-      required: true,
+      required: false,
+      trim: true,
+    },
+    age: {
+      type: String,
       trim: true,
     },
     address: {
@@ -96,14 +122,12 @@ const PatientSchema = new Schema<IPatient>(
     },
     ABHANumber: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
-      index: true,
     },
     abhaaddress: {
       type: String,
       trim: true,
-      index: true,
     },
     gender: {
       type: String,
@@ -154,16 +178,29 @@ const PatientSchema = new Schema<IPatient>(
       type: String,
       trim: true,
     },
+    abhaLinkedAt: {
+      type: Date,
+    },
+    allergies: { type: String, trim: true },
+    existingMedicalConditions: { type: String, trim: true },
+    ongoingMedications: { type: String, trim: true },
+    lastVisitedDoctor: {
+      type: String,
+      trim: true,
+    },
+    profilePhoto: {
+      type: String,
+    },
   },
   {
     collection: "Patients",
     strict: true,
     timestamps: { createdAt: false, updatedAt: true },
-  }
+  },
 );
 
-PatientSchema.index({ ABHANumber: 1 }, { unique: true });
-PatientSchema.index({ abhaaddress: 1 });
+PatientSchema.index({ ABHANumber: 1 }, { unique: true, sparse: true });
+PatientSchema.index({ abhaaddress: 1 }, { sparse: true });
 PatientSchema.index({ mobile: 1 });
 
 export const PatientModel = model<IPatient>("Patient", PatientSchema);
