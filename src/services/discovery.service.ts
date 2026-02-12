@@ -175,16 +175,16 @@ export const discoverPatient = async (
   >();
 
   // --- Step 1: Search by ABHA address first (ABHA is verified identifier; not in unverified) ---
-  // const abhaQueries: { abhaaddress: string }[] = [];
-  // if (patientInfo.id?.trim()) {
-  //   abhaQueries.push({ abhaaddress: patientInfo.id.trim() });
-  // }
-  // const abhaFromVerified = (patientInfo.verifiedIdentifiers || []).find((id) =>
-  //   ["ABHA_ADDRESS", "healthId", "NDHM_HEALTH_ID"].includes(id.type),
-  // );
-  // if (abhaFromVerified?.value?.trim()) {
-  //   abhaQueries.push({ abhaaddress: abhaFromVerified.value.trim() });
-  // }
+  const abhaQueries: { abhaaddress: string }[] = [];
+  if (patientInfo.id?.trim()) {
+    abhaQueries.push({ abhaaddress: patientInfo.id.trim() });
+  }
+  const abhaFromVerified = (patientInfo.verifiedIdentifiers || []).find((id) =>
+    ["ABHA_ADDRESS", "healthId", "NDHM_HEALTH_ID"].includes(id.type),
+  );
+  if (abhaFromVerified?.value?.trim()) {
+    abhaQueries.push({ abhaaddress: abhaFromVerified.value.trim() });
+  }
 
   if (abhaQueries.length > 0) {
     const abhaOrQuery = abhaQueries.map((q) => ({
