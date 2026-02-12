@@ -58,6 +58,9 @@ export interface IPatient extends Document {
 
   abdmLinkToken?: IAbdmLinkToken;
   abdmLinkTokenRequestedAt?: Date;
+
+  isMerged?: boolean;
+  mergedToPatient?: Types.ObjectId;
 }
 
 const PatientVisitRefSchema = new Schema<IPatientVisitRef>(
@@ -208,6 +211,8 @@ const PatientSchema = new Schema<IPatient>(
       status: { type: String, enum: ["ACTIVE", "EXPIRED"], default: "ACTIVE" },
     },
     abdmLinkTokenRequestedAt: { type: Date },
+    isMerged: { type: Boolean, default: false },
+    mergedToPatient: { type: Schema.Types.ObjectId, ref: "Patient" },
   },
   {
     collection: "Patients",

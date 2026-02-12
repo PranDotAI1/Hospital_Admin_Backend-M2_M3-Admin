@@ -1,10 +1,15 @@
 import { Request, Response } from "express";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
 import { PatientModel } from "../../models/Patient";
 import { ScanShareVisitModel } from "../../models/ScanShareVisit";
 import { STATUS_CODE } from "../../utils/constant";
 import { CareContextService } from "../../services/carecontext.service";
 import { CareContextModel } from "../../models/CareContext";
+import { VisitPrescriptionModel } from "../../models/VisitPrescription";
+import { VisitSoapNotesModel } from "../../models/VisitSoapNotes";
+import { VisitLabReportModel } from "../../models/VisitLabReport";
+import { VisitDischargeSummaryModel } from "../../models/VisitDischargeSummary";
+import { VisitAssessmentModel } from "../../models/VisitAssessment";
 
 const generateUHID = async (): Promise<string> => {
   const today = new Date();
@@ -139,6 +144,8 @@ export const registerPatient = async (req: Request, res: Response) => {
     if (abhaMatchConditions.length > 0) {
       existingWithAbha = await PatientModel.findOne({
         $or: abhaMatchConditions,
+        isMerged: { $ne: true },
+        status: { $ne: "merged" },
       });
     }
 
@@ -233,7 +240,11 @@ export const registerPatient = async (req: Request, res: Response) => {
     // 3) Payload with NO ABHA: check mobile + name. If matches existing record,
     //    add new visit to that record (merge). Else create new.
     if (!hasAbha && mobile) {
-      const candidatesSameMobile = await PatientModel.find({ mobile }).lean();
+      const candidatesSameMobile = await PatientModel.find({
+        mobile,
+        isMerged: { $ne: true },
+        status: { $ne: "merged" },
+      }).lean();
       const payloadNameNorm = normalizeNameForMatch(fullName);
       const existingByMobileAndName = candidatesSameMobile.find((p: any) => {
         const dbNameNorm = normalizeNameForMatch(
@@ -488,9 +499,17 @@ export const linkAbha = async (req: Request, res: Response) => {
       });
     }
 
-    let patient = await PatientModel.findOne({ uhid: id });
+    let patient = await PatientModel.findOne({
+      uhid: id,
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    });
     if (!patient) {
-      patient = await PatientModel.findById(id);
+      patient = await PatientModel.findOne({
+        _id: id,
+        isMerged: { $ne: true },
+        status: { $ne: "merged" },
+      });
     }
 
     if (!patient) {
@@ -661,6 +680,19 @@ export const getPatient = async (req: Request, res: Response) => {
       patient = await PatientModel.findById(id).lean();
     }
 
+    if (patient && ((patient as any).isMerged || patient.status === "merged")) {
+      console.log(
+        `getPatient: Patient ${patient._id} is merged. Redirecting to ${
+          (patient as any).mergedToPatient
+        }`,
+      );
+      if ((patient as any).mergedToPatient) {
+        patient = await PatientModel.findById(
+          (patient as any).mergedToPatient,
+        ).lean();
+      }
+    }
+
     if (!patient) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
@@ -683,7 +715,10 @@ export const getPatient = async (req: Request, res: Response) => {
 
 export const getAllPatients = async (req: Request, res: Response) => {
   try {
-    const patients = await PatientModel.find({})
+    const patients = await PatientModel.find({
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    })
       .sort({ updatedAt: -1, createdAt: -1 })
       .lean();
 
@@ -721,7 +756,10 @@ export const listPatients = async (req: Request, res: Response) => {
   try {
     const { mobile, abhaNumber, name, page = 1, limit = 20 } = req.query;
 
-    const query: any = {};
+    const query: any = {
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    };
 
     if (mobile) {
       query.mobile = String(mobile);
@@ -766,6 +804,7 @@ export const listPatients = async (req: Request, res: Response) => {
 };
 
 export const mergeAbhaPatient = async (req: Request, res: Response) => {
+  let session: mongoose.ClientSession | undefined;
   try {
     const { uhid, id, abhaNumber, profileDetails } = req.body;
 
@@ -869,43 +908,54 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       sourceId: sourcePatient?._id,
     });
 
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     if (
       sourcePatient &&
       sourcePatient._id.toString() !== targetPatient._id.toString()
     ) {
-      console.log("Merge Debug: ENTERING MERGE BLOCK - Duplicate found");
-      message = "Linked ABHA successfully";
+      console.log(
+        "Merge Debug: SWAPPED LOGIC - Merging NEW (Target) into EXISTING (Source/Master)",
+      );
+      message = "Linked ABHA successfully (Merged into existing ABHA record)";
+
+      const masterPatient = sourcePatient;
+      const victimPatient = targetPatient;
 
       const safeConcat = (
-        targetVal: string | undefined,
-        sourceVal: string | undefined,
+        masterVal: string | undefined,
+        victimVal: string | undefined,
       ) => {
-        if (!targetVal) return sourceVal;
-        if (!sourceVal) return targetVal;
-        if (targetVal.includes(sourceVal)) return targetVal;
-        return `${targetVal}, ${sourceVal}`;
+        if (!masterVal) return victimVal;
+        if (!victimVal) return masterVal;
+        if (masterVal.includes(victimVal)) return masterVal;
+        return `${masterVal}, ${victimVal}`;
       };
 
-      if (sourcePatient.allergies) {
+      // 1. Prepare Update Data for MASTER
+      // Merge Arrays/Strings from Victim -> Master
+      if (victimPatient.allergies) {
         updateData.allergies = safeConcat(
-          targetPatient.allergies,
-          sourcePatient.allergies,
+          masterPatient.allergies,
+          victimPatient.allergies,
         );
       }
-      if (sourcePatient.existingMedicalConditions) {
+      if (victimPatient.existingMedicalConditions) {
         updateData.existingMedicalConditions = safeConcat(
-          targetPatient.existingMedicalConditions,
-          sourcePatient.existingMedicalConditions,
+          masterPatient.existingMedicalConditions,
+          victimPatient.existingMedicalConditions,
         );
       }
-      if (sourcePatient.ongoingMedications) {
+      if (victimPatient.ongoingMedications) {
         updateData.ongoingMedications = safeConcat(
-          targetPatient.ongoingMedications,
-          sourcePatient.ongoingMedications,
+          masterPatient.ongoingMedications,
+          victimPatient.ongoingMedications,
         );
       }
 
-      const mergeField = (field: keyof typeof sourcePatient) => {
+      // Merge other fields from Victim if missing in Master
+      const mergeField = (field: keyof typeof victimPatient) => {
         if (
           [
             "allergies",
@@ -914,62 +964,135 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
           ].includes(field)
         )
           return;
-
-        if (sourcePatient[field] && !updateData[field]) {
-          updateData[field] = sourcePatient[field];
+        // Only if master is missing it AND we haven't already set it from profile (in updateData)
+        if (
+          victimPatient[field] &&
+          !updateData[field] &&
+          !masterPatient[field]
+        ) {
+          updateData[field] = victimPatient[field];
         }
       };
 
-      mergeField("f_name");
-      mergeField("l_name");
       mergeField("mobile");
-      mergeField("dob");
-      mergeField("gender");
-      mergeField("address");
-      mergeField("pincode");
-      mergeField("aadhaarNumber");
       mergeField("email");
+      mergeField("pincode");
+      mergeField("address");
       mergeField("bloodGroup");
       mergeField("emergencyContact");
-      mergeField("lastVisitedDoctor");
+      mergeField("aadhaarNumber");
 
-      if (sourcePatient.abhaaddress && !updateData.abhaaddress)
-        updateData.abhaaddress = sourcePatient.abhaaddress;
-
-      if (sourcePatient.abdmLinkToken?.token) {
-        updateData.abdmLinkToken = sourcePatient.abdmLinkToken;
-      } else if (targetPatient.abdmLinkToken?.token) {
-        updateData.abdmLinkToken = targetPatient.abdmLinkToken;
-      }
-
-      if (sourcePatient.insurance && sourcePatient.insurance.length > 0) {
+      // Append Lists
+      if (victimPatient.insurance && victimPatient.insurance.length > 0) {
         updateData.$addToSet = {
           ...(updateData.$addToSet || {}),
-          insurance: { $each: sourcePatient.insurance },
+          insurance: { $each: victimPatient.insurance },
+        };
+      }
+      // CRITICAL: Move visits from Victim to Master
+      if (victimPatient.visits && victimPatient.visits.length > 0) {
+        updateData.$addToSet = {
+          ...(updateData.$addToSet || {}),
+          visits: { $each: victimPatient.visits },
         };
       }
 
-      if (sourcePatient.visits && sourcePatient.visits.length > 0) {
-        updateData.$addToSet = {
-          ...(updateData.$addToSet || {}),
-          visits: { $each: sourcePatient.visits },
-        };
-      }
+      // 2. Reassign Foreign Keys: VICTIM -> MASTER
+      const collections = [
+        CareContextModel,
+        ScanShareVisitModel,
+        VisitPrescriptionModel,
+        VisitSoapNotesModel,
+        VisitLabReportModel,
+        VisitDischargeSummaryModel,
+        VisitAssessmentModel,
+      ];
 
-      const reassigned = await CareContextModel.updateMany(
-        { patientId: sourcePatient._id },
-        { $set: { patientId: targetPatient._id } },
-      );
-      if (reassigned.modifiedCount > 0) {
-        console.log(
-          "mergeAbhaPatient: Reassigned",
-          reassigned.modifiedCount,
-          "care context(s) from source patient to target",
+      for (const model of collections) {
+        await model.updateMany(
+          { patientId: victimPatient._id },
+          { $set: { patientId: masterPatient._id } },
         );
       }
 
-      await PatientModel.findByIdAndDelete(sourcePatient._id);
+      try {
+        const { ExternalHealthRecordModel } =
+          await import("../../models/ExternalHealthRecord");
+        await ExternalHealthRecordModel.updateMany(
+          { patientId: victimPatient._id },
+          { $set: { patientId: masterPatient._id } },
+        );
+      } catch (e) {}
+
+      try {
+        const { LinkOTPModel } = await import("../../models/LinkOTP");
+        await LinkOTPModel.updateMany(
+          { patientId: victimPatient._id },
+          { $set: { patientId: masterPatient._id } },
+        );
+      } catch (e) {}
+
+      // 3. Mark VICTIM as Merged
+      await PatientModel.findByIdAndUpdate(victimPatient._id, {
+        $set: {
+          status: "merged",
+          isMerged: true,
+          mergedToPatient: masterPatient._id,
+        },
+      });
+
+      // 4. Update MASTER with new data
+      const updatedMaster = await PatientModel.findByIdAndUpdate(
+        masterPatient._id,
+        updateData,
+        { new: true },
+      );
+
+      // 5. Create Care Contexts (for Master) if needed
+      let careContextsCreated = 0;
+      if (updatedMaster?.abhaaddress) {
+        try {
+          const visitIds = new Set<string>();
+          for (const v of updatedMaster.visits || []) {
+            if (v?.visitId) visitIds.add(String(v.visitId));
+          }
+          // Also check ScanShareVisits that are now owned by Master
+          const scanShareVisits = await ScanShareVisitModel.find(
+            { patientId: updatedMaster._id },
+            { _id: 1 },
+          )
+            .lean()
+            .exec();
+          for (const v of scanShareVisits) {
+            if (v?._id) visitIds.add(String(v._id));
+          }
+
+          for (const visitIdStr of visitIds) {
+            // Check uniqueness inside service
+            const cc = await CareContextService.createCareContextForVisit(
+              updatedMaster._id,
+              visitIdStr,
+              ["OPConsultation"],
+            );
+            if (cc) careContextsCreated++;
+          }
+        } catch (ccErr) {
+          console.error("Merge: Care context creation error:", ccErr);
+        }
+      }
+
+      return res.status(STATUS_CODE.SUCCESS).json({
+        status: "success",
+        message: message,
+        data: updatedMaster, // Return MASTER (Old UHID)
+        mergedFrom: victimPatient._id,
+        careContextsCreated,
+      });
     }
+
+    // If no merge needed, commit the empty transaction and close session
+    await session.commitTransaction();
+    session.endSession();
 
     const updatedTarget = await PatientModel.findByIdAndUpdate(
       targetPatient._id,
@@ -984,6 +1107,7 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
         for (const v of updatedTarget.visits || []) {
           if (v?.visitId) visitIds.add(String(v.visitId));
         }
+        // Check for visits reassigned from source patient too
         const scanShareVisits = await ScanShareVisitModel.find(
           { patientId: updatedTarget._id },
           { _id: 1 },
@@ -1032,6 +1156,14 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       careContextsCreated,
     });
   } catch (error: any) {
+    try {
+      if (session?.inTransaction()) {
+        await session.abortTransaction();
+      }
+      session?.endSession();
+    } catch (e) {
+      // Session already ended or invalid
+    }
     console.error("Merge Patient error:", error);
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",

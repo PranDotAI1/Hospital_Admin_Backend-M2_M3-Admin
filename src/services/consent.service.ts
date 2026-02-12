@@ -875,10 +875,10 @@ const lookupPatientDetails = async (
 
     const patient = await PatientModel.findOne({
       $or: [
+        { ABHANumber: formattedInput },
+        { ABHANumber: cleanInput },
         { abhaaddress: abhaId },
         { uhid: abhaId },
-        { ABHANumber: cleanInput },
-        { ABHANumber: formattedInput },
       ],
     });
 

@@ -230,7 +230,11 @@ export const discoverPatient = async (
 
   if (mobile && mobileNorm) {
     const mobilePatients = (await PatientModel.find({
-      $or: [{ mobile }, { mobile: mobileNorm }],
+      $and: [
+        { $or: [{ mobile }, { mobile: mobileNorm }] },
+        { isMerged: { $ne: true } },
+        { status: { $ne: "merged" } },
+      ],
     }).lean()) as unknown as IPatient[];
 
     // Matched records (from mobile). Only MR may come as unverified identifier: when present, match matched records with MR; else return all mobile-matched.

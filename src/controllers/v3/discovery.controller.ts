@@ -255,12 +255,12 @@ export const onLinkInit = async (req: Request, res: Response) => {
         const { abhaAddress, abhaNumber } = extractAbhaFromProfile(profile);
         if (abhaAddress || abhaNumber) {
           const updateData: Record<string, unknown> = {};
-          if (abhaAddress && abhaAddress !== (dbPatient as any).abhaaddress) {
-            updateData.abhaaddress = abhaAddress;
-          }
-          if (abhaNumber && abhaNumber !== (dbPatient as any).ABHANumber) {
-            updateData.ABHANumber = abhaNumber;
-          }
+          // if (abhaAddress && abhaAddress !== (dbPatient as any).abhaaddress) {
+          //   updateData.abhaaddress = abhaAddress;
+          // }
+          // if (abhaNumber && abhaNumber !== (dbPatient as any).ABHANumber) {
+          //   updateData.ABHANumber = abhaNumber;
+          // }
           if (Object.keys(updateData).length > 0) {
             updateData.abhaLinkedAt = new Date();
             await PatientModel.updateOne(
