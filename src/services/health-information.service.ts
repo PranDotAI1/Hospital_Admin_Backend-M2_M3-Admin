@@ -24,7 +24,13 @@ import {
   buildDataPushPayload,
   ABDMKeyMaterial,
 } from "../utils/prepareAndEncryptFhirPayload";
-import { generateUID, X_CM_ID, X_HIP_ID, facilityId } from "../utils/constant";
+import {
+  generateUID,
+  X_CM_ID,
+  X_HIP_ID,
+  facilityId,
+  ENDPOINTS,
+} from "../utils/constant";
 import { AbdmTokenService } from "./abdm.token.service";
 import { ConsentService } from "./consent.service";
 
@@ -610,7 +616,7 @@ const notifyHealthInfoTransfer = async (
       careContextReference: cc.careContextReference,
       hiStatus:
         cc.dataTransferStatus === DataTransferStatus.TRANSFERRED
-          ? "OK"
+          ? "DELIVERED"
           : "ERRORED",
       description:
         cc.dataTransferStatus === DataTransferStatus.TRANSFERRED
@@ -638,7 +644,7 @@ const notifyHealthInfoTransfer = async (
     };
 
     const response = await axios.post(
-      `${process.env.ABDM_BASE_URL}/hiecm/data-flow/v3/health-information/notify`,
+      `${process.env.ABDM_BASE_URL}${ENDPOINTS.HEALTH_INFO_NOTIFY}`,
       payload,
       {
         headers: {

@@ -29,7 +29,8 @@ export const ENDPOINTS = {
   // ============================================
   // SMS Notification (M2)
   // ============================================
-  SMS_NOTIFY: "/hiecm/v0.5/patients/sms/notify",
+  SMS_NOTIFY: "/hiecm/hip/v3/link/patient/links/sms/notify",
+  SMS_NOTIFY2: "/hiecm/hip/v3/link/patient/links/sms/notify2",
 
   // ============================================
   // Consent (M2/M3)

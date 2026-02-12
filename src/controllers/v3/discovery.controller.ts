@@ -203,13 +203,29 @@ export const onLinkInit = async (req: Request, res: Response) => {
 
       const bodyAbha = req.body.abhaAddress ?? req.body.abha_address;
       const profile = {
-        referenceNumber: patientData.referenceNumber ?? patientData.ref_num ?? patientData.reference_number,
-        id: patientData.id ?? patientData.abhaAddress ?? patientData.abha_address ?? bodyAbha,
+        referenceNumber:
+          patientData.referenceNumber ??
+          patientData.ref_num ??
+          patientData.reference_number,
+        id:
+          patientData.id ??
+          patientData.abhaAddress ??
+          patientData.abha_address ??
+          bodyAbha,
         name: patientData.name ?? patientData.display,
         gender: patientData.gender,
-        yearOfBirth: patientData.yearOfBirth != null ? Number(patientData.yearOfBirth) : undefined,
-        verifiedIdentifiers: patientData.verifiedIdentifiers ?? patientData.verified_identifiers ?? [],
-        unverifiedIdentifiers: patientData.unverifiedIdentifiers ?? patientData.unverified_identifiers ?? [],
+        yearOfBirth:
+          patientData.yearOfBirth != null
+            ? Number(patientData.yearOfBirth)
+            : undefined,
+        verifiedIdentifiers:
+          patientData.verifiedIdentifiers ??
+          patientData.verified_identifiers ??
+          [],
+        unverifiedIdentifiers:
+          patientData.unverifiedIdentifiers ??
+          patientData.unverified_identifiers ??
+          [],
       } as LinkInitProfile;
 
       console.log(
@@ -247,18 +263,34 @@ export const onLinkInit = async (req: Request, res: Response) => {
           }
           if (Object.keys(updateData).length > 0) {
             updateData.abhaLinkedAt = new Date();
-            await PatientModel.updateOne({ _id: dbPatient._id }, { $set: updateData });
+            await PatientModel.updateOne(
+              { _id: dbPatient._id },
+              { $set: updateData },
+            );
             if (careContextRefs?.length && abhaAddress) {
               await CareContextModel.updateMany(
-                { patientId: dbPatient._id, careContextReference: { $in: careContextRefs } },
+                {
+                  patientId: dbPatient._id,
+                  careContextReference: { $in: careContextRefs },
+                },
                 { $set: { abhaAddress } },
               );
             }
-            const refreshedPatient = await PatientModel.findById(dbPatient._id).lean();
-            if (refreshedPatient && !CareContextService.isLinkTokenValid(refreshedPatient as any)) {
+            const refreshedPatient = await PatientModel.findById(
+              dbPatient._id,
+            ).lean();
+            if (
+              refreshedPatient &&
+              !CareContextService.isLinkTokenValid(refreshedPatient as any)
+            ) {
               setImmediate(() => {
-                CareContextService.requestLinkToken(refreshedPatient as any).catch((err) =>
-                  console.warn("Discovery: link token request (post-ABHA persist) failed:", err?.message),
+                CareContextService.requestLinkToken(
+                  refreshedPatient as any,
+                ).catch((err) =>
+                  console.warn(
+                    "Discovery: link token request (post-ABHA persist) failed:",
+                    err?.message,
+                  ),
                 );
               });
             }

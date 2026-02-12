@@ -44,6 +44,7 @@ import {
   getPatient,
   listPatients,
   getAllPatients,
+  sendDeepLinkSms,
 } from "../controllers/v3/patient.controller";
 import {
   recordPrescription,
@@ -127,6 +128,7 @@ router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);
 router.get("/patient/:id", checkToken, getPatient);
 router.get("/patients/all", checkToken, getAllPatients);
 router.get("/patients", checkToken, listPatients);
+router.post("/patient/:id/notify2", checkToken, sendDeepLinkSms);
 
 router.post(
   "/visit/:visitId/clinical/prescription",
@@ -162,7 +164,11 @@ router.post(
   recordImmunization,
 );
 
-router.post("/visit/:visitId/clinical/assessment", checkToken, recordAssessment);
+router.post(
+  "/visit/:visitId/clinical/assessment",
+  checkToken,
+  recordAssessment,
+);
 
 router.get("/visit/:visitId/clinical/assessment", checkToken, getAssessment);
 

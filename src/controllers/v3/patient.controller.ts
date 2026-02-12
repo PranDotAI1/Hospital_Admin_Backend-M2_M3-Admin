@@ -603,6 +603,55 @@ export const linkAbha = async (req: Request, res: Response) => {
   }
 };
 
+export const sendDeepLinkSms = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const patient = await PatientModel.findById(id);
+
+    if (!patient) {
+      return res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Patient not found",
+      });
+    }
+
+    if (!patient.mobile) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Patient does not have a mobile number",
+      });
+    }
+
+    // This is specifically for patients WITHOUT an ABHA address who need to install the app
+    if (patient.abhaaddress || patient.ABHANumber) {
+      // Optional: We could allow it as a reminder, but the primary use case is "No ABHA"
+      // console.log("Sending Deep Link SMS to patient who already has ABHA linked (Reminder/Re-install)");
+    }
+
+    const { SmsNotificationService } =
+      await import("../../services/sms.notification.service");
+    const success = await SmsNotificationService.sendSmsNotify2(patient.mobile);
+
+    if (success) {
+      return res.status(STATUS_CODE.SUCCESS).json({
+        status: "success",
+        message: "Deep Link SMS (notify2) sent successfully",
+      });
+    } else {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Failed to send Deep Link SMS",
+      });
+    }
+  } catch (error: any) {
+    console.error("Send Deep Link SMS error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to send Deep Link SMS",
+    });
+  }
+};
+
 export const getPatient = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
