@@ -447,21 +447,36 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           const patientName =
             patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
 
-          onConfirmPayload.patient = [
-            {
+          // Group contexts by hiType to support multiple types in one confirmation
+          const contextsByType = new Map<string, typeof linkedContexts>();
+
+          for (const cc of linkedContexts) {
+            const types =
+              cc.hiTypes && cc.hiTypes.length > 0
+                ? cc.hiTypes
+                : ["Prescription"]; // Default fallback
+            for (const type of types) {
+              if (!contextsByType.has(type)) {
+                contextsByType.set(type, []);
+              }
+              contextsByType.get(type)?.push(cc);
+            }
+          }
+
+          onConfirmPayload.patient = [];
+
+          for (const [type, contexts] of contextsByType) {
+            onConfirmPayload.patient.push({
               referenceNumber: patient.uhid || patient._id.toString(),
               display: patientName,
-              careContexts: linkedContexts.map((cc) => ({
+              careContexts: contexts.map((cc) => ({
                 referenceNumber: cc.careContextReference,
                 display: cc.display,
               })),
-              hiType:
-                linkedContexts.length > 0
-                  ? linkedContexts[0].hiTypes[0]
-                  : "Prescription",
-              count: linkedContexts.length,
-            },
-          ];
+              hiType: type,
+              count: contexts.length,
+            });
+          }
 
           console.log(
             "Discovery: Linked",
