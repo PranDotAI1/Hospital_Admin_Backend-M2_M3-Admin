@@ -17,6 +17,13 @@ export interface IPatientInsurance {
   addedOn?: Date;
 }
 
+export interface IAbdmLinkToken {
+  token: string;
+  issuedAt: Date;
+  expiresAt: Date;
+  status: "ACTIVE" | "EXPIRED";
+}
+
 export interface IPatient extends Document {
   uhid?: string;
   f_name: string;
@@ -48,6 +55,9 @@ export interface IPatient extends Document {
   ongoingMedications?: string;
   lastVisitedDoctor?: string;
   profilePhoto?: string;
+
+  abdmLinkToken?: IAbdmLinkToken;
+  abdmLinkTokenRequestedAt?: Date;
 }
 
 const PatientVisitRefSchema = new Schema<IPatientVisitRef>(
@@ -83,7 +93,6 @@ const PatientSchema = new Schema<IPatient>(
       type: String,
       unique: true,
       trim: true,
-      index: true,
     },
     f_name: {
       type: String,
@@ -191,6 +200,14 @@ const PatientSchema = new Schema<IPatient>(
     profilePhoto: {
       type: String,
     },
+    // ABDM Link Token for Care Context linking
+    abdmLinkToken: {
+      token: { type: String, trim: true },
+      issuedAt: { type: Date },
+      expiresAt: { type: Date },
+      status: { type: String, enum: ["ACTIVE", "EXPIRED"], default: "ACTIVE" },
+    },
+    abdmLinkTokenRequestedAt: { type: Date },
   },
   {
     collection: "Patients",
@@ -202,5 +219,6 @@ const PatientSchema = new Schema<IPatient>(
 PatientSchema.index({ ABHANumber: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ abhaaddress: 1 }, { sparse: true });
 PatientSchema.index({ mobile: 1 });
+PatientSchema.index({ uhid: 1 }, { sparse: true });
 
 export const PatientModel = model<IPatient>("Patient", PatientSchema);

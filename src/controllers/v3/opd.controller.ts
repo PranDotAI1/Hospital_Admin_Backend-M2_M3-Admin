@@ -2,8 +2,12 @@ import axios from "axios";
 import QRCode from "qrcode";
 import { Request, Response } from "express";
 import { Types } from "mongoose";
-import { OPDVisitModel, VisitStatus, IOPDVisit } from "../../models/OPDVisit";
-import { DailyOpdQueueModel } from "../../models/DailyOpdQueue";
+import {
+  ScanShareVisitModel,
+  ScanShareVisitStatus,
+  IScanShareVisit,
+} from "../../models/ScanShareVisit";
+import { ScanShareDailyQueueModel } from "../../models/ScanShareDailyQueue";
 import { PatientModel, IPatientVisitRef } from "../../models/Patient";
 import {
   generateUID,
@@ -12,6 +16,7 @@ import {
 } from "../../utils/constant";
 import { ENDPOINTS } from "../../utils/endpoints";
 import { STATUS_CODE } from "../../utils/constant";
+import { CareContextService } from "../../services/carecontext.service";
 
 const getTodayDateString = (): string => {
   const today = new Date();
@@ -137,7 +142,7 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
     const endOfToday = new Date(todayDate);
     endOfToday.setHours(23, 59, 59, 999);
 
-    const existingVisit = await OPDVisitModel.findOne({
+    const existingVisit = await ScanShareVisitModel.findOne({
       abhaAddress: abhaAddress,
       visitDate: {
         $gte: startOfToday,
@@ -155,20 +160,20 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
         "Token:",
         existingVisit.tokenNumber,
         "Status:",
-        existingStatus
+        existingStatus,
       );
 
       if (
-        existingStatus === VisitStatus.COMPLETED ||
-        existingStatus === VisitStatus.CANCELLED ||
-        existingStatus === VisitStatus.MISSED ||
-        existingStatus === VisitStatus.REGISTERED
+        existingStatus === ScanShareVisitStatus.COMPLETED ||
+        existingStatus === ScanShareVisitStatus.CANCELLED ||
+        existingStatus === ScanShareVisitStatus.MISSED ||
+        existingStatus === ScanShareVisitStatus.REGISTERED
       ) {
         console.log(
-          `Visit status is ${existingStatus}, allowing new token generation`
+          `Visit status is ${existingStatus}, allowing new token generation`,
         );
       } else {
-        const queueDoc = await DailyOpdQueueModel.findOne({
+        const queueDoc = await ScanShareDailyQueueModel.findOne({
           date: todayDate,
           counterId: context,
         });
@@ -177,16 +182,15 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
 
         if (currentServingToken > existingTokenNum) {
           console.log(
-            `Token ${existingVisit.tokenNumber} missed. Current serving: ${currentServingToken}. Marking as MISSED and issuing new token.`
+            `Token ${existingVisit.tokenNumber} missed. Current serving: ${currentServingToken}. Marking as MISSED and issuing new token.`,
           );
 
-          await OPDVisitModel.findByIdAndUpdate(existingVisit._id, {
-            $set: { visitStatus: VisitStatus.MISSED },
+          await ScanShareVisitModel.findByIdAndUpdate(existingVisit._id, {
+            $set: { visitStatus: ScanShareVisitStatus.MISSED },
           });
-
         } else {
           console.log(
-            `Token ${existingVisit.tokenNumber} still valid. Current serving: ${currentServingToken}. Returning existing token.`
+            `Token ${existingVisit.tokenNumber} still valid. Current serving: ${currentServingToken}. Returning existing token.`,
           );
 
           await callAbdmOnShare(
@@ -195,14 +199,14 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
             existingVisit.tokenNumber,
             requestId,
             req,
-            authorization
+            authorization,
           );
           return;
         }
       }
     }
 
-    const queueDoc = await DailyOpdQueueModel.findOneAndUpdate(
+    const queueDoc = await ScanShareDailyQueueModel.findOneAndUpdate(
       { date: todayDate, counterId: context },
       { $inc: { lastIssuedToken: 1 } },
       {
@@ -233,9 +237,9 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
 
     const metaData = webhookBody?.metaData || {};
 
-    const opdVisitData: Partial<IOPDVisit> = {
+    const scanShareVisitData: Partial<IScanShareVisit> = {
       tokenNumber,
-      visitStatus: VisitStatus.PENDING,
+      visitStatus: ScanShareVisitStatus.PENDING,
       visitDate: new Date(),
       counterId: context,
       abhaAddress: abhaAddress,
@@ -262,10 +266,10 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
           : undefined,
     };
 
-    const opdVisit = await OPDVisitModel.create(opdVisitData);
+    const scanShareVisit = await ScanShareVisitModel.create(scanShareVisitData);
     console.log(
-      "OPDVisit created:",
-      opdVisit._id,
+      "ScanShareVisit created:",
+      scanShareVisit._id,
       "Token:",
       tokenNumber,
       "Counter:",
@@ -357,8 +361,8 @@ export const getPendingTokens = async (req: Request, res: Response) => {
     const endOfToday = new Date();
     endOfToday.setHours(23, 59, 59, 999);
 
-    const pendingVisits = await OPDVisitModel.find({
-      visitStatus: VisitStatus.PENDING,
+    const pendingVisits = await ScanShareVisitModel.find({
+      visitStatus: ScanShareVisitStatus.PENDING,
       visitDate: {
         $gte: startOfToday,
         $lte: endOfToday,
@@ -415,14 +419,14 @@ export const completeRegistration = async (req: Request, res: Response) => {
     const mobile = sanitizeString(manualFields.mobile, 15);
     if (mobile && !isValidMobile(mobile)) {
       validationErrors.push(
-        "Invalid mobile number format (must be 10 digits starting with 6-9)"
+        "Invalid mobile number format (must be 10 digits starting with 6-9)",
       );
     }
 
     const gender = sanitizeString(manualFields.gender, 10);
     if (gender && !isValidGender(gender)) {
       validationErrors.push(
-        "Invalid gender (must be M, F, O, Male, Female, or Other)"
+        "Invalid gender (must be M, F, O, Male, Female, or Other)",
       );
     }
 
@@ -442,7 +446,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
       consultationFee === undefined
     ) {
       validationErrors.push(
-        "Invalid consultation fee (must be a valid number)"
+        "Invalid consultation fee (must be a valid number)",
       );
     }
     if (consultationFee !== undefined && consultationFee < 0) {
@@ -468,23 +472,22 @@ export const completeRegistration = async (req: Request, res: Response) => {
       });
     }
 
-    const opdVisit = await OPDVisitModel.findOne({
+    const scanShareVisit = await ScanShareVisitModel.findOne({
       _id: visitId,
-      // visitStatus: VisitStatus.PENDING,
     });
 
-    if (!opdVisit) {
+    if (!scanShareVisit) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
         message: "Pending visit not found for the given token number",
       });
     }
 
-    const updateData: Partial<IOPDVisit> = {
+    const updateData: Partial<IScanShareVisit> = {
       visitStatus:
-        opdVisit?.visitStatus === VisitStatus.COMPLETED
-          ? VisitStatus.COMPLETED
-          : VisitStatus.REGISTERED,
+        scanShareVisit?.visitStatus === ScanShareVisitStatus.COMPLETED
+          ? ScanShareVisitStatus.COMPLETED
+          : ScanShareVisitStatus.REGISTERED,
     };
 
     const department = sanitizeString(manualFields.department, 100);
@@ -553,26 +556,26 @@ export const completeRegistration = async (req: Request, res: Response) => {
 
     if (gender) updateData.gender = gender;
 
-    const updatedVisit = await OPDVisitModel.findByIdAndUpdate(
-      opdVisit._id,
+    const updatedVisit = await ScanShareVisitModel.findByIdAndUpdate(
+      scanShareVisit._id,
       { $set: updateData },
-      { new: true }
+      { new: true },
     );
 
-    if (opdVisit.counterId && opdVisit.tokenNumber) {
+    if (scanShareVisit.counterId && scanShareVisit.tokenNumber) {
       const todayDate = getTodayDateString();
-      const tokenNum = parseInt(opdVisit.tokenNumber, 10);
+      const tokenNum = parseInt(scanShareVisit.tokenNumber, 10);
 
       if (!isNaN(tokenNum)) {
-        await DailyOpdQueueModel.findOneAndUpdate(
-          { date: todayDate, counterId: opdVisit.counterId },
+        await ScanShareDailyQueueModel.findOneAndUpdate(
+          { date: todayDate, counterId: scanShareVisit.counterId },
           { $set: { currentServingToken: tokenNum } },
-          { upsert: false }
+          { upsert: false },
         );
       }
     }
 
-    if (updatedVisit && opdVisit.abhaNumber) {
+    if (updatedVisit && scanShareVisit.abhaNumber) {
       try {
         const visitRef: IPatientVisitRef = {
           visitId: updatedVisit._id as Types.ObjectId,
@@ -583,7 +586,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
           doctorName: updatedVisit.doctorName,
         };
 
-        const fullName = updatedVisit.name || opdVisit.name || "";
+        const fullName = updatedVisit.name || scanShareVisit.name || "";
         const nameParts = fullName.trim().split(/\s+/);
         const firstName = nameParts[0] || "";
         const middleName =
@@ -592,7 +595,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
           nameParts.length > 1 ? nameParts[nameParts.length - 1] : undefined;
 
         let addressString = "";
-        const addr = updatedVisit.address || opdVisit.address;
+        const addr = updatedVisit.address || scanShareVisit.address;
         if (addr) {
           const parts = [
             addr.line,
@@ -604,7 +607,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
         }
 
         const existingPatient = await PatientModel.findOne({
-          ABHANumber: opdVisit.abhaNumber,
+          ABHANumber: scanShareVisit.abhaNumber,
         });
 
         const visitInsurance = updatedVisit.insurance;
@@ -620,13 +623,15 @@ export const completeRegistration = async (req: Request, res: Response) => {
             const insuranceExists = existingInsurances.some(
               (ins) =>
                 ins.provider === visitInsurance?.provider &&
-                ins.policyNumber === visitInsurance?.policyNumber
+                ins.policyNumber === visitInsurance?.policyNumber,
             );
             shouldAddInsurance = !insuranceExists;
           }
 
           const updateOps: any = {
-            $push: { visits: visitRef },
+            $push: {
+              visits: { $each: [visitRef], $position: 0 },
+            },
             $set: {
               lastVisitDate: updatedVisit.visitDate,
               ...(fullName && { name: fullName }),
@@ -635,11 +640,14 @@ export const completeRegistration = async (req: Request, res: Response) => {
               ...(updatedVisit.gender && { gender: updatedVisit.gender }),
               ...(addressString && { address: addressString }),
               ...(addr?.pincode && { pincode: addr.pincode }),
-              ...(opdVisit.abhaAddress && {
-                abhaaddress: opdVisit.abhaAddress,
+              ...(scanShareVisit.abhaAddress && {
+                abhaaddress: scanShareVisit.abhaAddress,
               }),
               ...(updatedVisit.aadhaarNumber && {
                 aadhaarNumber: updatedVisit.aadhaarNumber,
+              }),
+              ...(existingPatient.abdmLinkToken?.token && {
+                abdmLinkToken: existingPatient.abdmLinkToken,
               }),
             },
             $inc: { totalVisits: 1 },
@@ -672,15 +680,17 @@ export const completeRegistration = async (req: Request, res: Response) => {
             m_name: middleName,
             l_name: lastName,
             name: fullName || "Unknown",
-            mobile: updatedVisit.mobile || opdVisit.mobile || "0000000000",
-            dob: updatedVisit.dob || opdVisit.dob || "1900-01-01",
+            mobile:
+              updatedVisit.mobile || scanShareVisit.mobile || "0000000000",
+            dob: updatedVisit.dob || scanShareVisit.dob || "1900-01-01",
             address: addressString,
-            ABHANumber: opdVisit.abhaNumber,
-            abhaaddress: opdVisit.abhaAddress,
-            gender: updatedVisit.gender || opdVisit.gender,
+            ABHANumber: scanShareVisit.abhaNumber,
+            abhaaddress: scanShareVisit.abhaAddress,
+            gender: updatedVisit.gender || scanShareVisit.gender,
             status: "active",
             pincode: addr?.pincode,
-            aadhaarNumber: updatedVisit.aadhaarNumber || opdVisit.aadhaarNumber,
+            aadhaarNumber:
+              updatedVisit.aadhaarNumber || scanShareVisit.aadhaarNumber,
             visits: [visitRef],
             lastVisitDate: updatedVisit.visitDate,
             totalVisits: 1,
@@ -690,13 +700,30 @@ export const completeRegistration = async (req: Request, res: Response) => {
           console.log("New patient record created:", newPatient._id);
         }
 
-        await OPDVisitModel.findByIdAndUpdate(updatedVisit._id, {
+        await ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
           $set: { patientId: patientId },
         });
+
+        try {
+          const careContext =
+            await CareContextService.createCareContextForVisit(
+              patientId,
+              updatedVisit._id,
+              ["OPConsultation"],
+            );
+          if (careContext) {
+            console.log(
+              "CareContext created for Scan & Share visit:",
+              careContext.careContextReference,
+            );
+          }
+        } catch (ccError) {
+          console.error("CareContext creation error (Scan & Share):", ccError);
+        }
       } catch (patientError: any) {
         console.error("Error updating patient record:", {
           message: patientError.message,
-          abhaNumber: opdVisit.abhaNumber,
+          abhaNumber: scanShareVisit.abhaNumber,
         });
       }
     }
@@ -723,7 +750,7 @@ export const queueStatus = async (req: Request, res: Response) => {
   try {
     console.log(
       "Queue Status request received:",
-      JSON.stringify(req.body, null, 2)
+      JSON.stringify(req.body, null, 2),
     );
 
     res.status(202).json({
@@ -744,7 +771,7 @@ export const queueStatus = async (req: Request, res: Response) => {
     }
 
     const todayDate = getTodayDateString();
-    const queueDoc = await DailyOpdQueueModel.findOne({
+    const queueDoc = await ScanShareDailyQueueModel.findOne({
       date: todayDate,
       counterId: context,
     });
@@ -754,7 +781,7 @@ export const queueStatus = async (req: Request, res: Response) => {
         "Queue not found for context:",
         context,
         "date:",
-        todayDate
+        todayDate,
       );
       await callAbdmRunningTokenStatus(context, "0", 10, requestId, req);
       return;
@@ -770,7 +797,7 @@ export const queueStatus = async (req: Request, res: Response) => {
       currentServingToken,
       avgServiceTime,
       requestId,
-      req
+      req,
     );
   } catch (error: any) {
     console.error("Queue Status error:", {
@@ -786,7 +813,7 @@ const callAbdmRunningTokenStatus = async (
   tokenNumber: string,
   avgServiceTime: number,
   requestId: string,
-  req: Request
+  req: Request,
 ) => {
   try {
     const random32String = generateUID();
@@ -816,13 +843,13 @@ const callAbdmRunningTokenStatus = async (
           Authorization: req.headers["authorization"] || "",
         },
         timeout: 10000,
-      }
+      },
     );
 
     console.log(
       "ABDM running token status response:",
       statusResponse.status,
-      statusResponse.data
+      statusResponse.data,
     );
   } catch (statusError: any) {
     console.error("ABDM running token status call failed (non-blocking):", {
@@ -847,13 +874,13 @@ export const nextPatient = async (req: Request, res: Response) => {
 
     const todayDate = getTodayDateString();
 
-    const queueDoc = await DailyOpdQueueModel.findOneAndUpdate(
+    const queueDoc = await ScanShareDailyQueueModel.findOneAndUpdate(
       { date: todayDate, counterId: counterId },
       { $inc: { currentServingToken: 1 } },
       {
         upsert: false,
         new: true,
-      }
+      },
     );
 
     if (!queueDoc) {
@@ -894,7 +921,7 @@ export const getQueueStatusDetails = async (req: Request, res: Response) => {
       query.counterId = counterId;
     }
 
-    const queueDocs = await DailyOpdQueueModel.find(query).lean();
+    const queueDocs = await ScanShareDailyQueueModel.find(query).lean();
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
@@ -938,7 +965,7 @@ export const getTokenDetails = async (req: Request, res: Response) => {
       queryDateEnd = todayEnd;
     }
 
-    const visit = await OPDVisitModel.findOne({
+    const visit = await ScanShareVisitModel.findOne({
       tokenNumber: String(tokenNumber),
       visitDate: {
         $gte: queryDateStart,
@@ -979,13 +1006,13 @@ export const updateCurrentServing = async (req: Request, res: Response) => {
 
     const todayDate = getTodayDateString();
 
-    const queueDoc = await DailyOpdQueueModel.findOneAndUpdate(
+    const queueDoc = await ScanShareDailyQueueModel.findOneAndUpdate(
       { date: todayDate, counterId: counterId },
       { $set: { currentServingToken: Number(currentServingToken) } },
       {
         upsert: false,
         new: true,
-      }
+      },
     );
 
     if (!queueDoc) {
@@ -1065,7 +1092,7 @@ export const generateQrCodePreview = async (req: Request, res: Response) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="qr-code-${counterIdStr}.png"`
+      `inline; filename="qr-code-${counterIdStr}.png"`,
     );
 
     return res.status(STATUS_CODE.SUCCESS).send(qrCodeBuffer);
@@ -1092,7 +1119,7 @@ export const getOPDStats = async (req: Request, res: Response) => {
       },
     };
 
-    const stats = await OPDVisitModel.aggregate([
+    const stats = await ScanShareVisitModel.aggregate([
       { $match: matchQuery },
       {
         $group: {
@@ -1100,27 +1127,47 @@ export const getOPDStats = async (req: Request, res: Response) => {
           total: { $sum: 1 },
           pending: {
             $sum: {
-              $cond: [{ $eq: ["$visitStatus", VisitStatus.PENDING] }, 1, 0],
+              $cond: [
+                { $eq: ["$visitStatus", ScanShareVisitStatus.PENDING] },
+                1,
+                0,
+              ],
             },
           },
           registered: {
             $sum: {
-              $cond: [{ $eq: ["$visitStatus", VisitStatus.REGISTERED] }, 1, 0],
+              $cond: [
+                { $eq: ["$visitStatus", ScanShareVisitStatus.REGISTERED] },
+                1,
+                0,
+              ],
             },
           },
           completed: {
             $sum: {
-              $cond: [{ $eq: ["$visitStatus", VisitStatus.COMPLETED] }, 1, 0],
+              $cond: [
+                { $eq: ["$visitStatus", ScanShareVisitStatus.COMPLETED] },
+                1,
+                0,
+              ],
             },
           },
           cancelled: {
             $sum: {
-              $cond: [{ $eq: ["$visitStatus", VisitStatus.CANCELLED] }, 1, 0],
+              $cond: [
+                { $eq: ["$visitStatus", ScanShareVisitStatus.CANCELLED] },
+                1,
+                0,
+              ],
             },
           },
           missed: {
             $sum: {
-              $cond: [{ $eq: ["$visitStatus", VisitStatus.MISSED] }, 1, 0],
+              $cond: [
+                { $eq: ["$visitStatus", ScanShareVisitStatus.MISSED] },
+                1,
+                0,
+              ],
             },
           },
         },
@@ -1172,14 +1219,14 @@ export const getAllVisits = async (req: Request, res: Response) => {
     //   validationErrors.push(`Limit cannot exceed ${MAX_LIMIT}`);
     // }
 
-    const validStatuses = Object.values(VisitStatus) as string[];
+    const validStatuses = Object.values(ScanShareVisitStatus) as string[];
     let normalizedStatus: string | undefined;
 
     if (status) {
       const statusStr = String(status).toUpperCase().trim();
       if (statusStr !== "ALL" && !validStatuses.includes(statusStr)) {
         validationErrors.push(
-          `Invalid status. Must be one of: ${validStatuses.join(", ")}, or ALL`
+          `Invalid status. Must be one of: ${validStatuses.join(", ")}, or ALL`,
         );
       } else if (statusStr !== "ALL") {
         normalizedStatus = statusStr;
@@ -1255,12 +1302,12 @@ export const getAllVisits = async (req: Request, res: Response) => {
     const safeLimit = Math.min(Math.max(1, limitNum), MAX_LIMIT);
     const skip = (safePage - 1) * safeLimit;
     const [visits, total] = await Promise.all([
-      OPDVisitModel.find(query)
+      ScanShareVisitModel.find(query)
         .sort({ visitDate: -1, tokenNumber: -1 })
         .skip(skip)
         .limit(safeLimit)
         .lean(),
-      OPDVisitModel.countDocuments(query),
+      ScanShareVisitModel.countDocuments(query),
     ]);
 
     const totalPages = Math.ceil(total / safeLimit);
@@ -1301,7 +1348,7 @@ export const cancelVisit = async (req: Request, res: Response) => {
       });
     }
 
-    const visit = await OPDVisitModel.findById(id);
+    const visit = await ScanShareVisitModel.findById(id);
 
     if (!visit) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
@@ -1311,8 +1358,8 @@ export const cancelVisit = async (req: Request, res: Response) => {
     }
 
     if (
-      visit.visitStatus === VisitStatus.COMPLETED ||
-      visit.visitStatus === VisitStatus.CANCELLED
+      visit.visitStatus === ScanShareVisitStatus.COMPLETED ||
+      visit.visitStatus === ScanShareVisitStatus.CANCELLED
     ) {
       return res.status(STATUS_CODE.ERROR).json({
         status: "error",
@@ -1320,7 +1367,7 @@ export const cancelVisit = async (req: Request, res: Response) => {
       });
     }
 
-    visit.visitStatus = VisitStatus.CANCELLED;
+    visit.visitStatus = ScanShareVisitStatus.CANCELLED;
     await visit.save();
 
     return res.status(STATUS_CODE.SUCCESS).json({
@@ -1348,7 +1395,7 @@ export const getPatientVisitHistory = async (req: Request, res: Response) => {
       });
     }
 
-    const visits = await OPDVisitModel.find({ abhaAddress })
+    const visits = await ScanShareVisitModel.find({ abhaAddress })
       .sort({ visitDate: -1 })
       .lean();
 

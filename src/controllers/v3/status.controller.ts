@@ -1,6 +1,6 @@
 import axios from "axios";
 import { Request, Response } from "express";
-import { DailyOpdQueueModel } from "../../models/DailyOpdQueue";
+import { ScanShareDailyQueueModel } from "../../models/ScanShareDailyQueue";
 import { generateUID } from "../../utils/constant";
 
 const getTodayDateString = (): string => {
@@ -57,7 +57,7 @@ export const handleRunningTokenStatus = async (
     }
 
     const todayDate = getTodayDateString();
-    const queueDoc = await DailyOpdQueueModel.findOne({
+    const queueDoc = await ScanShareDailyQueueModel.findOne({
       date: todayDate,
       counterId: context,
     });

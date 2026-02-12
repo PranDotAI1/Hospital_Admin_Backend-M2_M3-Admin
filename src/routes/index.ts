@@ -43,7 +43,21 @@ import {
   mergeAbhaPatient,
   getPatient,
   listPatients,
+  getAllPatients,
 } from "../controllers/v3/patient.controller";
+import {
+  recordPrescription,
+  recordSoapNotes,
+  recordLabResults,
+  recordDischargeSummary,
+  recordImmunization,
+  getPrescription,
+  getSoapNotes,
+  getLabResults,
+  getDischargeSummary,
+  getAssessment,
+  recordAssessment,
+} from "../controllers/v3/visit.clinical.controller";
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
@@ -87,7 +101,6 @@ router.get("/abha/user/notify-response/:id", checkToken, userNotifyResponse);
 
 //Webhook hit
 router.post("/token/generate-token", checkToken, linkTokenGeneration);
-//router.post("/v3/consent/request/hip/notify", hipNotifiy);
 
 router.get("/opd/pending-tokens", checkToken, getPendingTokens);
 router.post("/opd/complete-registration/:id", checkToken, completeRegistration);
@@ -112,6 +125,153 @@ router.post("/patient/register", checkToken, registerPatient);
 router.post("/patient/:id/link-abha", checkToken, linkAbha);
 router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);
 router.get("/patient/:id", checkToken, getPatient);
+router.get("/patients/all", checkToken, getAllPatients);
 router.get("/patients", checkToken, listPatients);
+
+router.post(
+  "/visit/:visitId/clinical/prescription",
+  checkToken,
+  recordPrescription,
+);
+router.get(
+  "/visit/:visitId/clinical/prescription",
+  checkToken,
+  getPrescription,
+);
+router.post("/visit/:visitId/clinical/soap-notes", checkToken, recordSoapNotes);
+router.get("/visit/:visitId/clinical/soap-notes", checkToken, getSoapNotes);
+router.post(
+  "/visit/:visitId/clinical/lab-results",
+  checkToken,
+  recordLabResults,
+);
+router.get("/visit/:visitId/clinical/lab-results", checkToken, getLabResults);
+router.post(
+  "/visit/:visitId/clinical/discharge-summary",
+  checkToken,
+  recordDischargeSummary,
+);
+router.get(
+  "/visit/:visitId/clinical/discharge-summary",
+  checkToken,
+  getDischargeSummary,
+);
+router.post(
+  "/visit/:visitId/clinical/immunization",
+  checkToken,
+  recordImmunization,
+);
+
+router.post("/visit/:visitId/clinical/assessment", checkToken, recordAssessment);
+
+router.get("/visit/:visitId/clinical/assessment", checkToken, getAssessment);
+
+import * as CareContextController from "../controllers/v3/carecontext.controller";
+import { SmsNotificationService } from "../services/sms.notification.service";
+
+import {
+  consentInitRequest,
+  getConsentRequests,
+  getConsentStatus,
+  getConsentArtefacts,
+  fetchArtefactDetails,
+} from "../controllers/v3/Consent.controller";
+
+router.get(
+  "/carecontext/pending",
+  checkToken,
+  CareContextController.listPending,
+);
+router.get(
+  "/carecontext/patient/:patientId",
+  checkToken,
+  CareContextController.listByPatient,
+);
+router.get("/carecontext/:id", checkToken, CareContextController.getById);
+router.post(
+  "/carecontext/create",
+  checkToken,
+  CareContextController.createCareContext,
+);
+router.post(
+  "/carecontext/:id/link",
+  checkToken,
+  CareContextController.triggerLink,
+);
+router.post(
+  "/carecontext/:id/retry",
+  checkToken,
+  CareContextController.retryLink,
+);
+router.post(
+  "/carecontext/patient/:patientId/link-all",
+  checkToken,
+  CareContextController.linkAllForPatient,
+);
+router.post(
+  "/carecontext/patient/:patientId/set-link-token",
+  checkToken,
+  CareContextController.setLinkTokenForPatient,
+);
+router.post(
+  "/carecontext/:id/notify",
+  checkToken,
+  CareContextController.retryNotify,
+);
+
+// Consent Management Routes (for frontend dashboard)
+router.post("/consent/init", checkToken, consentInitRequest);
+router.get("/consent/requests", checkToken, getConsentRequests);
+router.post("/consent/status", checkToken, getConsentStatus);
+router.get("/consent/artefacts", checkToken, getConsentArtefacts);
+router.post(
+  "/consent/artefact/:artefactId/fetch",
+  checkToken,
+  fetchArtefactDetails,
+);
+
+// HIU Routes (Data Fetch from other hospitals)
+import hiuRoutes from "./hiu.routes";
+router.use("/hiu", hiuRoutes);
+
+// SMS Notification for patients without ABHA address
+router.post(
+  "/patient/:id/sms-notify",
+  checkToken,
+  async (req: any, res: any) => {
+    try {
+      const { PatientModel } = await import("../models/Patient");
+      const patient = await PatientModel.findById(req.params.id);
+      if (!patient) {
+        return res
+          .status(404)
+          .json({ status: "error", message: "Patient not found" });
+      }
+      if (!patient.mobile) {
+        return res
+          .status(400)
+          .json({ status: "error", message: "Patient has no mobile number" });
+      }
+      if (patient.abhaaddress) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Patient already has ABHA address. Use HIP-initiated linking instead.",
+        });
+      }
+      const success = await SmsNotificationService.sendSmsNotification(
+        patient.mobile,
+      );
+      return res.status(200).json({
+        status: success ? "success" : "error",
+        message: success
+          ? "SMS notification sent to patient"
+          : "Failed to send SMS notification",
+      });
+    } catch (error: any) {
+      return res.status(500).json({ status: "error", message: error.message });
+    }
+  },
+);
 
 export default router;

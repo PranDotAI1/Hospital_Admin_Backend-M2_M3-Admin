@@ -1,16 +1,10 @@
 import { Request, Response } from "express";
 import { Types } from "mongoose";
 import { PatientModel } from "../../models/Patient";
-import { HealthRecordModel } from "../../models/HealthRecord";
-import {
-  STATUS_CODE,
-  generateUID,
-  facilityId,
-  facilityName,
-  clientParams,
-  baseHeaders,
-} from "../../utils/constant";
-import axios from "axios";
+import { ScanShareVisitModel } from "../../models/ScanShareVisit";
+import { STATUS_CODE } from "../../utils/constant";
+import { CareContextService } from "../../services/carecontext.service";
+import { CareContextModel } from "../../models/CareContext";
 
 const generateUHID = async (): Promise<string> => {
   const today = new Date();
@@ -41,8 +35,28 @@ const sanitizeString = (
   value: unknown,
   maxLength: number = 500,
 ): string | undefined => {
-  if (typeof value !== "string") return undefined;
-  return value.trim().slice(0, maxLength);
+  if (value === null || value === undefined) return undefined;
+  const str = typeof value === "string" ? value : String(value);
+  return str.trim().slice(0, maxLength);
+};
+
+const normalizeAbha = (value: string | undefined): string => {
+  if (!value || typeof value !== "string") return "";
+  return value.replace(/-/g, "").trim();
+};
+
+const formatAbhaForStorage = (
+  value: string | undefined,
+): string | undefined => {
+  if (!value || typeof value !== "string") return undefined;
+  const digits = value.replace(/\D/g, "").trim();
+  if (digits.length !== 14) return value.trim();
+  return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6, 10)}-${digits.slice(10, 14)}`;
+};
+
+const normalizeNameForMatch = (name: string | undefined): string => {
+  if (!name || typeof name !== "string") return "";
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
 };
 
 export const registerPatient = async (req: Request, res: Response) => {
@@ -71,24 +85,29 @@ export const registerPatient = async (req: Request, res: Response) => {
       });
     }
 
-    const abhaNumber = sanitizeString(body.abhaNumber || body.ABHANumber, 20);
+    const abhaNumber = sanitizeString(
+      body.abhaNumber || body.ABHANumber || body.abha_number,
+      20,
+    );
     const abhaAddress = sanitizeString(
-      body.abhaAddress || body.abhaaddress,
+      body.abhaAddress ||
+        body.abhaaddress ||
+        body.abha_id ||
+        body.abhaId ||
+        body.abha_address,
       100,
     );
 
-    if (abhaNumber) {
-      const existingPatient = await PatientModel.findOne({
-        ABHANumber: abhaNumber,
-      });
-      if (existingPatient) {
-        return res.status(STATUS_CODE.ERROR).json({
-          status: "error",
-          message: "A patient with this ABHA number already exists",
-          existingUhid: existingPatient.uhid,
-        });
-      }
-    }
+    const abhaNumberFormatted = abhaNumber
+      ? formatAbhaForStorage(abhaNumber)
+      : undefined;
+
+    console.log("Register ABHA extracted:", {
+      abhaNumber: abhaNumber || "(empty)",
+      abhaAddress: abhaAddress || "(empty)",
+      abhaNumberFormatted: abhaNumberFormatted || "(empty)",
+      bodyKeys: Object.keys(body).filter((k: string) => /abha|ABHA/.test(k)),
+    });
 
     const m_name = sanitizeString(body.m_name || body.middleName, 100);
     const l_name = sanitizeString(body.l_name || body.lastName, 100);
@@ -99,79 +118,245 @@ export const registerPatient = async (req: Request, res: Response) => {
     const state = sanitizeString(body.state, 50);
     const district = sanitizeString(body.district, 50);
 
-    let patientRecord = await PatientModel.findOne({
-      mobile: mobile,
-      f_name: { $regex: new RegExp("^" + f_name + "$", "i") },
-    });
+    const hasAbha = !!(abhaNumber || abhaAddress);
 
-    let isNewPatient = false;
-
-    if (patientRecord) {
-      const updateData: any = {};
-      if (address) updateData.address = address;
-      if (pincode) updateData.pincode = pincode;
-      if (state) updateData.state = state;
-      if (district) updateData.district = district;
-
-      if (body.allergies)
-        updateData.allergies = sanitizeString(body.allergies, 500);
-      if (body.existingMedicalConditions)
-        updateData.existingMedicalConditions = sanitizeString(
-          body.existingMedicalConditions,
-          500,
-        );
-      if (body.ongoingMedications)
-        updateData.ongoingMedications = sanitizeString(
-          body.ongoingMedications,
-          500,
-        );
-
-      if (abhaNumber && !patientRecord.ABHANumber) {
-        updateData.ABHANumber = abhaNumber;
-        updateData.abhaaddress = abhaAddress;
-        updateData.abhaLinkedAt = new Date();
-      }
-
-      patientRecord = await PatientModel.findByIdAndUpdate(
-        patientRecord._id,
-        { $set: updateData },
-        { new: true },
+    const abhaMatchConditions: any[] = [];
+    if (abhaNumber) {
+      const requestAbhaNorm = normalizeAbha(abhaNumber);
+      abhaMatchConditions.push(
+        { ABHANumber: abhaNumber },
+        { ABHANumber: requestAbhaNorm },
       );
-    } else {
-      isNewPatient = true;
+      if (abhaNumberFormatted && abhaNumberFormatted !== abhaNumber) {
+        abhaMatchConditions.push({ ABHANumber: abhaNumberFormatted });
+      }
+    }
+    if (abhaAddress) {
+      abhaMatchConditions.push({ abhaaddress: abhaAddress });
+    }
 
-      const uhid = await generateUHID();
-
-      patientRecord = await PatientModel.create({
-        uhid,
-        f_name,
-        m_name,
-        l_name,
-        name: fullName,
-        mobile,
-        dob,
-        age: age || undefined,
-        gender: sanitizeString(body.gender, 10),
-        address,
-        pincode,
-        email: sanitizeString(body.email, 100),
-        bloodGroup: sanitizeString(body.bloodGroup, 5),
-        emergencyContact: sanitizeString(body.emergencyContact, 15),
-        aadhaarNumber: sanitizeString(body.aadhaarNumber, 12),
-        ABHANumber: abhaNumber || undefined,
-        abhaaddress: abhaAddress || undefined,
-        abhaLinkedAt: abhaNumber ? new Date() : undefined,
-        allergies: sanitizeString(body.allergies, 500),
-        existingMedicalConditions: sanitizeString(
-          body.existingMedicalConditions,
-          500,
-        ),
-        ongoingMedications: sanitizeString(body.ongoingMedications, 500),
-        status: "active",
-        totalVisits: 0,
-        visits: [],
+    let existingWithAbha: any = null;
+    if (abhaMatchConditions.length > 0) {
+      existingWithAbha = await PatientModel.findOne({
+        $or: abhaMatchConditions,
       });
     }
+
+    // 2) If ABHA already belongs to a patient, just add a new visit there
+    //    (do NOT create a duplicate, do NOT block with an error).
+    if (hasAbha && existingWithAbha) {
+      const consultingDoctor = sanitizeString(body.consultingDoctor, 100);
+      const dept = sanitizeString(body.department, 100);
+      const visitDate = new Date();
+      const visitId = new Types.ObjectId();
+
+      const visitInfo: any = {
+        visitId,
+        visitDate,
+        visitStatus: "REGISTERED",
+        department: dept,
+        doctorName: consultingDoctor,
+      };
+
+      if (
+        body.consultingDoctorId &&
+        Types.ObjectId.isValid(body.consultingDoctorId)
+      ) {
+        visitInfo.doctorId = new Types.ObjectId(body.consultingDoctorId);
+      }
+      if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
+        visitInfo.departmentId = new Types.ObjectId(body.departmentId);
+      }
+
+      const updatePayload: any = {
+        $push: {
+          visits: { $each: [visitInfo], $position: 0 },
+        },
+        $inc: { totalVisits: 1 },
+        $set: {
+          lastVisitDate: visitDate,
+        },
+      };
+
+      if (consultingDoctor) {
+        updatePayload.$set.lastVisitedDoctor = consultingDoctor;
+      }
+
+      const updatedPatient = await PatientModel.findByIdAndUpdate(
+        existingWithAbha._id,
+        updatePayload,
+        { new: true },
+      );
+
+      if (!updatedPatient) {
+        throw new Error("Failed to update existing ABHA patient");
+      }
+
+      let careContextCreated = false;
+      try {
+        const careContext = await CareContextService.createCareContextForVisit(
+          updatedPatient._id,
+          visitId,
+          ["OPConsultation"],
+        );
+        if (careContext) {
+          careContextCreated = true;
+          console.log(
+            "CareContext created for existing ABHA patient visit:",
+            careContext.careContextReference,
+          );
+        }
+      } catch (ccError) {
+        console.error(
+          "CareContext creation error (ABHA existing patient, non-blocking):",
+          ccError,
+        );
+      }
+
+      return res.status(STATUS_CODE.CREATED).json({
+        status: "success",
+        message: "Existing patient found by ABHA; visit added",
+        data: {
+          uhid: updatedPatient.uhid,
+          _id: updatedPatient._id,
+          name: updatedPatient.name,
+          mobile: updatedPatient.mobile,
+          abhaLinked: !!(
+            updatedPatient.ABHANumber || updatedPatient.abhaaddress
+          ),
+          visit: visitInfo,
+          careContextCreated,
+        },
+      });
+    }
+
+    // 3) Payload with NO ABHA: check mobile + name. If matches existing record,
+    //    add new visit to that record (merge). Else create new.
+    if (!hasAbha && mobile) {
+      const candidatesSameMobile = await PatientModel.find({ mobile }).lean();
+      const payloadNameNorm = normalizeNameForMatch(fullName);
+      const existingByMobileAndName = candidatesSameMobile.find((p: any) => {
+        const dbNameNorm = normalizeNameForMatch(
+          p.name || [p.f_name, p.m_name, p.l_name].filter(Boolean).join(" "),
+        );
+        return dbNameNorm && payloadNameNorm && dbNameNorm === payloadNameNorm;
+      });
+
+      if (existingByMobileAndName) {
+        const consultingDoctor = sanitizeString(body.consultingDoctor, 100);
+        const dept = sanitizeString(body.department, 100);
+        const visitDate = new Date();
+        const visitId = new Types.ObjectId();
+
+        const visitInfo: any = {
+          visitId,
+          visitDate,
+          visitStatus: "REGISTERED",
+          department: dept,
+          doctorName: consultingDoctor,
+        };
+
+        if (
+          body.consultingDoctorId &&
+          Types.ObjectId.isValid(body.consultingDoctorId)
+        ) {
+          visitInfo.doctorId = new Types.ObjectId(body.consultingDoctorId);
+        }
+        if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
+          visitInfo.departmentId = new Types.ObjectId(body.departmentId);
+        }
+
+        const updatePayload: any = {
+          $push: {
+            visits: { $each: [visitInfo], $position: 0 },
+          },
+          $inc: { totalVisits: 1 },
+          $set: { lastVisitDate: visitDate },
+        };
+
+        if (consultingDoctor) {
+          updatePayload.$set.lastVisitedDoctor = consultingDoctor;
+        }
+
+        const updatedPatient = await PatientModel.findByIdAndUpdate(
+          existingByMobileAndName._id,
+          updatePayload,
+          { new: true },
+        );
+
+        if (!updatedPatient) {
+          throw new Error("Failed to add visit to existing patient");
+        }
+
+        let careContextCreated = false;
+        try {
+          const careContext =
+            await CareContextService.createCareContextForVisit(
+              updatedPatient._id,
+              visitId,
+              ["OPConsultation"],
+            );
+          if (careContext) {
+            careContextCreated = true;
+            console.log(
+              "CareContext created for existing patient (no ABHA) visit:",
+              careContext.careContextReference,
+            );
+          }
+        } catch (ccError) {
+          console.error("CareContext creation error (non-blocking):", ccError);
+        }
+
+        return res.status(STATUS_CODE.CREATED).json({
+          status: "success",
+          message: "Existing patient found by mobile and name; visit added",
+          data: {
+            uhid: updatedPatient.uhid,
+            _id: updatedPatient._id,
+            name: updatedPatient.name,
+            mobile: updatedPatient.mobile,
+            abhaLinked: !!(
+              updatedPatient.ABHANumber || updatedPatient.abhaaddress
+            ),
+            visit: visitInfo,
+            careContextCreated,
+          },
+        });
+      }
+    }
+
+    // 4) No suitable existing patient – create a new one
+    const uhid = await generateUHID();
+
+    const patientRecord = await PatientModel.create({
+      uhid,
+      f_name,
+      m_name,
+      l_name,
+      name: fullName,
+      mobile,
+      dob,
+      age: age || undefined,
+      gender: sanitizeString(body.gender, 10),
+      address,
+      pincode,
+      email: sanitizeString(body.email, 100),
+      bloodGroup: sanitizeString(body.bloodGroup, 5),
+      emergencyContact: sanitizeString(body.emergencyContact, 15),
+      aadhaarNumber: sanitizeString(body.aadhaarNumber, 12),
+      ABHANumber: abhaNumberFormatted || abhaNumber || undefined,
+      abhaaddress: abhaAddress || undefined,
+      abhaLinkedAt: abhaNumber ? new Date() : undefined,
+      allergies: sanitizeString(body.allergies, 500),
+      existingMedicalConditions: sanitizeString(
+        body.existingMedicalConditions,
+        500,
+      ),
+      ongoingMedications: sanitizeString(body.ongoingMedications, 500),
+      status: "active",
+      totalVisits: 0,
+      visits: [],
+    });
 
     if (!patientRecord) {
       throw new Error("Failed to create or retrieve patient record");
@@ -209,7 +394,9 @@ export const registerPatient = async (req: Request, res: Response) => {
     console.log("Visit Info:", visitInfo);
 
     const updateQuery: any = {
-      $push: { visits: visitInfo },
+      $push: {
+        visits: { $each: [visitInfo], $position: 0 },
+      },
       $inc: { totalVisits: 1 },
       $set: { lastVisitDate: visitDate },
     };
@@ -231,23 +418,39 @@ export const registerPatient = async (req: Request, res: Response) => {
       updateResult?.totalVisits,
     );
 
-    return res
-      .status(isNewPatient ? STATUS_CODE.CREATED : STATUS_CODE.SUCCESS)
-      .json({
-        status: "success",
-        message: isNewPatient
-          ? "Patient registered successfully"
-          : "Patient already exists, record updated",
-        data: {
-          uhid: patientRecord.uhid,
-          _id: patientRecord._id,
-          name: patientRecord.name,
-          mobile: patientRecord.mobile,
-          abhaLinked: !!patientRecord.ABHANumber,
-          visit: visitInfo,
-          existingRecord: !isNewPatient,
-        },
-      });
+    let careContextCreated = false;
+    if (visitInfo?.visitId) {
+      try {
+        const careContext = await CareContextService.createCareContextForVisit(
+          patientRecord._id,
+          visitInfo.visitId,
+          ["OPConsultation"],
+        );
+        if (careContext) {
+          careContextCreated = true;
+          console.log(
+            "CareContext created for visit:",
+            careContext.careContextReference,
+          );
+        }
+      } catch (ccError) {
+        console.error("CareContext creation error (non-blocking):", ccError);
+      }
+    }
+
+    return res.status(STATUS_CODE.CREATED).json({
+      status: "success",
+      message: "Patient registered successfully",
+      data: {
+        uhid: patientRecord.uhid,
+        _id: patientRecord._id,
+        name: patientRecord.name,
+        mobile: patientRecord.mobile,
+        abhaLinked: !!patientRecord.ABHANumber,
+        visit: visitInfo,
+        careContextCreated,
+      },
+    });
   } catch (error: any) {
     console.error("Patient Registration error:", error);
 
@@ -317,58 +520,22 @@ export const linkAbha = async (req: Request, res: Response) => {
     }
 
     let abdmLinked = false;
-    let healthRecordId = null;
+    let linkTokenRequested = false;
 
     try {
-      const headers = baseHeaders();
-      const sessionResponse = await axios.post(
-        `${process.env.ABHA_URL}/sessions`,
-        clientParams,
-        { headers },
-      );
+      const tokenRequested = await CareContextService.requestLinkToken({
+        ...patient.toObject(),
+        abhaaddress: abhaAddress,
+        name: name || patient.name,
+      } as any);
 
-      if (sessionResponse.data.accessToken) {
-        const token = sessionResponse.data.accessToken;
-
-        const tokenHeaders = {
-          "Content-Type": "application/json",
-          "REQUEST-ID": generateUID(),
-          TIMESTAMP: new Date().toISOString(),
-          "X-HIP-ID": facilityId,
-          "X-CM-ID": "sbx",
-          Authorization: `Bearer ${token}`,
-        };
-
-        const tokenPayload = {
-          abhaNumber: abhaNumber,
-          abhaAddress: abhaAddress,
-          name: name || patient.name,
-        };
-
-        const tokenResponse = await axios.post(
-          `${process.env.ABHA_URL1}/token/generate-token`,
-          tokenPayload,
-          { headers: tokenHeaders },
-        );
-
-        if (tokenResponse.status === 200 || tokenResponse.status === 202) {
-          const healthRecord = await HealthRecordModel.create({
-            facility_id: facilityId,
-            facility_name: facilityName,
-            hidn_number: abhaNumber,
-            hid_address: abhaAddress,
-            patient_name: name || patient.name,
-            abha_details: { abhaNumber, abhaAddress },
-            version_m2: { access_token: token },
-          });
-
-          healthRecordId = healthRecord._id;
-          abdmLinked = true;
-        }
+      if (tokenRequested) {
+        linkTokenRequested = true;
+        abdmLinked = true;
       }
     } catch (abdmError: any) {
       console.error(
-        "ABDM linking error (non-blocking):",
+        "ABDM link token request error (non-blocking):",
         abdmError.response?.data || abdmError.message,
       );
     }
@@ -385,18 +552,46 @@ export const linkAbha = async (req: Request, res: Response) => {
       { new: true },
     );
 
+    let retroactiveResult = { created: 0, linked: 0, errors: [] as string[] };
+    if (updatedPatient && abhaAddress) {
+      try {
+        retroactiveResult =
+          await CareContextService.createCareContextsForExistingVisits(
+            updatedPatient._id,
+            abhaAddress,
+            true,
+          );
+        console.log(
+          `linkAbha: Created ${retroactiveResult.created} CareContexts for existing visits`,
+        );
+      } catch (retroErr: any) {
+        console.error(
+          "linkAbha: Retroactive CareContext creation error (non-blocking):",
+          retroErr.message,
+        );
+      }
+    }
+
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: abdmLinked
-        ? "ABHA linked successfully with ABDM integration"
-        : "ABHA linked locally (ABDM integration pending)",
+        ? "ABHA linked successfully, link token requested from ABDM"
+        : "ABHA linked locally (ABDM link token request pending)",
       data: {
         uhid: updatedPatient?.uhid,
         abhaNumber: updatedPatient?.ABHANumber,
         abhaAddress: updatedPatient?.abhaaddress,
         abhaLinkedAt: updatedPatient?.abhaLinkedAt,
-        healthRecordId,
+        linkTokenRequested,
         abdmLinked,
+        retroactiveCareContexts: {
+          created: retroactiveResult.created,
+          linked: retroactiveResult.linked,
+          errors:
+            retroactiveResult.errors.length > 0
+              ? retroactiveResult.errors
+              : undefined,
+        },
       },
     });
   } catch (error: any) {
@@ -433,6 +628,42 @@ export const getPatient = async (req: Request, res: Response) => {
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",
       message: error.message || "Failed to fetch patient",
+    });
+  }
+};
+
+export const getAllPatients = async (req: Request, res: Response) => {
+  try {
+    const patients = await PatientModel.find({})
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+
+    const data = patients.map((p: any) => {
+      const visits = Array.isArray(p.visits)
+        ? [...p.visits].sort((a: any, b: any) => {
+            const da = a.visitDate ? new Date(a.visitDate).getTime() : 0;
+            const db = b.visitDate ? new Date(b.visitDate).getTime() : 0;
+            return db - da;
+          })
+        : [];
+
+      return {
+        ...p,
+        visits,
+      };
+    });
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      success: true,
+      data: { patients: data, total: patients.length },
+      message: "Patients retrieved successfully",
+    });
+  } catch (error: any) {
+    console.error("Get All Patients error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to fetch all patients",
     });
   }
 };
@@ -575,8 +806,9 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       if (profileDetails.address) updateData.address = profileDetails.address;
       if (profileDetails.pincode) updateData.pincode = profileDetails.pincode;
 
-      if (profileDetails.abhaAddress)
-        updateData.abhaaddress = profileDetails.abhaAddress;
+      const abhaAddr =
+        profileDetails.abhaAddress ?? (profileDetails as any).abha_address;
+      if (abhaAddr) updateData.abhaaddress = abhaAddr;
       if (profileDetails.profilePhoto)
         updateData.profilePhoto = profileDetails.profilePhoto;
     }
@@ -655,6 +887,12 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       if (sourcePatient.abhaaddress && !updateData.abhaaddress)
         updateData.abhaaddress = sourcePatient.abhaaddress;
 
+      if (sourcePatient.abdmLinkToken?.token) {
+        updateData.abdmLinkToken = sourcePatient.abdmLinkToken;
+      } else if (targetPatient.abdmLinkToken?.token) {
+        updateData.abdmLinkToken = targetPatient.abdmLinkToken;
+      }
+
       if (sourcePatient.insurance && sourcePatient.insurance.length > 0) {
         updateData.$addToSet = {
           ...(updateData.$addToSet || {}),
@@ -669,6 +907,18 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
         };
       }
 
+      const reassigned = await CareContextModel.updateMany(
+        { patientId: sourcePatient._id },
+        { $set: { patientId: targetPatient._id } },
+      );
+      if (reassigned.modifiedCount > 0) {
+        console.log(
+          "mergeAbhaPatient: Reassigned",
+          reassigned.modifiedCount,
+          "care context(s) from source patient to target",
+        );
+      }
+
       await PatientModel.findByIdAndDelete(sourcePatient._id);
     }
 
@@ -678,11 +928,59 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       { new: true },
     );
 
+    let careContextsCreated = 0;
+    if (updatedTarget?.abhaaddress) {
+      try {
+        const visitIds = new Set<string>();
+        for (const v of updatedTarget.visits || []) {
+          if (v?.visitId) visitIds.add(String(v.visitId));
+        }
+        const scanShareVisits = await ScanShareVisitModel.find(
+          { patientId: updatedTarget._id },
+          { _id: 1 },
+        )
+          .lean()
+          .exec();
+        for (const v of scanShareVisits) {
+          if (v?._id) visitIds.add(String(v._id));
+        }
+        for (const visitIdStr of visitIds) {
+          const cc = await CareContextService.createCareContextForVisit(
+            updatedTarget._id,
+            visitIdStr,
+            ["OPConsultation"],
+          );
+          if (cc) careContextsCreated++;
+        }
+        if (careContextsCreated > 0) {
+          console.log(
+            "mergeAbhaPatient: Created",
+            careContextsCreated,
+            "care context(s) for patient",
+            updatedTarget.uhid || updatedTarget._id,
+          );
+        } else if (visitIds.size > 0) {
+          console.log(
+            "mergeAbhaPatient: No new care contexts (already exist?) for",
+            visitIds.size,
+            "visit(s), patient",
+            updatedTarget.uhid || updatedTarget._id,
+          );
+        }
+      } catch (ccErr) {
+        console.error(
+          "mergeAbhaPatient: Care context creation error (non-blocking):",
+          ccErr,
+        );
+      }
+    }
+
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: message,
       data: updatedTarget,
       mergedFrom: sourcePatient?._id,
+      careContextsCreated,
     });
   } catch (error: any) {
     console.error("Merge Patient error:", error);

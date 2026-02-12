@@ -32,20 +32,24 @@ export const generateLinkToken = async (req: any, res: any) => {
 
     const headers = baseHeaders(true);
 
-    const patient = await PatientModel.findOne({ abhaAddress });
-
-    if (patient.linkToken) {
-      return res.status(STATUS_CODE.ERROR).json({
-        error: "Patient already linked",
-        message: "Patient already linked",
-        status: "error",
-      });
-    }
+    const patient = await PatientModel.findOne({ abhaaddress: abhaAddress });
 
     if (!patient) {
       return res.status(STATUS_CODE.ERROR).json({
         error: "Patient not found",
         message: "Patient not found",
+        status: "error",
+      });
+    }
+
+    // Check if patient already has a valid link token
+    if (
+      patient.abdmLinkToken?.token &&
+      patient.abdmLinkToken?.status === "ACTIVE"
+    ) {
+      return res.status(STATUS_CODE.ERROR).json({
+        error: "Patient already linked",
+        message: "Patient already has an active link token",
         status: "error",
       });
     }

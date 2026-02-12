@@ -144,7 +144,7 @@ export const setBridgeUrl = async (
     console.log("Step-3 status ", response.status);
     console.log("Step-3 Response1", response.data);
     if (
-      response.status == STATUS_CODE.CREATED ||
+      response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
     ) {
       console.log("Step-3 Response");
@@ -208,7 +208,7 @@ export const registrationService = async (
     console.log("step-5 status", response.status);
     console.log("Step-5 Response", response.data);
     if (
-      response.status == STATUS_CODE.CREATED ||
+      response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
     ) {
       //return res.status(STATUS_CODE.SUCCESS).json({ "success": token });
@@ -266,7 +266,7 @@ export const tokenGeneration = async (req: any, res: any, token: any) => {
       "https://admin.pran.ai/api/v3/hip/token/on-generate-token",
     );
     if (
-      response.status == STATUS_CODE.CREATED ||
+      response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
     ) {
       await HealthRecordModel.create({

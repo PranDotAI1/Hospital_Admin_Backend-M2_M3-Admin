@@ -1,33 +1,31 @@
 import axios from "axios";
 import { HealthRecordModel } from "../../models/HealthRecord";
 import {
-  HIP_TYPES,
   STATUS_CODE,
   facilityId,
   generateUID,
 } from "../../utils/constant";
 import { MSG } from "../../utils/msgs";
-import { getFinalData } from "../../utils/prepareAndEncryptFhirPayload";
-import { NotifiyResponseModel } from "../../models/NotifiyResponse";
-import { ConsentRequestModel } from "../../models/ConsentRequest";
 
 export const linkTokenGeneration = async (req: any, res: any) => {
   try {
     const baseUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
     console.log(
-      "Link token generation start here ----------------------------------",
+      "[LINK_TOKEN] Legacy link token generation start",
     );
-    console.log("URL-------------", baseUrl);
-    //
+    console.log("[LINK_TOKEN] URL:", baseUrl);
+
     let postData = req.body;
-    console.log("linkTokenGeneration-1 Request ", JSON.stringify(postData));
+    console.log("[LINK_TOKEN] Request:", JSON.stringify(postData));
+
     const latestRecord = await HealthRecordModel.findOne({
       hid_address: postData.abhaAddress,
     })
       .sort({ updatedAt: -1 })
       .limit(1);
+
     if (latestRecord) {
-      console.log("LinkTokenGeneration Response success", postData);
+      console.log("[LINK_TOKEN] Found HealthRecord, updating token");
       await HealthRecordModel.updateOne(
         { _id: latestRecord._id },
         {
@@ -39,18 +37,13 @@ export const linkTokenGeneration = async (req: any, res: any) => {
         },
       );
     } else {
-      console.log("LinkTokenGeneration Response no data found", postData);
-      // return res
-      //     .status(200)
-      //     .json({ status: 200, message: "No records found for this abhaAddress." });
+      console.log("[LINK_TOKEN] No HealthRecord found for:", postData.abhaAddress);
     }
+
     await carecontext(req, res, postData.linkToken, latestRecord);
   } catch (error: any) {
-    console.log("web hook error Response", error);
+    console.error("[LINK_TOKEN] Error:", error.message);
     if (error.response) {
-      // return res
-      //     .status(error.response.status)
-      //     .json({ error: error.response.data });
     } else if (error.request) {
       return res.status(503).json({ error: "Service unavailable" });
     } else {
@@ -59,14 +52,14 @@ export const linkTokenGeneration = async (req: any, res: any) => {
   }
 };
 
-//https://dev.abdm.gov.in/api/hiecm/hip/v3/link/carecontext
+
 export const carecontext = async (
   req: any,
   res: any,
   linkToken: any,
   latestRecord: any,
 ) => {
-  console.log("careContext api start");
+  console.log("[CARECONTEXT_LEGACY] careContext api start");
   try {
     let postData = {
       abhaNumber: latestRecord.hidn_number,
@@ -88,16 +81,6 @@ export const carecontext = async (
     };
 
     let random32String = generateUID();
-    console.log("headers", {
-      "Content-Type": "application/json",
-      "REQUEST-ID": random32String,
-      TIMESTAMP: new Date().toISOString(),
-      "X-HIP-ID": facilityId, //'SBX_HIP_V2',
-      "X-CM-ID": "sbx",
-      "X-LINK-TOKEN": linkToken,
-      Authorization: req.headers["authorization"],
-    });
-    console.log("postDatapostData", postData);
 
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/hip/v3/link/carecontext`,
@@ -107,7 +90,7 @@ export const carecontext = async (
           "Content-Type": "application/json",
           "REQUEST-ID": random32String,
           TIMESTAMP: new Date().toISOString(),
-          "X-HIP-ID": facilityId, //'SBX_HIP_V2',
+          "X-HIP-ID": facilityId,
           "X-CM-ID": "sbx",
           "X-LINK-TOKEN": linkToken,
           Authorization: req.headers["authorization"],
@@ -116,16 +99,12 @@ export const carecontext = async (
     );
 
     if (
-      response.status == STATUS_CODE.CREATED ||
+      response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
     ) {
-      let respo = response.data;
       return res
         .status(STATUS_CODE.SUCCESS)
         .json({ status: "Pending", message: MSG.DATA_PROCESSING });
-      //return res.status(STATUS_CODE.SUCCESS).json({ "status": response.status, "msg": "success" });
-      // Update Request id
-      //await HealthRecordModel.updateOne({ hid_address: respo.abhaAddress }, { last_request_id: respo.response.requestId });
     } else {
       return res
         .status(response.status)
@@ -146,58 +125,12 @@ export const carecontext = async (
   }
 };
 
-export const onConsentInit = async (req: any, res: any) => {
-  try {
-    let request = req.body;
-    console.log(
-      "consent on_init callback ->",
-      JSON.stringify(request),
-    );
-
-    if (request.error) {
-      console.log("Consent Init Error from ABDM:", request.error);
-      await ConsentRequestModel.updateOne(
-        { requestId: request.response.requestId },
-        { status: "DENIED", error: request.error },
-      );
-      return res.status(200).json({ status: "Error Handled" });
-    }
-
-    if (request.consentRequest) {
-      const consentRequestId = request.consentRequest.id;
-      const requestId = request.response.requestId;
-
-      const updateResult = await ConsentRequestModel.updateOne(
-        { requestId: requestId },
-        {
-          $set: {
-            consentRequestId: consentRequestId,
-            status: "REQUESTED", 
-          },
-        },
-      );
-
-      console.log(
-        "Updated Consent Request with ID:",
-        consentRequestId,
-        updateResult,
-      );
-    }
-
-    return res.status(STATUS_CODE.SUCCESS).json({ status: "success" });
-  } catch (error: any) {
-    console.error("Error in onConsentInit", error);
-    return res.status(500).json({ error: error.message });
-  }
-};
-
-//https://webhook.site/2086641f-2f45-4341-8d8d-63ff0797f61f/api/v3/link/on_carecontext
 export const onCarecontext = async (req: any, res: any) => {
   try {
     let request = req.body;
 
     console.log(
-      "on_carecontext callback and request data ---------------------",
+      "[CARECONTEXT_LEGACY] on_carecontext callback:",
       JSON.stringify(request),
     );
 
@@ -210,7 +143,7 @@ export const onCarecontext = async (req: any, res: any) => {
       },
     );
 
-    console.log("on_carecontext response -------------------", response);
+    console.log("[CARECONTEXT_LEGACY] on_carecontext update result:", response);
     return res.status(STATUS_CODE.SUCCESS).json({ status: "success" });
   } catch (error: any) {
     if (error.response) {
@@ -225,432 +158,56 @@ export const onCarecontext = async (req: any, res: any) => {
   }
 };
 
-//https://webhook.site/2086641f-2f45-4341-8d8d-63ff0797f61f/api/v3/consent/request/hip/notify
-export const hipNotifiy = async (req: any, res: any) => {
-  try {
-    let postData = req.body;
-
-    console.log(
-      "hipNotifiy callback ->",
-      JSON.stringify(postData),
-    );
-
-    const notification = postData.notification;
-    if (!notification) {
-      return res.status(400).json({ error: "Missing notification object" });
-    }
-
-    const consentRequestId = notification.consentRequestId || notification.consentId;
-    const status = notification.status;
-    const consentArtefacts = notification.consentArtefacts; 
-
-    console.log(`Consent Update: ${consentRequestId} -> ${status}`);
-
-    if (consentRequestId) {
-      const updateData: any = { status: status };
-
-      if (status === "GRANTED" && consentArtefacts) {
-        updateData.consentArtefacts = consentArtefacts.map(
-          (art: any) => art.id,
-        );
-      }
-
-      await ConsentRequestModel.updateOne(
-        { consentRequestId: consentRequestId },
-        { $set: updateData },
-      );
-    }
-
-    return res.status(STATUS_CODE.SUCCESS).json({ status: "success" });
-  } catch (error: any) {
-    console.log("web hook hipNotifiy error Response", error);
-    return res.status(500).json({ error: error.message });
-  }
-};
-
-//https://dev.abdm.gov.in/api/hiecm/hip/v3/link/context/notify
-export const contextNotifiy = async (req: any, res: any, latestRecord: any) => {
-  console.log("contextNotifiy request data");
-  try {
-    let postData = {
-      notification: {
-        patient: {
-          id: latestRecord.hidn_number,
-        },
-        careContext: {
-          patientReference: latestRecord.hidn_number,
-          careContextReference: "Episode11",
-        },
-        hiTypes: [HIP_TYPES[0]],
-        date: new Date().toISOString(),
-        hip: {
-          id: facilityId,
-        },
-      },
-    };
-    let random32String = generateUID();
-    const response = await axios.post(
-      `${process.env.ABDM_BASE_URL}/hiecm/hip/v3/link/context/notify`,
-      postData,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "REQUEST-ID": random32String,
-          TIMESTAMP: new Date().toISOString(),
-          "X-HIP-ID": facilityId,
-          "X-CM-ID": "sbx",
-          "X-LINK-TOKEN": latestRecord.version_m2.token_link,
-          Authorization:
-            latestRecord.version_m2.access_token ||
-            req.headers["authorization"],
-        },
-      },
-    );
-    console.log("response contextNotifiy", response.status, response.data);
-    if (
-      response.status == STATUS_CODE.CREATED ||
-      response.status == STATUS_CODE.SUCCESS
-    ) {
-      await onNotifiy(
-        req,
-        res,
-        latestRecord.version_m2.consentId,
-        latestRecord.version_m2.last_request_id,
-      );
-    } else {
-      return res
-        .status(response.status)
-        .json({ status: response.status, error: MSG.API_ERROR + response });
-    }
-  } catch (error: any) {
-    if (error.response) {
-      return res
-        .status(error.response.status)
-        .json({ error: error.response.data });
-    } else if (error.request) {
-      return res
-        .status(STATUS_CODE.SERVER_STOP)
-        .json({ error: MSG.SERVICE_UNAVAILABLE });
-    } else {
-      return res.status(STATUS_CODE.ERROR).json({ error: error.message });
-    }
-  }
-};
-
-//https://dev.abdm.gov.in/api/hiecm/consent/v3/request/hip/on-notify
-export const onNotifiy = async (
-  req: any,
-  res: any,
-  consentId: any,
-  requestId: any,
-) => {
-  try {
-    console.log(
-      "onNotifiy function start here hiecm/consent/v3/request/hip/on-notify",
-      consentId,
-      requestId,
-    );
-
-    console.log("Authorization", req.headers["authorization"]);
-
-    let postData = {
-      acknowledgement: {
-        status: "Ok",
-        consentId: consentId,
-      },
-      response: {
-        requestId: requestId,
-      },
-    };
-
-    console.log("postdata", postData);
-
-    let random32String = generateUID();
-    const response = await axios.post(
-      `${process.env.ABDM_BASE_URL}/hiecm/consent/v3/request/hip/on-notify`,
-      postData,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "REQUEST-ID": random32String,
-          TIMESTAMP: new Date().toISOString(),
-          "X-CM-ID": "sbx",
-          Authorization: req.headers["authorization"],
-        },
-      },
-    );
-
-    console.log("response onNotifiy", response.data);
-    console.log("onNotifiy response status", response.status);
-
-    if (
-      response.status == STATUS_CODE.CREATED ||
-      response.status == STATUS_CODE.SUCCESS
-    ) {
-      return res.status(STATUS_CODE.SUCCESS).json(response.data);
-    } else {
-      return res
-        .status(response.status)
-        .json({ status: response.status, error: MSG.API_ERROR + response });
-    }
-  } catch (error: any) {
-    console.log(
-      "error onNotifiy /hiecm/consent/v3/request/hip/on-notify=============",
-      error.response,
-    );
-    if (error.response) {
-      return res
-        .status(error.response.status)
-        .json({ error: error.response.data });
-    } else if (error.request) {
-      return res
-        .status(STATUS_CODE.SERVER_STOP)
-        .json({ error: MSG.SERVICE_UNAVAILABLE });
-    } else {
-      return res.status(STATUS_CODE.ERROR).json({ error: error.message });
-    }
-  }
-};
-
-//////////////////// Implemented till here  ///////////////////////////////////////////////////////////
-
-// Next step received the callback
-///
-// ap/v3/hip/health-information/request
 export const healthInformation = async (req: any, res: any) => {
   try {
-    console.log("Step-6 healthInformation api request ", req.body);
-    let input = req.body;
-
-    let requestId = req.headers["request-id"];
-
-    let consentId = input.hiRequest.consent.id;
-
-    let postData = {
-      hiRequest: {
-        transactionId: input.transactionId,
-        sessionStatus: "ACKNOWLEDGED",
-      },
-      response: {
-        requestId: requestId,
-      },
-    };
-
-    //let random32String = generateUID();
-    const response = await axios.post(
-      `${process.env.ABDM_BASE_URL}/hiecm/data-flow/v3/health-information/hip/on-request`,
-      postData,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "REQUEST-ID": requestId,
-          TIMESTAMP: new Date().toISOString(),
-          "X-CM-ID": "sbx",
-          Authorization: req.headers["authorization"],
-        },
-      },
-    );
     console.log(
-      "Step-7 hiecm/data-flow/v3/health-information/hip/on-request api response ",
-      response.data,
+      "[HEALTH_INFO] Received health-information/request:",
+      JSON.stringify(req.body),
     );
 
-    if (response.status == 202 || response.status == 200) {
-      await HealthRecordModel.updateOne(
-        { "version_m2.consentId": consentId },
-        {
-          $set: {
-            "version_m2.transaction_id": input.transactionId,
-          },
-        },
+    const input = req.body;
+    const requestId =
+      req.headers["request-id"] || req.headers["REQUEST-ID"] || generateUID();
+
+    if (!input?.hiRequest?.consent?.id || !input?.transactionId) {
+      console.error(
+        "[HEALTH_INFO] Missing required fields: consent.id or transactionId",
       );
-      await callingDataPushUrl(
-        req,
-        res,
-        input.hiRequest.dataPushUrl,
-        input.transactionId,
-      );
-      return res.status(200).json({
-        URL: "/hiecm/data-flow/v3/health-information/hip/on-request",
-        status: "Success",
-        message:
-          "Note: Status get updated in data_flow_request table in db as ACKNOWLEDGED",
-      });
-    } else {
-      return res.status(response.status).json({
-        status: response.status,
-        error: "getting error from api" + response,
+      return res.status(400).json({
+        status: "error",
+        message: "Missing consent ID or transaction ID",
       });
     }
-  } catch (error: any) {
-    if (error.response) {
-      return res
-        .status(error.response.status)
-        .json({ error: error.response.data });
-    } else if (error.request) {
-      return res.status(503).json({ error: "Service unavailable" });
-    } else {
-      return res.status(500).json({ error: error.message });
-    }
-  }
-};
 
-///////////////////////////
-export const callingDataPushUrl = async (
-  req: any,
-  res: any,
-  dataPushUrl: string,
-  transactionId: any,
-) => {
-  try {
-    console.log("Step-8 callingDataPushUrl api request ", req.body);
-    //let input = req.body;
-
-    let requestId = req.headers["request-id"];
-
-    const latestRecord: any = await HealthRecordModel.findOne({
-      transaction_id: transactionId,
-    })
-      .sort({ updatedAt: -1 })
-      .limit(1);
-
-    // let postData = {
-    //     pageNumber: 0,        // Current page number.
-    //     pageCount: 1,         //Total number of pages.
-    //     transactionId: input.transactionId,
-    //     entries: [
-    //         {
-    //             content: "change me",  //chnage me
-    //             media: "application/fhir+json",
-    //             checksum: "string",
-    //             careContextReference: latestRecord.notify_callback_response?.notification?.careContexts.map((v: any) => v.careContextReference)[0]
-    //         }
-    //     ],
-    //     keyMaterial: {
-    //         cryptoAlg: "ECDH",
-    //         curve: "Curve25519",
-    //         dhPublicKey: {
-    //             expiry: "2028-10-03", //change me
-    //             parameters: "Curve25519",
-    //             keyValue: "X509"
-    //         },
-    //         "nonce": "nonce" //change me
-    //     }
-    // }
-
-    let postData = getFinalData(transactionId);
-
-    //let random32String = generateUID();
-    const response = await axios.post(dataPushUrl, postData, {
-      headers: {
-        "Content-Type": "application/json",
-        "REQUEST-ID": requestId,
-        TIMESTAMP: new Date().toISOString(),
-        "X-CM-ID": "sbx",
-        Authorization: req.headers["authorization"],
-      },
+    res.status(200).json({
+      status: "Success",
+      message: "Health information request acknowledged and processing",
     });
-    console.log("Step-9 callingDataPushUrl api response ---- ", response.data);
-    console.log(
-      "Step-9.1 callingDataPushUrl api status ---- ",
-      response.status,
+
+    const { HealthInformationService } = await import(
+      "../../services/health-information.service"
     );
-    if (response.status == 202 || response.status == 200) {
-      await healthInformationNotify(req, res, latestRecord, requestId);
-      //return res.status(200).json({ "URL": "dataPushUrl", "status": "Success", "message": "dataPushUrl api submited" })
-    } else {
-      return res.status(response.status).json({
-        status: response.status,
-        error: "getting error from api" + response,
-      });
-    }
+
+    const callbackAuth =
+      req.headers["authorization"] || req.headers["Authorization"] || "";
+
+    await HealthInformationService.processHealthInfoRequest(
+      input,
+      requestId,
+      callbackAuth,
+    );
   } catch (error: any) {
-    if (error.response) {
-      return res
-        .status(error.response.status)
-        .json({ error: error.response.data });
-    } else if (error.request) {
-      return res.status(503).json({ error: "Service unavailable" });
-    } else {
-      return res.status(500).json({ error: error.message });
+    console.error("[HEALTH_INFO] Handler error:", error.message);
+    if (!res.headersSent) {
+      if (error.response) {
+        return res
+          .status(error.response.status)
+          .json({ error: error.response.data });
+      } else if (error.request) {
+        return res.status(503).json({ error: "Service unavailable" });
+      } else {
+        return res.status(500).json({ error: error.message });
+      }
     }
   }
 };
-
-//https://dev.abdm.gov.in/api/hiecm/data-flow/v3/health-information/notify
-export const healthInformationNotify = async (
-  req: any,
-  res: any,
-  latestRecord: any,
-  requestId: any,
-) => {
-  try {
-    console.log("Step-8 healthInformationNotify api request ", req.body);
-    console.log(
-      "ULR-----------------hiecm/data-flow/v3/health-information/notify",
-    );
-
-    let postData = {
-      notification: {
-        consentId: latestRecord.version_m2.consentId,
-        transactionId: latestRecord.version_m2.healthInformation,
-        doneAt: new Date().toISOString(),
-        notifier: {
-          type: "HIP",
-          id: facilityId,
-        },
-        statusNotification: {
-          sessionStatus: "OK",
-          hipId: facilityId,
-          statusResponses: [
-            {
-              careContextReference: "careContextReference ID",
-              hiStatus: "OK",
-              description: "description",
-            },
-          ],
-        },
-      },
-    };
-
-    //let random32String = generateUID();
-    const response = await axios.post(
-      `${process.env.ABDM_BASE_URL}/hiecm/data-flow/v3/health-information/notify`,
-      postData,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "REQUEST-ID": requestId,
-          TIMESTAMP: new Date().toISOString(),
-          "X-CM-ID": "sbx",
-          Authorization: req.headers["authorization"],
-        },
-      },
-    );
-    console.log("Step-9 callingDataPushUrl api response ---- ", response.data);
-    if (response.status == 202 || response.status == 200) {
-      return res.status(200).json({
-        status: "Success",
-        message: "/health-information/notify api submited",
-        URL: "https://dev.abdm.gov.in/api/hiecm/data-flow/v3/health-information/notify",
-      });
-    } else {
-      return res.status(response.status).json({
-        status: response.status,
-        error: "getting error from api" + response,
-      });
-    }
-  } catch (error: any) {
-    if (error.response) {
-      return res
-        .status(error.response.status)
-        .json({ error: error.response.data });
-    } else if (error.request) {
-      return res.status(503).json({ error: "Service unavailable" });
-    } else {
-      return res.status(500).json({ error: error.message });
-    }
-  }
-};
-
-///

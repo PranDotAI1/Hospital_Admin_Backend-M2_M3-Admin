@@ -7,22 +7,44 @@ import { setBridgeUrlforTest } from "../../controllers/v3/testing.controller";
 import {
   consentInitRequest,
   getConsentRequests,
+  getConsentStatus,
+  getConsentArtefacts,
+  fetchArtefactDetails,
 } from "../../controllers/v3/Consent.controller";
 
 const router = Router();
 
-//ABHA Routes
+// ============================================
+// ABHA Routes
+// ============================================
 router.post("/registration", userOnboardingByĂbha);
 router.post("/request/init", userOnboardingByĂbha);
 
-//REQUEST INIT
+// ============================================
+// Consent Management
+// ============================================
+
+// Initiate a new consent request
 router.post("/consent-int", consentInitRequest);
+
+// List all consent requests (with pagination + filters)
 router.get("/consent-requests", getConsentRequests);
-router.post("/get-consent-status", consentRequestInitiate);
 
-//Callback URL RECEIVED DATA
+// Check consent status from ABDM
+router.post("/get-consent-status", getConsentStatus);
 
-// For testing url only
+// List consent artefacts (with pagination + filters)
+router.get("/consent-artefacts", getConsentArtefacts);
+
+// Manually fetch full artefact details from ABDM
+router.post("/consent-artefact/:artefactId/fetch", fetchArtefactDetails);
+
+// Legacy route: consent initiate from M3 onboarding flow
+router.post("/consent-request-initiate", consentRequestInitiate);
+
+// ============================================
+// Testing
+// ============================================
 router.post("/test-bridge-url", setBridgeUrlforTest);
 
 export default router;

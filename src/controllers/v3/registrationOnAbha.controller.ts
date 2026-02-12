@@ -1,7 +1,7 @@
 import axios from "axios";
 import { CLIENT_ID, CLIENT_SECRET, GET_URL, GRANT_TYPE, bridgeId, facilityId, facilityName, generateUID } from "../../utils/constant";
 import { ENDPOINTS } from "../../utils/endpoints";
-import { HealthRecordModel } from "../../models/HealthRecord";
+import { ConsentService } from "../../services/consent.service";
 
 export const userOnboardingByĂbha = async (req: any, res: any) => {
     try {
@@ -195,145 +195,47 @@ export const registrationService = async (token: string, req: any, res: any, url
     }
 }
 
-export const consentRequestInitiate = async (req: any, res: any, token: any) => {
+export const consentRequestInitiate = async (req: any, res: any, token?: any) => {
     try {
-        console.log("M3 start here /hiecm/consent/v3/request/init  consentRequestInitiate",)
-        let input = req.body;
-        const params = {
-            "consent": {
-                "purpose": {
-                    "text": "Care Management",
-                    "code": "CAREMGT",
-                    "refUri": "https://admin.pran.ai/"
-                },
-                "patient": {
-                    "id": input.abha_id //abha address
-                },
-                "hiu": {
-                    "id": input.facilityId //facilityId
-                },
-                "hip": null,
-                "careContexts": null,
-                "requester": {
-                    "name": "Dr Vb test",
-                    "identifier": {
-                        "type": "REG001",
-                        "value": "MH001",
-                        "system": "http://admin.pran.ai"
-                    }
-                },
-                "hiTypes": input.hiTypes,
-                "permission": {
-                    "accessMode": "VIEW",
-                    "dateRange": {
-                        "from": input.from,
-                        "to": input.to
-                    },
-                    "dataEraseAt": input.dataEraseAt,
-                    "frequency": {
-                        "unit": "HOUR",
-                        "value": 0,
-                        "repeats": 0
-                    }
-                }
-            }
+        console.log("[CONSENT_M3] consentRequestInitiate start");
+        const input = req.body;
+
+        if (!input.abha_id || !input.facilityId) {
+            return res.status(400).json({
+                status: "error",
+                message: "Missing required fields: abha_id, facilityId",
+            });
         }
 
-        console.log("Request Params  ", params)
+        const result = await ConsentService.initiateConsentRequest({
+            abhaId: input.abha_id,
+            hiuId: input.facilityId,
+            hiTypes: input.hiTypes || ["OPConsultation"],
+            dateFrom: input.from || new Date().toISOString(),
+            dateTo: input.to || new Date().toISOString(),
+            dataEraseAt: input.dataEraseAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            requesterName: input.requesterName,
+            purposeCode: input.purposeCode,
+            purposeText: input.purposeText,
+        });
 
-        let random32String = generateUID();
-        let headers = {
-            'Content-Type': 'application/json',
-            'REQUEST-ID': random32String,
-            'TIMESTAMP': new Date().toISOString(),
-            'X-CM-ID': 'sbx',
-            "Authorization": "Bearer " + token
-        }
+        console.log("[CONSENT_M3] Consent request initiated:", result.requestId);
 
-        const response = await axios.post(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.REQ_INIT}`,
-            params,
-            {
-                headers: headers
-            }
-        );
-        console.log("M3 Step-1 Response requestInitiate", response.data)
-        if (response.status == 202 || response.status == 200) {
-            const latestRecord = await HealthRecordModel.findOne({
-                hid_address: input.abha_id
-            }).sort({ updatedAt: -1 }).limit(1);
-            if (latestRecord) {
-                await HealthRecordModel.updateOne(
-                    { _id: latestRecord._id },
-                    {
-                        $set: {
-                            "version_m3.access_token": req.headers['authorization'],
-                            "version_m3.requested_data": input
-                        }
-                    }
-                );
-            }
-            console.log("latestRecord", latestRecord)
-            await getConsentRequestStatus(req, res, latestRecord);
-            //return res.status(response.status).json({ "status": response.status, "abha_api": "/hiecm/consent/v3/request/init", "message": "Your request has been successfully proceed" });
-        } else {
-            return res.status(response.status).json({ "status": response.status, "error": "getting error from api " + response.data, step: 1 });
-        }
+        return res.status(result.status).json({
+            status: "REQUESTED",
+            statusCode: result.status,
+            requestId: result.requestId,
+            message: "Consent request has been successfully initiated",
+            data: result.data,
+        });
     } catch (error: any) {
-        console.log("M3 hiecm/consent/v3/request/init   error Response", error.response)
+        console.error("[CONSENT_M3] Error:", error.response?.data || error.message);
         if (error.response) {
             return res
                 .status(error.response.status)
                 .json({ error: error.response.data });
         } else if (error.request) {
-            return res.status(503).json({ error: 'Service unavailable' });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
-    }
-};
-
-
-export const getConsentRequestStatus = async (req: any, res: any, latestRecord: any) => {
-    try {
-        const params = {
-            "consentRequestId": latestRecord?.version_m3?.consentId || ""
-        }
-
-        if (!params.consentRequestId) {
-            return res.status(200).json({ "abha_api": "/hiecm/consent/v3/request/status", "message": "Your request has been successfully proceed", status: 200, error: "Consent Request ID is missing" });
-        }
-
-        let random32String = generateUID();
-
-        let headers = {
-            "Content-Type": "application/json",
-            "REQUEST-ID": random32String,
-            "TIMESTAMP": new Date().toISOString(),
-            "X-CM-ID": "sbx",
-            "Authorization": "Bearer " + req.headers['authorization']
-        }
-        const response = await axios.post(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.GET_REQ_STATUS}`,
-            params,
-            {
-                headers: headers
-            }
-        );
-        console.log("M3 Step-1 Response requestInitiate", response.data)
-        if (response.status == 202 || response.status == 200) {
-            return res.status(response.status).json({ "consent": "Consent status request initiated...", "status": response.status, "abha_api": "/hiecm/consent/v3/request/status", "message": "Your request has been successfully proceed" });
-        } else {
-            return res.status(response.status).json({ "status": response.status, "error": "getting error from api ---/hiecm/consent/v3/request/status " + response.data, step: 1 });
-        }
-    } catch (error: any) {
-        console.log("M3 error-1", error.response)
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: 'Service unavailable' });
+            return res.status(503).json({ error: "Service unavailable" });
         } else {
             return res.status(500).json({ error: error.message });
         }

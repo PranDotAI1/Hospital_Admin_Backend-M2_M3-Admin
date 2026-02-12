@@ -1,6 +1,6 @@
 import { Schema, model, Document, Types } from "mongoose";
 
-export enum VisitStatus {
+export enum ScanShareVisitStatus {
   PENDING = "PENDING",
   REGISTERED = "REGISTERED",
   COMPLETED = "COMPLETED",
@@ -8,26 +8,26 @@ export enum VisitStatus {
   MISSED = "MISSED",
 }
 
-export interface IAddress {
+export interface IScanShareVisitAddress {
   line: string;
   district: string;
   state: string;
   pincode: string;
 }
 
-export interface IInsurance {
+export interface IScanShareVisitInsurance {
   provider?: string;
   policyNumber?: string;
 }
 
-export interface IPayment {
+export interface IScanShareVisitPayment {
   mode?: string;
   amount?: number;
 }
 
-export interface IOPDVisit extends Document {
+export interface IScanShareVisit extends Document {
   tokenNumber: string;
-  visitStatus: VisitStatus;
+  visitStatus: ScanShareVisitStatus;
   visitDate: Date;
   counterId: string;
   abhaAddress?: string;
@@ -36,7 +36,7 @@ export interface IOPDVisit extends Document {
   gender?: string;
   dob?: string;
   mobile?: string;
-  address?: IAddress;
+  address?: IScanShareVisitAddress;
   aadhaarNumber?: string;
   hprId?: string;
   latitude?: string;
@@ -47,13 +47,13 @@ export interface IOPDVisit extends Document {
   consultationFee?: number;
   complaint?: string;
   isEmergency?: boolean;
-  payment?: IPayment;
-  insurance?: IInsurance;
+  payment?: IScanShareVisitPayment;
+  insurance?: IScanShareVisitInsurance;
 
   patientId?: Types.ObjectId;
 }
 
-const AddressSchema = new Schema<IAddress>(
+const AddressSchema = new Schema<IScanShareVisitAddress>(
   {
     line: { type: String, required: false, trim: true },
     district: { type: String, required: false, trim: true },
@@ -63,7 +63,7 @@ const AddressSchema = new Schema<IAddress>(
   { _id: false },
 );
 
-const InsuranceSchema = new Schema<IInsurance>(
+const InsuranceSchema = new Schema<IScanShareVisitInsurance>(
   {
     provider: { type: String, required: false, trim: true },
     policyNumber: { type: String, required: false, trim: true },
@@ -71,7 +71,7 @@ const InsuranceSchema = new Schema<IInsurance>(
   { _id: false },
 );
 
-const PaymentSchema = new Schema<IPayment>(
+const PaymentSchema = new Schema<IScanShareVisitPayment>(
   {
     mode: { type: String, required: false, trim: true },
     amount: { type: Number, required: false, min: 0 },
@@ -79,7 +79,7 @@ const PaymentSchema = new Schema<IPayment>(
   { _id: false },
 );
 
-const OPDVisitSchema = new Schema<IOPDVisit>(
+const ScanShareVisitSchema = new Schema<IScanShareVisit>(
   {
     tokenNumber: {
       type: String,
@@ -89,8 +89,8 @@ const OPDVisitSchema = new Schema<IOPDVisit>(
     },
     visitStatus: {
       type: String,
-      enum: Object.values(VisitStatus),
-      default: VisitStatus.PENDING,
+      enum: Object.values(ScanShareVisitStatus),
+      default: ScanShareVisitStatus.PENDING,
       required: true,
       index: true,
     },
@@ -131,12 +131,15 @@ const OPDVisitSchema = new Schema<IOPDVisit>(
   },
   {
     timestamps: true,
-    collection: "opd_visits",
+    collection: "scan_share_visits",
   },
 );
 
-OPDVisitSchema.index({ visitStatus: 1, visitDate: 1 });
-OPDVisitSchema.index({ tokenNumber: 1, visitStatus: 1 });
-OPDVisitSchema.index({ abhaAddress: 1, visitDate: 1 });
+ScanShareVisitSchema.index({ visitStatus: 1, visitDate: 1 });
+ScanShareVisitSchema.index({ tokenNumber: 1, visitStatus: 1 });
+ScanShareVisitSchema.index({ abhaAddress: 1, visitDate: 1 });
 
-export const OPDVisitModel = model<IOPDVisit>("OPDVisit", OPDVisitSchema);
+export const ScanShareVisitModel = model<IScanShareVisit>(
+  "ScanShareVisit",
+  ScanShareVisitSchema,
+);

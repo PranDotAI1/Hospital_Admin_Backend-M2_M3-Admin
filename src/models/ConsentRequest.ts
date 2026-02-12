@@ -2,7 +2,9 @@ import { Schema, model, Document } from "mongoose";
 
 export interface IConsentRequest extends Document {
   consentRequestId: string;
+
   requestId: string;
+
   status:
     | "INITIATED"
     | "REQUESTED"
@@ -10,6 +12,7 @@ export interface IConsentRequest extends Document {
     | "DENIED"
     | "REVOKED"
     | "EXPIRED";
+
   patientAbhaId: string;
 
   patientName?: string;
@@ -20,6 +23,7 @@ export interface IConsentRequest extends Document {
   facilityName?: string;
 
   hiuId: string;
+
   requester: {
     name: string;
     identifier: {
@@ -28,12 +32,15 @@ export interface IConsentRequest extends Document {
       system: string;
     };
   };
+
   purpose: {
     code: string;
     text: string;
     refUri?: string;
   };
+
   hiTypes: string[];
+
   permission: {
     accessMode: string;
     dateRange: {
@@ -47,16 +54,25 @@ export interface IConsentRequest extends Document {
       repeats: number;
     };
   };
-  consentArtefacts: string[]; // List of Consent Artefact IDs
+
+  consentArtefacts: string[];
+
+  grantedAt?: Date;
+
+  consentExpiryOn?: Date;
+
+  lastCheckedAt?: Date;
+
+  error?: any;
+
   createdAt: Date;
   updatedAt: Date;
-  error?: any;
 }
 
 const ConsentRequestSchema = new Schema<IConsentRequest>(
   {
     consentRequestId: { type: String, unique: true, sparse: true },
-    requestId: { type: String, required: true },
+    requestId: { type: String, required: true, index: true },
     status: {
       type: String,
       enum: [
@@ -68,8 +84,9 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
         "EXPIRED",
       ],
       default: "INITIATED",
+      index: true,
     },
-    patientAbhaId: { type: String, required: true },
+    patientAbhaId: { type: String, required: true, index: true },
 
     patientName: { type: String },
     abhaAddress: { type: String },
@@ -107,6 +124,9 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
       },
     },
     consentArtefacts: [{ type: String }],
+    grantedAt: { type: Date },
+    consentExpiryOn: { type: Date },
+    lastCheckedAt: { type: Date },
     error: { type: Schema.Types.Mixed },
   },
   {
@@ -114,6 +134,10 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
     collection: "consent_requests",
   },
 );
+
+ConsentRequestSchema.index({ patientAbhaId: 1, status: 1 });
+ConsentRequestSchema.index({ consentRequestId: 1, status: 1 });
+ConsentRequestSchema.index({ status: 1, createdAt: -1 });
 
 export const ConsentRequestModel = model<IConsentRequest>(
   "ConsentRequest",

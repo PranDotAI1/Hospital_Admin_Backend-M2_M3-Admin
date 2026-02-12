@@ -48,7 +48,7 @@ app.use(
 app.set('views', path.join(__dirname, '../views'));
 app.set('view engine', 'jade');
 
-app.use(logger('combined'));
+app.use(logger('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
@@ -78,7 +78,7 @@ app.use('/api', indexRouter);
 app.use('/api/users', usersRouter);
 
 // this is for  dev purpose only dont uncomment in prod - @harshithreddy
-// app.all("/proxy/*", proxyRequest);
+app.all("/proxy/*", proxyRequest);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   const err = new Error('Not Found');
