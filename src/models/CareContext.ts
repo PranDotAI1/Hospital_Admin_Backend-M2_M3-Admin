@@ -23,6 +23,7 @@ export const HI_TYPES = [
   "ImmunizationRecord",
   "HealthDocumentRecord",
   "WellnessRecord",
+  "InvoiceRecord",
 ] as const;
 
 export type HIType = (typeof HI_TYPES)[number];

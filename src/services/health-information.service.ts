@@ -181,8 +181,8 @@ const findCareContextsForConsent = async (
   });
 
   if (artefact && artefact.careContexts && artefact.careContexts.length > 0) {
-    const careContextRefs = artefact.careContexts.map(
-      (cc) => cc.careContextReference,
+    const careContextRefs = artefact.careContexts.map((cc) =>
+      cc.careContextReference.trim(),
     );
 
     console.log(
@@ -304,9 +304,14 @@ const getOptionalDataForCareContext = async (
         dischargeSummary.treatmentGiven ||
         (dischargeSummary.dischargeMedications?.length ?? 0) > 0)) ||
     (assessment &&
-      (assessment.immunization ||
+      ((assessment.vitals && Object.keys(assessment.vitals).length > 0) ||
+        assessment.immunization ||
         assessment.symptomsComplaints ||
-        (assessment.medicalHistory?.length ?? 0) > 0));
+        (assessment.documentUploads && assessment.documentUploads.length > 0) ||
+        (assessment.medicalHistory?.length ?? 0) > 0 ||
+        (assessment.surgicalHistory?.length ?? 0) > 0 ||
+        (assessment.personalHistory?.length ?? 0) > 0 ||
+        (assessment.additionalDetails?.length ?? 0) > 0));
 
   if (!hasAny) return undefined;
 
@@ -333,6 +338,12 @@ const getOptionalDataForCareContext = async (
           clinicalSummary: dischargeSummary.clinicalSummary,
           treatmentGiven: dischargeSummary.treatmentGiven,
           dischargeMedications: dischargeSummary.dischargeMedications ?? [],
+          admissionDate: dischargeSummary.admissionDate,
+          dischargeDate: dischargeSummary.dischargeDate,
+          ward: dischargeSummary.ward,
+          conditionAtDischarge: dischargeSummary.conditionAtDischarge,
+          followUpInstructions: dischargeSummary.followUpInstructions,
+          surgicalProcedures: dischargeSummary.surgicalProcedures,
         }
       : undefined,
     assessment: assessment
@@ -341,6 +352,10 @@ const getOptionalDataForCareContext = async (
           immunization: assessment.immunization ?? undefined,
           symptomsComplaints: assessment.symptomsComplaints,
           medicalHistory: assessment.medicalHistory ?? [],
+          surgicalHistory: assessment.surgicalHistory ?? [],
+          personalHistory: assessment.personalHistory ?? [],
+          additionalDetails: assessment.additionalDetails ?? [],
+          documentUploads: assessment.documentUploads ?? [],
         }
       : undefined,
   };
@@ -424,6 +439,7 @@ const pushHealthData = async (
             "N/A",
           visitStatus: visitRef.visitStatus,
           complaint: soaps?.subjective ?? undefined,
+          consultationFee: visitRef.consultationFee ?? 0,
           counterId: "",
         } as any;
       }
@@ -624,7 +640,9 @@ const notifyHealthInfoTransfer = async (
           : "Failed to transfer health information",
     }));
 
-    const allTransferred = statusResponses.every((s) => s.hiStatus === "OK");
+    const allTransferred = statusResponses.every(
+      (s) => s.hiStatus === "DELIVERED",
+    );
 
     const payload = {
       notification: {

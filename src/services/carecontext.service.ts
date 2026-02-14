@@ -38,7 +38,9 @@ const normalizeAbhaAddress = (value: string | undefined): string => {
 };
 
 /** ABDM generate-token accepts only: M, F, O, D, T, U. Map common values to these. */
-const normalizeGenderForAbdm = (value: string | undefined): "M" | "F" | "O" | "D" | "T" | "U" => {
+const normalizeGenderForAbdm = (
+  value: string | undefined,
+): "M" | "F" | "O" | "D" | "T" | "U" => {
   if (!value || typeof value !== "string") return "U";
   const u = value.trim().toUpperCase();
   if (u === "M" || u.startsWith("MALE")) return "M";
@@ -412,9 +414,15 @@ export const linkCareContext = async (
     }
 
     if (!isLinkTokenValid(patient)) {
-      console.log("CareContext: No valid link token for patient", patient._id, "-> requesting token (no error thrown)");
+      console.log(
+        "CareContext: No valid link token for patient",
+        patient._id,
+        "-> requesting token (no error thrown)",
+      );
       careContext.linkingStatus = CareContextStatus.PENDING;
-      careContext.linkError = { message: "No valid link token available; token request triggered" };
+      careContext.linkError = {
+        message: "No valid link token available; token request triggered",
+      };
       await careContext.save();
 
       await requestLinkToken(patient);
@@ -606,7 +614,10 @@ export const notifyContext = async (
     if (!linkToken && (patient.abhaaddress || patient.ABHANumber)) {
       setImmediate(() => {
         requestLinkToken(patient).catch((err) =>
-          console.warn("CareContext notifyContext: link token request failed:", err?.message),
+          console.warn(
+            "CareContext notifyContext: link token request failed:",
+            err?.message,
+          ),
         );
       });
     }
