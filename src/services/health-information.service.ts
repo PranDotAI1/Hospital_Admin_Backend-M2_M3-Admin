@@ -512,7 +512,7 @@ const pushHealthData = async (
           ) as import("../models/CareContext").HIType[])
         : undefined;
     const combinedBundle =
-      FhirBundleService.generateCombinedBundleForCareContext(
+      await FhirBundleService.generateCombinedBundleForCareContext(
         patient,
         visit as any,
         careContext,

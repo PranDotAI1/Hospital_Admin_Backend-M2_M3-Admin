@@ -61,6 +61,15 @@ export interface IConsentRequest extends Document {
 
   consentExpiryOn?: Date;
 
+  approvedHiTypes?: string[];
+  approvedDateRange?: {
+    from: Date;
+    to: Date;
+  };
+
+  revokedAt?: Date;
+  deniedAt?: Date;
+
   lastCheckedAt?: Date;
 
   error?: any;
@@ -126,6 +135,13 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
     consentArtefacts: [{ type: String }],
     grantedAt: { type: Date },
     consentExpiryOn: { type: Date },
+    approvedHiTypes: [{ type: String }],
+    approvedDateRange: {
+      from: { type: Date },
+      to: { type: Date },
+    },
+    revokedAt: { type: Date },
+    deniedAt: { type: Date },
     lastCheckedAt: { type: Date },
     error: { type: Schema.Types.Mixed },
   },

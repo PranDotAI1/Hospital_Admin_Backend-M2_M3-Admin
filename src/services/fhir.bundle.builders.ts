@@ -1458,6 +1458,50 @@ export const generateFhirBundle = (
   }
 };
 
+const buildPdfDocumentReference = (
+  docId: string,
+  patientUUID: string,
+  title: string,
+  typeCode: string, // LOINC or SNOMED code
+  typeDisplay: string,
+  date: string,
+  base64Pdf: string,
+) => {
+  return {
+    fullUrl: `urn:uuid:${docId}`,
+    resource: {
+      resourceType: "DocumentReference",
+      id: docId,
+      status: "current",
+      docStatus: "final",
+      type: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: typeCode,
+            display: typeDisplay,
+          },
+        ],
+        text: typeDisplay,
+      },
+      subject: {
+        reference: `urn:uuid:${patientUUID}`,
+      },
+      content: [
+        {
+          attachment: {
+            contentType: "application/pdf",
+            language: "en-IN",
+            data: base64Pdf,
+            title: title,
+            creation: date,
+          },
+        },
+      ],
+    },
+  };
+};
+
 export const generateFhirBundlesForCareContext = (
   patient: IPatient,
   visit: IScanShareVisit,

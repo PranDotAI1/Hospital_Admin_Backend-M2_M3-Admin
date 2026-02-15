@@ -134,6 +134,17 @@ export const handleHipNotify = async (
               detail.permission.dateRange.to,
             );
           }
+
+          if (detail.hiTypes) {
+            updateData.approvedHiTypes = detail.hiTypes;
+          }
+          if (detail.permission?.dateRange) {
+            updateData.approvedDateRange = {
+              from: new Date(detail.permission.dateRange.from),
+              to: new Date(detail.permission.dateRange.to),
+            };
+          }
+
           console.log(
             `${LOG_PREFIX} Stored inline consentDetail for artefact ${detailArtefactId}`,
           );
@@ -185,6 +196,17 @@ export const handleHipNotify = async (
       const result = await ConsentArtefactModel.updateMany(query, {
         $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: new Date() },
       });
+      if (dbLookupId) {
+        await ConsentRequestModel.updateOne(
+          {
+            $or: [
+              { consentRequestId: dbLookupId },
+              { consentArtefacts: dbLookupId },
+            ],
+          },
+          { $set: { status: "REVOKED", revokedAt: new Date() } },
+        );
+      }
       console.log(`${LOG_PREFIX} Revoked ${result.modifiedCount} artefacts`);
     }
 
@@ -204,6 +226,17 @@ export const handleHipNotify = async (
       await ConsentArtefactModel.updateMany(query, {
         $set: { status: ConsentArtefactStatus.DENIED },
       });
+      if (dbLookupId) {
+        await ConsentRequestModel.updateOne(
+          {
+            $or: [
+              { consentRequestId: dbLookupId },
+              { consentArtefacts: dbLookupId },
+            ],
+          },
+          { $set: { status: "DENIED", deniedAt: new Date() } },
+        );
+      }
     }
 
     // Update the ConsentRequest record
@@ -338,7 +371,8 @@ const createArtefactStub = async (
           consentRequestId,
           status: ConsentArtefactStatus.GRANTED,
           patientAbhaAddress: consentReq?.patientAbhaId || "",
-          hipId: consentReq?.hiuId || facilityId,
+          hipId: facilityId,
+          hiuId: consentReq?.hiuId || "",
           hiTypes: consentReq?.hiTypes || [],
           permission: consentReq?.permission || {
             accessMode: "VIEW",
@@ -623,6 +657,18 @@ export const storeArtefactDetails = async (
       const crUpdate: any = {};
       if (artefact.grantedAt) crUpdate.grantedAt = artefact.grantedAt;
       if (artefact.expiryDate) crUpdate.consentExpiryOn = artefact.expiryDate;
+      if (artefact.hiTypes) crUpdate.approvedHiTypes = artefact.hiTypes;
+      if (
+        artefact.permission &&
+        artefact.permission.dateRange &&
+        artefact.permission.dateRange.from &&
+        artefact.permission.dateRange.to
+      ) {
+        crUpdate.approvedDateRange = {
+          from: artefact.permission.dateRange.from,
+          to: artefact.permission.dateRange.to,
+        };
+      }
       if (Object.keys(crUpdate).length > 0) {
         await ConsentRequestModel.updateOne(
           {
