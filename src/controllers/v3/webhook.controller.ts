@@ -138,19 +138,30 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
       const resolvedConsentRequestId =
         consentDetail.consentRequestId || paramRequestId;
       
-      const consentReq = resolvedConsentRequestId
-        ? await ConsentRequestModel.findOne({
-            $or: [
-              { consentRequestId: resolvedConsentRequestId },
-              { requestId: resolvedConsentRequestId },
-            ],
-          })
-            .select("requestPurpose")
-            .lean()
-        : null;
-      const usePHRCollection = consentReq
-        ? consentReq.requestPurpose === "PHR"
-        : true;
+      const isPHRPull = consentDetail.purpose?.code === "PATRQT";
+      
+      let usePHRCollection = isPHRPull;
+      if (!isPHRPull) {
+        const consentReq = resolvedConsentRequestId
+          ? await ConsentRequestModel.findOne({
+              $or: [
+                { consentRequestId: resolvedConsentRequestId },
+                { requestId: resolvedConsentRequestId },
+              ],
+            })
+              .select("requestPurpose")
+              .lean()
+          : null;
+        usePHRCollection = consentReq?.requestPurpose === "PHR";
+      }
+      
+      if (isPHRPull) {
+        console.log(
+          `${LOG_PREFIX} Detected PHR pull record (purpose.code=PATRQT). Using PHR collection.`,
+        );
+      }
+      
+      const artefactId = consentDetail.consentId || body.consent.id;
       
       const artefact = await ConsentService.storeArtefactDetails(
         consentDetail,

@@ -75,7 +75,10 @@ export const handleHipNotify = async (
   artefactIds = [...new Set(artefactIds)].filter(
     (id) => id && id !== consentRequestId,
   );
-  if (consentRequestId && (notificationConsentId === consentRequestId || artefactIds.length === 0)) {
+  if (
+    consentRequestId &&
+    (notificationConsentId === consentRequestId || artefactIds.length === 0)
+  ) {
     console.log(
       `${LOG_PREFIX} Excluded consentRequestId from artefact IDs (request id must not be stored as artefact)`,
     );
@@ -125,22 +128,32 @@ export const handleHipNotify = async (
       // For list UI: "Consent granted on" / "Consent expiry on"
       updateData.grantedAt = new Date();
 
-      const consentReq = consentRequestId
-        ? await ConsentRequestModel.findOne({
-            $or: [
-              { consentRequestId },
-              { requestId: consentRequestId },
-            ],
-          })
-            .select("requestPurpose")
-            .lean()
-        : null;
-      const usePHRCollection = consentReq
-        ? consentReq.requestPurpose === "PHR"
-        : true; // unknown consent = PHR (don't add to main)
+      let usePHRCollection = false;
+      
+      if (notification.consentDetail?.purpose?.code === "PATRQT") {
+        usePHRCollection = true;
+        console.log(
+          `${LOG_PREFIX} Detected PHR pull record (purpose.code=PATRQT). Using PHR collection.`,
+        );
+      } else {
+        const consentReq = consentRequestId
+          ? await ConsentRequestModel.findOne({
+              $or: [{ consentRequestId }, { requestId: consentRequestId }],
+            })
+              .select("requestPurpose")
+              .lean()
+          : null;
+        if (consentReq?.requestPurpose === "PHR") {
+          usePHRCollection = true;
+          console.log(
+            `${LOG_PREFIX} Using PHR collection based on ConsentRequest.requestPurpose=PHR.`,
+          );
+        }
+      }
+      
       if (usePHRCollection) {
         console.log(
-          `${LOG_PREFIX} Storing artefact(s) in phr_consent_artefacts${consentReq ? " (requestPurpose=PHR)" : " (no ConsentRequest in DB)"}.`,
+          `${LOG_PREFIX} Storing artefact(s) in phr_consent_artefacts (PHR pull record).`,
         );
       }
 
@@ -154,11 +167,20 @@ export const handleHipNotify = async (
         const detail = notification.consentDetail;
         const detailArtefactId = detail.consentId || notificationConsentId;
         if (detailArtefactId) {
+          const isPHRPull = detail.purpose?.code === "PATRQT";
+          const finalUsePHRCollection = isPHRPull || usePHRCollection;
+          
+          if (isPHRPull && !usePHRCollection) {
+            console.log(
+              `${LOG_PREFIX} Detected PHR pull record from purpose.code=PATRQT for artefact ${detailArtefactId}. Using PHR collection.`,
+            );
+          }
+          
           const artefact = await storeArtefactDetails(
             detail,
             status,
             consentRequestId || detailArtefactId,
-            usePHRCollection,
+            finalUsePHRCollection,
           );
           if (artefact) {
             updateData.consentArtefacts = [detailArtefactId];
@@ -185,20 +207,52 @@ export const handleHipNotify = async (
             console.log(
               `${LOG_PREFIX} Stored inline consentDetail for artefact ${detailArtefactId}`,
             );
+            
+            const hasCareContexts =
+              (detail.careContexts && Array.isArray(detail.careContexts) && detail.careContexts.length > 0) ||
+              (detail.consentDetail?.careContexts && Array.isArray(detail.consentDetail.careContexts) && detail.consentDetail.careContexts.length > 0);
+            
+            if (!hasCareContexts && artefact.careContexts?.length === 0 && !usePHRCollection) {
+              console.warn(
+                `${LOG_PREFIX} Inline consentDetail for ${detailArtefactId} has no care contexts. Triggering fetch to get full detail from ABDM.`,
+              );
+              fetchArtefactDetailsAsync(
+                [{ id: detailArtefactId }],
+                callbackAuthToken,
+              );
+            }
           }
         }
       } else if (artefactIds.length > 0) {
         // (b)/(c) Artefact IDs without inline detail
-        const ArtefactModel = usePHRCollection ? PHRConsentArtefactModel : ConsentArtefactModel;
+        let finalUsePHRCollection = usePHRCollection;
+        for (const aid of artefactIds) {
+          const existingPHR = await PHRConsentArtefactModel.findOne({ artefactId: aid });
+          if (existingPHR) {
+            finalUsePHRCollection = true;
+            console.warn(
+              `${LOG_PREFIX} Artefact ${aid} already exists in PHR collection. Using PHR collection for all artefacts.`,
+            );
+            break;
+          }
+        }
+        
+        const ArtefactModel = finalUsePHRCollection
+          ? PHRConsentArtefactModel
+          : ConsentArtefactModel;
         updateData.consentArtefacts = artefactIds;
         for (const aid of artefactIds) {
           const exists = await ArtefactModel.findOne({ artefactId: aid });
           if (!exists) {
-            await createArtefactStub(aid, consentRequestId || aid, usePHRCollection);
+            await createArtefactStub(
+              aid,
+              consentRequestId || aid,
+              finalUsePHRCollection,
+            );
           }
         }
         console.log(
-          `${LOG_PREFIX} Ensured ${artefactIds.length} artefact stubs for consent${usePHRCollection ? " (PHR collection)" : ""}`,
+          `${LOG_PREFIX} Ensured ${artefactIds.length} artefact stubs for consent${finalUsePHRCollection ? " (PHR collection)" : ""}`,
         );
         const idsNeedingFetch: string[] = [];
         for (const aid of artefactIds) {
@@ -207,17 +261,28 @@ export const handleHipNotify = async (
             idsNeedingFetch.push(aid);
           }
         }
-        if (idsNeedingFetch.length > 0 && !usePHRCollection) {
+        if (idsNeedingFetch.length > 0 && !finalUsePHRCollection) {
           fetchArtefactDetailsAsync(
             idsNeedingFetch.map((id) => ({ id })),
             callbackAuthToken,
           );
         }
+        
+        usePHRCollection = finalUsePHRCollection;
       }
 
       // ======== AUTO-TRIGGER: Fetch health data (only for HIMS consents; PHR app calls fetch itself) ========
       if (artefactIds.length > 0 && !usePHRCollection) {
-        triggerHiuDataFetchAsync(artefactIds);
+        const anyInPHR = await PHRConsentArtefactModel.findOne({ 
+          artefactId: { $in: artefactIds } 
+        });
+        if (!anyInPHR) {
+          triggerHiuDataFetchAsync(artefactIds);
+        } else {
+          console.log(
+            `${LOG_PREFIX} Skipping AUTO-TRIGGER: At least one artefact exists in PHR collection.`,
+          );
+        }
       }
     }
 
@@ -388,14 +453,50 @@ const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         });
 
         if (recentOrSuccessfulRequest) {
+          if (recentOrSuccessfulRequest.storeAsExternalRecord !== true) {
+            console.log(
+              `${LOG_PREFIX} [AUTO-TRIGGER] Previous request ${recentOrSuccessfulRequest.requestId} didn't have storeAsExternalRecord=true. Allowing re-fetch for ${artefactId}.`,
+            );
+          } else {
+            console.log(
+              `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - valid request exists (requestId: ${recentOrSuccessfulRequest.requestId}, status: ${recentOrSuccessfulRequest.status})`,
+            );
+            continue;
+          }
+        }
+
+        // This prevents PHR consents from triggering HIMS data fetch
+        let artefact = await PHRConsentArtefactModel.findOne({ artefactId });
+        if (artefact) {
           console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - valid request exists (requestId: ${recentOrSuccessfulRequest.requestId}, status: ${recentOrSuccessfulRequest.status})`,
+            `${LOG_PREFIX} [AUTO-TRIGGER] Artefact ${artefactId} found in PHR collection. Skipping AUTO-TRIGGER (PHR consents don't use AUTO-TRIGGER).`,
           );
           continue;
         }
-
-        // Get consent's date range from the stored artefact
-        const artefact = await ConsentArtefactModel.findOne({ artefactId });
+        
+        artefact = await ConsentArtefactModel.findOne({ artefactId });
+        if (!artefact) {
+          console.warn(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Artefact ${artefactId} not found in either collection. Skipping.`,
+          );
+          continue;
+        }
+        
+        const purposeCode = artefact.rawConsentDetail?.purpose?.code;
+        const isPHRPull = purposeCode === "PATRQT";
+        
+        if (isPHRPull) {
+          console.log(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - PHR pull record (purpose.code=PATRQT). PHR consents don't use AUTO-TRIGGER.`,
+          );
+          continue;
+        }
+        
+        const isHIMS = true; // If not PHR, it's HIMS
+        
+        console.log(
+          `${LOG_PREFIX} [AUTO-TRIGGER] Artefact ${artefactId} is HIMS (purpose.code=${purposeCode || "not PATRQT"}). Proceeding with AUTO-TRIGGER.`,
+        );
 
         let dateRange: { from: Date; to: Date };
 
@@ -422,12 +523,13 @@ const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         }
 
         console.log(
-          `${LOG_PREFIX} [AUTO-TRIGGER] Initiating HIU data fetch for artefact: ${artefactId}`,
+          `${LOG_PREFIX} [AUTO-TRIGGER] Initiating HIU data fetch for artefact: ${artefactId} (HIMS: ${isHIMS})`,
         );
 
         const result = await HiuService.requestHealthInformation(
           artefactId,
           dateRange,
+          { storeAsExternalRecord: isHIMS }, // Only store for HIMS consents, not PHR
         );
         console.log(
           `${LOG_PREFIX} [AUTO-TRIGGER] HIU request sent for ${artefactId}, requestId: ${result.requestId}`,
@@ -463,7 +565,9 @@ const createArtefactStub = async (
   }
   try {
     const consentReq = await ConsentRequestModel.findOne({ consentRequestId });
-    const ArtefactModel = usePHRCollection ? PHRConsentArtefactModel : ConsentArtefactModel;
+    const ArtefactModel = usePHRCollection
+      ? PHRConsentArtefactModel
+      : ConsentArtefactModel;
 
     await ArtefactModel.findOneAndUpdate(
       { artefactId },
@@ -476,7 +580,9 @@ const createArtefactStub = async (
           hipId: facilityId,
           hiuId: consentReq?.hiuId || "",
           hiTypes: consentReq?.hiTypes || [],
-          ...(consentReq?.requestPurpose && { requestPurpose: consentReq.requestPurpose }),
+          ...(consentReq?.requestPurpose && {
+            requestPurpose: consentReq.requestPurpose,
+          }),
           permission: (() => {
             const p = consentReq?.permission;
             if (p?.dateRange?.from != null && p?.dateRange?.to != null) {
@@ -486,7 +592,9 @@ const createArtefactStub = async (
                   from: new Date(p.dateRange.from),
                   to: new Date(p.dateRange.to),
                 },
-                dataEraseAt: p.dataEraseAt ? new Date(p.dataEraseAt) : new Date(),
+                dataEraseAt: p.dataEraseAt
+                  ? new Date(p.dataEraseAt)
+                  : new Date(),
               };
             }
             const now = new Date();
@@ -629,7 +737,6 @@ export const fetchConsentArtefact = async (
       "X-CM-ID": X_CM_ID,
       Authorization: abdmToken,
     };
-    
     // Use X-HIU-ID if available, otherwise fallback to X-HIP-ID
     if (X_HIU_ID) {
       headers["X-HIU-ID"] = X_HIU_ID;
@@ -680,12 +787,24 @@ export const storeArtefactDetails = async (
 ): Promise<IConsentArtefact | null> => {
   try {
     const artefactId = consentDetail.consentId || consentDetail.id;
-    const detailRequestId =
-      consentDetail.consentRequestId || consentRequestId;
+    const detailRequestId = consentDetail.consentRequestId || consentRequestId;
 
     if (!artefactId) {
       console.error(`${LOG_PREFIX} No artefact ID in consent detail`);
       return null;
+    }
+    
+    const purposeCode = consentDetail.purpose?.code;
+    if (purposeCode === "PATRQT") {
+      usePHRCollection = true;
+      console.log(
+        `${LOG_PREFIX} Overriding collection decision: purpose.code=PATRQT detected. Using PHR collection for artefact ${artefactId}.`,
+      );
+    } else if (purposeCode && usePHRCollection) {
+      // If purpose.code is NOT PATRQT but usePHRCollection is true, log warning
+      console.warn(
+        `${LOG_PREFIX} Warning: usePHRCollection=true but purpose.code=${purposeCode} (not PATRQT). This might be incorrect.`,
+      );
     }
 
     // Never store when we only have a request id and no real consent payload.
@@ -713,7 +832,9 @@ export const storeArtefactDetails = async (
     };
 
     const consentReq = detailRequestId
-      ? await ConsentRequestModel.findOne({ consentRequestId: detailRequestId }).select("requestPurpose").lean()
+      ? await ConsentRequestModel.findOne({ consentRequestId: detailRequestId })
+          .select("requestPurpose")
+          .lean()
       : null;
     if (consentReq?.requestPurpose) {
       updateData.requestPurpose = consentReq.requestPurpose;
@@ -734,9 +855,13 @@ export const storeArtefactDetails = async (
 
     // Extract care contexts - support multiple shapes (careContextReference, reference) and MERGE with existing
     // so we never lose care contexts (ABDM may send in batches or we may get multiple callbacks).
-    const normalizeCareContext = (cc: any): { patientReference: string; careContextReference: string } | null => {
+    const normalizeCareContext = (
+      cc: any,
+    ): { patientReference: string; careContextReference: string } | null => {
       const careContextRef =
-        cc.careContextReference ?? cc.reference ?? cc.careContextReferenceNumber;
+        cc.careContextReference ??
+        cc.reference ??
+        cc.careContextReferenceNumber;
       const patientRef =
         cc.patientReference ?? cc.patientId ?? cc.patient?.id ?? "";
       if (!careContextRef || typeof careContextRef !== "string") return null;
@@ -746,33 +871,98 @@ export const storeArtefactDetails = async (
       };
     };
 
-    const incomingCareContexts: Array<{ patientReference: string; careContextReference: string }> = [];
-    if (consentDetail.careContexts && Array.isArray(consentDetail.careContexts)) {
+    const incomingCareContexts: Array<{
+      patientReference: string;
+      careContextReference: string;
+    }> = [];
+    if (
+      consentDetail.careContexts &&
+      Array.isArray(consentDetail.careContexts)
+    ) {
+      console.log(
+        `${LOG_PREFIX} Found ${consentDetail.careContexts.length} care contexts in consentDetail.careContexts`,
+      );
       consentDetail.careContexts.forEach((cc: any) => {
         const normalized = normalizeCareContext(cc);
-        if (normalized) incomingCareContexts.push(normalized);
+        if (normalized) {
+          incomingCareContexts.push(normalized);
+        } else {
+          console.warn(
+            `${LOG_PREFIX} Failed to normalize care context:`,
+            JSON.stringify(cc),
+          );
+        }
       });
     }
     // Also check nested consentDetail (e.g. consentDetail.consentDetail.careContexts)
     const nested = consentDetail.consentDetail?.careContexts;
     if (nested && Array.isArray(nested)) {
+      console.log(
+        `${LOG_PREFIX} Found ${nested.length} care contexts in nested consentDetail.consentDetail.careContexts`,
+      );
       nested.forEach((cc: any) => {
         const normalized = normalizeCareContext(cc);
-        if (normalized) incomingCareContexts.push(normalized);
+        if (normalized) {
+          incomingCareContexts.push(normalized);
+        } else {
+          console.warn(
+            `${LOG_PREFIX} Failed to normalize nested care context:`,
+            JSON.stringify(cc),
+          );
+        }
       });
     }
 
+    console.log(
+      `${LOG_PREFIX} Total normalized incoming care contexts: ${incomingCareContexts.length}`,
+    );
     if (incomingCareContexts.length > 0) {
-      const ArtefactModelForMerge = usePHRCollection ? PHRConsentArtefactModel : ConsentArtefactModel;
+      console.log(
+        `${LOG_PREFIX} Incoming care contexts:`,
+        JSON.stringify(incomingCareContexts),
+      );
+    } else {
+      console.warn(
+        `${LOG_PREFIX} ⚠️ No care contexts extracted from consent detail for artefact ${artefactId}`,
+      );
+      console.warn(
+        `${LOG_PREFIX} Raw consentDetail structure:`,
+        JSON.stringify({
+          hasCareContexts: !!consentDetail.careContexts,
+          careContextsType: Array.isArray(consentDetail.careContexts)
+            ? "array"
+            : typeof consentDetail.careContexts,
+          careContextsLength: Array.isArray(consentDetail.careContexts)
+            ? consentDetail.careContexts.length
+            : "N/A",
+          hasNested: !!consentDetail.consentDetail?.careContexts,
+          nestedType: Array.isArray(consentDetail.consentDetail?.careContexts)
+            ? "array"
+            : typeof consentDetail.consentDetail?.careContexts,
+        }),
+      );
+    }
+
+    if (incomingCareContexts.length > 0) {
+      const ArtefactModelForMerge = usePHRCollection
+        ? PHRConsentArtefactModel
+        : ConsentArtefactModel;
       const existing = await ArtefactModelForMerge.findOne(
         { artefactId },
         { careContexts: 1 },
       ).lean();
       const existingList = existing?.careContexts || [];
-      const byRef = new Map<string, { patientReference: string; careContextReference: string }>();
+      const byRef = new Map<
+        string,
+        { patientReference: string; careContextReference: string }
+      >();
       existingList.forEach((ec: any) => {
         const ref = ec.careContextReference?.trim();
-        if (ref) byRef.set(ref, { patientReference: ec.patientReference || "", careContextReference: ref });
+        if (ref)
+          byRef.set(ref, {
+            patientReference: ec.patientReference || "",
+            careContextReference: ref,
+          });
       });
       incomingCareContexts.forEach((ic) => {
         if (ic.careContextReference) byRef.set(ic.careContextReference, ic);
@@ -797,15 +987,17 @@ export const storeArtefactDetails = async (
         dateRange = { from: new Date(fromVal), to: new Date(toVal) };
       } else {
         const now = new Date();
-        const erase = dataEraseVal != null ? new Date(dataEraseVal) : new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+        const erase =
+          dataEraseVal != null
+            ? new Date(dataEraseVal)
+            : new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
         dateRange = { from: now, to: erase };
       }
 
       updateData.permission = {
         accessMode: perm.accessMode || "VIEW",
         dateRange,
-        dataEraseAt:
-          dataEraseVal != null ? new Date(dataEraseVal) : new Date(),
+        dataEraseAt: dataEraseVal != null ? new Date(dataEraseVal) : new Date(),
         frequency: perm.frequency || {
           unit: "HOUR",
           value: 0,
@@ -842,7 +1034,9 @@ export const storeArtefactDetails = async (
       updateData.status = consentStatus;
     }
 
-    const ArtefactModel = usePHRCollection ? PHRConsentArtefactModel : ConsentArtefactModel;
+    const ArtefactModel = usePHRCollection
+      ? PHRConsentArtefactModel
+      : ConsentArtefactModel;
     const artefact = await ArtefactModel.findOneAndUpdate(
       { artefactId },
       { $set: updateData },

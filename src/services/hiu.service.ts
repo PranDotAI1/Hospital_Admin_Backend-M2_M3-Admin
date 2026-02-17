@@ -249,6 +249,11 @@ export const handleHiuTransfer = async (
 
   // 1. Find HIU request - try transactionId first, then fallback to recent request by consent
   let hiuRequest = await HIURequestModel.findOne({ transactionId });
+  if (hiuRequest) {
+    console.log(
+      `${LOG_PREFIX} Found HIU request by transactionId: ${hiuRequest.requestId}, storeAsExternalRecord: ${hiuRequest.storeAsExternalRecord}`,
+    );
+  }
 
   if (!hiuRequest && consentArtefactId) {
     console.log(
@@ -336,11 +341,14 @@ export const handleHiuTransfer = async (
   // Only store external records when consent artefact exists and is GRANTED (never under request-id or revoked/denied)
   let consentArtefact = await ConsentArtefactModel.findOne({
     artefactId: hiuRequest.consentArtefactId,
-  });
+  }).lean();
+  let artefactSource = "main";
+  
   if (!consentArtefact) {
     consentArtefact = await PHRConsentArtefactModel.findOne({
       artefactId: hiuRequest.consentArtefactId,
-    });
+    }).lean();
+    artefactSource = "phr";
   }
 
   if (!consentArtefact) {
@@ -386,19 +394,32 @@ export const handleHiuTransfer = async (
   );
 
   console.log(
-    `${LOG_PREFIX} Validating against ${allowedCareContexts.size} allowed care contexts for consent ${hiuRequest.consentArtefactId}`,
+    `${LOG_PREFIX} Validating against ${allowedCareContexts.size} allowed care contexts for consent ${hiuRequest.consentArtefactId} (found in ${artefactSource} collection)`,
   );
+  
+  if (allowedCareContexts.size === 0) {
+    console.warn(
+      `${LOG_PREFIX} ⚠️ Artefact found but has 0 care contexts! Artefact source: ${artefactSource}, requestPurpose: ${(consentArtefact as any).requestPurpose || "unknown"}`,
+    );
+  }
 
   // 2. Process each entry (decryption)
   for (const entry of entries) {
     try {
       // --- VALIDATION: Check if this Care Context is allowed ---
       const ccRef = entry.careContextReference;
+      
       if (allowedCareContexts.size > 0 && !allowedCareContexts.has(ccRef)) {
         console.warn(
           `${LOG_PREFIX} [SECURITY] Care Context ${ccRef} is NOT in allowed list for consent ${hiuRequest.consentArtefactId}. DROPPING RECORD.`,
         );
         continue;
+      }
+      
+      if (allowedCareContexts.size === 0 && hiuRequest.storeAsExternalRecord === true) {
+        console.warn(
+          `${LOG_PREFIX} ⚠️ Artefact has 0 care contexts but storeAsExternalRecord=true. Allowing storage for ${ccRef} (ABDM sent it, so it's valid).`,
+        );
       }
 
       if (entry.content) {
@@ -456,12 +477,18 @@ export const handleHiuTransfer = async (
         }
 
         // Only store in external_health_records when this fetch was for our HIMS (user-approved records we hold). Do NOT store when the request was "pull records" (patient updating his PHR) – consent was for his PHR view, not for us to store and show in HIMS (compliance risk).
+        console.log(
+          `${LOG_PREFIX} Checking storeAsExternalRecord for ${entry.careContextReference}: requestId=${hiuRequest.requestId}, storeAsExternalRecord=${hiuRequest.storeAsExternalRecord}`,
+        );
         if (hiuRequest.storeAsExternalRecord !== true) {
           console.log(
             `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: storeAsExternalRecord is not set (e.g. PHR pull records). External records only for HIMS-use fetches.`,
           );
           continue;
         }
+        console.log(
+          `${LOG_PREFIX} ✓ storeAsExternalRecord=true, proceeding to store record for ${entry.careContextReference}`,
+        );
         if (consentArtefact.requestPurpose === "PHR") {
           console.log(
             `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: consent requestPurpose is PHR. Not for HIMS.`,
