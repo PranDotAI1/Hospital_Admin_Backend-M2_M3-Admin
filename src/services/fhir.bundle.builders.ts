@@ -1446,7 +1446,7 @@ export const generateFhirBundle = (
         careContext,
         optionalData,
       );
-    case "InvoiceRecord":
+    case "Invoice":
       return buildInvoiceRecordBundle(patient, visit, careContext);
     default:
       return buildOPConsultationBundle(

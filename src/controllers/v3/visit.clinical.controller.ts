@@ -413,14 +413,35 @@ export const recordAssessment = async (req: Request, res: Response) => {
       });
     }
 
-    const body = req.body as {
-      vitals?: Record<string, unknown>;
-      immunization?: IImmunizationRecord;
+    const parseIfString = (val: any) => {
+      if (typeof val === "string") {
+        try {
+          return JSON.parse(val);
+        } catch (e) {
+          return val;
+        }
+      }
+      return val;
+    };
+
+    let body = req.body as {
+      vitals?: any;
+      immunization?: any;
       symptomsComplaints?: string;
-      medicalHistory?: IMedicalHistoryEntry[];
-      surgicalHistory?: ISurgicalHistoryEntry[];
-      additionalDetails?: IAdditionalDetailsEntry[];
-      personalHistory?: IPersonalHistoryEntry[];
+      medicalHistory?: any;
+      surgicalHistory?: any;
+      additionalDetails?: any;
+      personalHistory?: any;
+    };
+
+    body = {
+      ...body,
+      vitals: parseIfString(body.vitals),
+      immunization: parseIfString(body.immunization),
+      medicalHistory: parseIfString(body.medicalHistory),
+      surgicalHistory: parseIfString(body.surgicalHistory),
+      additionalDetails: parseIfString(body.additionalDetails),
+      personalHistory: parseIfString(body.personalHistory),
     };
 
     const validationErrors: string[] = [];
@@ -498,27 +519,82 @@ export const recordAssessment = async (req: Request, res: Response) => {
       });
     }
 
+    const files = (req.files as Express.Multer.File[]) || [];
+    const newUploads = files.map((file) => ({
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      fileData: file.buffer,
+      uploadDate: new Date(),
+    }));
+
+    const updateQuery: any = {
+      $set: {
+        visitId: resolved.visitId,
+        patientId: resolved.patientId,
+        vitals: body?.vitals,
+        immunization: immunization ?? body?.immunization,
+        symptomsComplaints: body?.symptomsComplaints,
+        medicalHistory: body?.medicalHistory,
+        surgicalHistory: body?.surgicalHistory,
+        additionalDetails: body?.additionalDetails,
+        personalHistory: body?.personalHistory,
+      },
+    };
+
+    if (newUploads.length > 0) {
+      updateQuery.$push = { documentUploads: { $each: newUploads } };
+    }
+
     await VisitAssessmentModel.findOneAndUpdate(
       { visitId: resolved.visitId },
-      {
-        $set: {
-          visitId: resolved.visitId,
-          patientId: resolved.patientId,
-          vitals: body?.vitals,
-          immunization: immunization ?? body?.immunization,
-          symptomsComplaints: body?.symptomsComplaints,
-          medicalHistory: body?.medicalHistory,
-          surgicalHistory: body?.surgicalHistory,
-          additionalDetails: body?.additionalDetails,
-          personalHistory: body?.personalHistory,
-        },
-      },
+      updateQuery,
       { upsert: true, new: true },
     );
+
+    // Determine HI Types based on what data was provided
+    const hiTypes: HIType[] = [];
+
+    if (body?.vitals && Object.keys(body.vitals).length > 0) {
+      hiTypes.push("WellnessRecord");
+    }
+
+    if (immunization || body?.immunization) {
+      hiTypes.push("ImmunizationRecord");
+    }
+
+    if (
+      body?.symptomsComplaints ||
+      (body?.medicalHistory && body.medicalHistory.length > 0) ||
+      (body?.surgicalHistory && body.surgicalHistory.length > 0) ||
+      (body?.personalHistory && body.personalHistory.length > 0) ||
+      (body?.additionalDetails && body.additionalDetails.length > 0)
+    ) {
+      hiTypes.push("OPConsultation");
+    }
+
+    if (newUploads.length > 0) {
+      hiTypes.push("HealthDocumentRecord");
+    }
+
+    let contextData: any = null;
+    if (hiTypes.length > 0) {
+      const linkResult = await saveAndLinkHiTypes(resolved, hiTypes);
+      if (linkResult?.careContext) {
+        contextData = {
+          careContextId: linkResult.careContext._id,
+          hiTypes: linkResult.careContext.hiTypes,
+        };
+      } else {
+        console.warn(
+          "Visit clinical: Data saved but Care Context update/notify skipped (no context found).",
+        );
+      }
+    }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: "Assessment saved successfully.",
+      data: contextData,
     });
   } catch (error: any) {
     console.error("Visit clinical recordAssessment error:", error);

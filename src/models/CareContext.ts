@@ -23,7 +23,7 @@ export const HI_TYPES = [
   "ImmunizationRecord",
   "HealthDocumentRecord",
   "WellnessRecord",
-  "InvoiceRecord",
+  "Invoice",
 ] as const;
 
 export type HIType = (typeof HI_TYPES)[number];
@@ -69,13 +69,11 @@ const CareContextSchema = new Schema<ICareContext>(
       type: Schema.Types.ObjectId,
       ref: "Patient",
       required: true,
-      index: true,
     },
     visitId: {
       type: Schema.Types.ObjectId,
       ref: "ScanShareVisit",
       required: false,
-      index: true,
     },
 
     careContextReference: {
@@ -83,19 +81,16 @@ const CareContextSchema = new Schema<ICareContext>(
       required: true,
       unique: true,
       trim: true,
-      index: true,
     },
     patientReference: {
       type: String,
       required: true,
       trim: true,
-      index: true,
     },
     abhaAddress: {
       type: String,
       required: false,
       trim: true,
-      index: true,
     },
     display: {
       type: String,
@@ -114,7 +109,6 @@ const CareContextSchema = new Schema<ICareContext>(
       enum: Object.values(CareContextStatus),
       default: CareContextStatus.PENDING,
       required: true,
-      index: true,
     },
     linkRequestId: {
       type: String,
@@ -181,10 +175,8 @@ const CareContextSchema = new Schema<ICareContext>(
 
 CareContextSchema.index({ patientId: 1, visitId: 1 });
 CareContextSchema.index({ abhaAddress: 1, linkingStatus: 1 });
-CareContextSchema.index({ linkingStatus: 1, createdAt: -1 });
 CareContextSchema.index({ linkRequestId: 1 }, { sparse: true });
 CareContextSchema.index({ consentId: 1 }, { sparse: true });
-CareContextSchema.index({ transactionId: 1 }, { sparse: true });
 
 export const CareContextModel = model<ICareContext>(
   "CareContext",

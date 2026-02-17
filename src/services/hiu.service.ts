@@ -9,7 +9,11 @@ import {
   ExternalRecordStatus,
 } from "../models/ExternalHealthRecord";
 import { PatientModel } from "../models/Patient";
-import { ConsentArtefactModel } from "../models/ConsentArtefact";
+import {
+  ConsentArtefactModel,
+  ConsentArtefactStatus,
+} from "../models/ConsentArtefact";
+import { PHRConsentArtefactModel } from "../models/PHRConsentArtefact";
 import {
   generateKeyMaterial,
   decryptHealthData,
@@ -27,33 +31,80 @@ import { AbdmTokenService } from "./abdm.token.service";
 
 const LOG_PREFIX = "[HIU_SERVICE]";
 const HIU_DATA_PUSH_URL = `${process.env.ABDM_CALLBACK_URL || "https://admin.pran.ai"}/api/v3/hiu/health-information/transfer`;
+const SKIP_OWN_FACILITY = false;
 
 export const requestHealthInformation = async (
   consentArtefactId: string,
   dateRange: { from: Date; to: Date },
-): Promise<{ requestId: string; status: number }> => {
+  options?: { storeAsExternalRecord?: boolean },
+): Promise<{ requestId: string; status: number; existingRecordCount: number }> => {
   try {
-    const consent = await ConsentArtefactModel.findOne({
+    let consent = await ConsentArtefactModel.findOne({
       artefactId: consentArtefactId,
     });
+    if (!consent) {
+      consent = await PHRConsentArtefactModel.findOne({
+        artefactId: consentArtefactId,
+      });
+    }
     if (!consent) {
       throw new Error(`Consent artefact not found: ${consentArtefactId}`);
     }
 
+    // How many external records we already have for this consent (so frontend can show "already available")
+    const existingRecordCount = await ExternalHealthRecordModel.countDocuments({
+      consentArtefactId,
+    });
+
+    // --- Date Range Validation & Clamping ---
+    const consentRange = consent.permission.dateRange;
+    const requestedFrom = new Date(dateRange.from);
+    const requestedTo = new Date(dateRange.to);
+    const consentFrom = new Date(consentRange.from);
+    const consentTo = new Date(consentRange.to);
+
+    // 1. Clamp 'From' date: cannot be earlier than consent start
+    const finalFrom = requestedFrom < consentFrom ? consentFrom : requestedFrom;
+
+    // 2. Clamp 'To' date: cannot be later than consent end
+    const finalTo = requestedTo > consentTo ? consentTo : requestedTo;
+
+    // 3. Validation: Check if range is valid after clamping
+    if (finalFrom > finalTo) {
+      throw new Error(
+        `Requested date range (${dateRange.from.toISOString()} - ${dateRange.to.toISOString()}) is outside the approved consent range (${consentRange.from.toISOString()} - ${consentRange.to.toISOString()})`,
+      );
+    }
+
+    console.log(
+      `${LOG_PREFIX} Date Range Clamped: Requested [${requestedFrom.toISOString()} - ${requestedTo.toISOString()}] -> Final [${finalFrom.toISOString()} - ${finalTo.toISOString()}]`,
+    );
+
+    const finalDateRange = { from: finalFrom, to: finalTo };
+
     const keys = generateKeyMaterial();
     const requestId = generateUID();
+
+    const storeAsExternalRecord = options?.storeAsExternalRecord === true;
+
+    if (storeAsExternalRecord && consent.requestPurpose === "PHR") {
+      throw new Error(
+        `Consent ${consentArtefactId} has requestPurpose PHR (pull records). Cannot use for HIMS external records. Use a consent initiated with requestPurpose HIMS.`,
+      );
+    }
 
     await HIURequestModel.create({
       requestId,
       patientAbhaAddress: consent.patientAbhaAddress,
       consentArtefactId: consent.artefactId,
-      dateRange,
+      dateRange: finalDateRange,
       keyMaterial: {
         privateKey: keys.privateKey,
         publicKey: keys.publicKey,
         nonce: keys.nonce,
       },
       status: HIURequestStatus.INITIATED,
+      storeAsExternalRecord,
     });
 
     console.log(
@@ -68,8 +119,8 @@ export const requestHealthInformation = async (
           id: consentArtefactId,
         },
         dateRange: {
-          from: dateRange.from.toISOString(),
-          to: dateRange.to.toISOString(),
+          from: finalDateRange.from.toISOString(),
+          to: finalDateRange.to.toISOString(),
         },
         dataPushUrl: HIU_DATA_PUSH_URL,
         keyMaterial: {
@@ -121,7 +172,11 @@ export const requestHealthInformation = async (
       },
     );
 
-    return { requestId, status: response.status };
+    return {
+      requestId,
+      status: response.status,
+      existingRecordCount,
+    };
   } catch (error: any) {
     console.error(
       `${LOG_PREFIX} Request failed:`,
@@ -158,18 +213,26 @@ export const handleHiuOnRequest = async (
     return;
   }
 
-  if (hiRequest && hiRequest.transactionId) {
+  // TransactionId comes from the callback body (ABDM gateway), not from our DB
+  const transactionId =
+    body.hiRequest?.transactionId ??
+    body.transactionId ??
+    hiRequest?.transactionId;
+  if (transactionId) {
     console.log(
-      `${LOG_PREFIX} Request ${requestId} acknowledged. TransactionId: ${hiRequest.transactionId}`,
+      `${LOG_PREFIX} Request ${requestId} acknowledged. TransactionId: ${transactionId}`,
     );
-
     await HIURequestModel.updateOne(
       { requestId },
       {
         status: HIURequestStatus.ACKNOWLEDGED,
-        transactionId: hiRequest.transactionId,
+        transactionId,
         $push: { callbacks: { type: "on-request", body } },
       },
+    );
+  } else {
+    console.warn(
+      `${LOG_PREFIX} On-request for ${requestId} had no transactionId in body. Keys: ${Object.keys(body).join(", ")}`,
     );
   }
 };
@@ -269,9 +332,75 @@ export const handleHiuTransfer = async (
   const { privateKey, nonce: myNonce } = hiuRequest.keyMaterial;
   const { dhPublicKey, nonce: senderNonce } = senderKeyMaterial;
 
+  // --- PRE-FETCH CONSENT ARTEFACT FOR VALIDATION ---
+  // Only store external records when consent artefact exists and is GRANTED (never under request-id or revoked/denied)
+  let consentArtefact = await ConsentArtefactModel.findOne({
+    artefactId: hiuRequest.consentArtefactId,
+  });
+  if (!consentArtefact) {
+    consentArtefact = await PHRConsentArtefactModel.findOne({
+      artefactId: hiuRequest.consentArtefactId,
+    });
+  }
+
+  if (!consentArtefact) {
+    console.warn(
+      `${LOG_PREFIX} Consent artefact ${hiuRequest.consentArtefactId} not found. Skipping storage of external health records.`,
+    );
+    await HIURequestModel.updateOne(
+      { transactionId },
+      {
+        status: HIURequestStatus.FAILED,
+        $push: {
+          callbacks: {
+            type: "transfer",
+            body: { error: "Consent artefact not found" },
+          },
+        },
+      },
+    );
+    return;
+  }
+
+  if (consentArtefact.status !== ConsentArtefactStatus.GRANTED) {
+    console.warn(
+      `${LOG_PREFIX} Consent ${hiuRequest.consentArtefactId} is ${consentArtefact.status}. Skipping storage of external health records.`,
+    );
+    await HIURequestModel.updateOne(
+      { transactionId },
+      {
+        status: HIURequestStatus.FAILED,
+        $push: {
+          callbacks: {
+            type: "transfer",
+            body: { error: `Consent not GRANTED (${consentArtefact.status})` },
+          },
+        },
+      },
+    );
+    return;
+  }
+
+  const allowedCareContexts = new Set(
+    consentArtefact?.careContexts?.map((cc) => cc.careContextReference) || [],
+  );
+
+  console.log(
+    `${LOG_PREFIX} Validating against ${allowedCareContexts.size} allowed care contexts for consent ${hiuRequest.consentArtefactId}`,
+  );
+
   // 2. Process each entry (decryption)
   for (const entry of entries) {
     try {
+      // --- VALIDATION: Check if this Care Context is allowed ---
+      const ccRef = entry.careContextReference;
+      if (allowedCareContexts.size > 0 && !allowedCareContexts.has(ccRef)) {
+        console.warn(
+          `${LOG_PREFIX} [SECURITY] Care Context ${ccRef} is NOT in allowed list for consent ${hiuRequest.consentArtefactId}. DROPPING RECORD.`,
+        );
+        continue;
+      }
+
       if (entry.content) {
         // Decrypt
         // Note: entry.careContextReference tells us which record this is
@@ -305,6 +434,41 @@ export const handleHiuTransfer = async (
         // Extract source HIP info from FHIR bundle
         const { hipId, hipName } = extractSourceHipInfo(decryptedData);
 
+        // Check if this record is from our own facility
+        const isOurFacility =
+          !hipId ||
+          hipId === facilityId ||
+          hipId === X_HIP_ID ||
+          (facilityId && hipId.includes(facilityId)) ||
+          (X_HIP_ID && hipId.includes(X_HIP_ID));
+        
+        if (SKIP_OWN_FACILITY && isOurFacility) {
+          console.log(
+            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: source HIP is our facility (${hipId}). SKIP_OWN_FACILITY is enabled.`,
+          );
+          continue;
+        }
+        
+        if (isOurFacility) {
+          console.log(
+            `${LOG_PREFIX} Storing ExternalHealthRecord from our own facility (${hipId}). SKIP_OWN_FACILITY is disabled.`,
+          );
+        }
+
+        // Only store in external_health_records when this fetch was for our HIMS (user-approved records we hold). Do NOT store when the request was "pull records" (patient updating his PHR) – consent was for his PHR view, not for us to store and show in HIMS (compliance risk).
+        if (hiuRequest.storeAsExternalRecord !== true) {
+          console.log(
+            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: storeAsExternalRecord is not set (e.g. PHR pull records). External records only for HIMS-use fetches.`,
+          );
+          continue;
+        }
+        if (consentArtefact.requestPurpose === "PHR") {
+          console.log(
+            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: consent requestPurpose is PHR. Not for HIMS.`,
+          );
+          continue;
+        }
+
         // Link to local patient by ABHA address
         const localPatient = await PatientModel.findOne({
           $or: [
@@ -315,16 +479,20 @@ export const handleHiuTransfer = async (
           .select("_id")
           .lean();
 
+        // --- UPSERT BY CONSENT ARTEFACT ID + CARE CONTEXT ---
+        // This prevents duplicates when the same data is transferred multiple times (e.g. retries)
         await ExternalHealthRecordModel.findOneAndUpdate(
           {
-            transactionId: transactionId,
-            careContextReference: entry.careContextReference,
+            consentArtefactId: hiuRequest.consentArtefactId, // Key 1
+            careContextReference: entry.careContextReference, // Key 2
           },
           {
             $set: {
               patientAbhaAddress: hiuRequest.patientAbhaAddress,
               patientId: localPatient?._id,
-              consentArtefactId: hiuRequest.consentArtefactId,
+
+              // Ensure we update the transactionId to the latest one
+              transactionId: transactionId,
               requestId: hiuRequest.requestId,
 
               sourceHipId: hipId,
@@ -333,12 +501,17 @@ export const handleHiuTransfer = async (
               fhirBundle: decryptedData,
               hiTypes: extractHiTypesFromBundle(decryptedData),
 
-              dateRange: hiuRequest.dateRange,
+              // Ensure dateRange is stored as Date (consent-approved range for this fetch)
+              dateRange: {
+                from: new Date(hiuRequest.dateRange.from),
+                to: new Date(hiuRequest.dateRange.to),
+              },
               status: ExternalRecordStatus.STORED,
 
               encryptedDataSize: entry.content.length,
               decryptedDataSize: JSON.stringify(decryptedData).length,
               decryptedAt: new Date(),
+              dataEraseAt: consentArtefact?.permission?.dataEraseAt,
             },
             $setOnInsert: {
               receivedAt: new Date(),

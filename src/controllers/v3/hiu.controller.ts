@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import { STATUS_CODE } from "../../utils/constant";
 import { HiuService } from "../../services/hiu.service";
 
-
 export const searchPatient = async (req: Request, res: Response) => {
   try {
     const { name, gender, yearOfBirth, mobile } = req.body;
@@ -32,7 +31,6 @@ export const searchPatient = async (req: Request, res: Response) => {
     });
   }
 };
-
 
 export const onDiscover = async (req: Request, res: Response) => {
   try {
@@ -92,7 +90,8 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
 
 export const initiateDataFetch = async (req: Request, res: Response) => {
   try {
-    const { consentArtefactId, dateFrom, dateTo } = req.body;
+    const { consentArtefactId, dateFrom, dateTo, storeAsExternalRecord } =
+      req.body;
 
     if (!consentArtefactId) {
       return res.status(STATUS_CODE.ERROR).json({
@@ -101,19 +100,22 @@ export const initiateDataFetch = async (req: Request, res: Response) => {
       });
     }
 
-    const { requestId, status } = await HiuService.requestHealthInformation(
-      consentArtefactId,
-      {
-        from: new Date(dateFrom || "2024-01-01"),
-        to: new Date(dateTo || new Date()),
-      },
-    );
+    const { requestId, status, existingRecordCount } =
+      await HiuService.requestHealthInformation(
+        consentArtefactId,
+        {
+          from: new Date(dateFrom || "2024-01-01"),
+          to: new Date(dateTo || new Date()),
+        },
+        { storeAsExternalRecord: storeAsExternalRecord === true },
+      );
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: "Health information fetch initiated",
       requestId,
       abdmStatus: status,
+      existingRecordCount,
     });
   } catch (error: any) {
     console.error("Initiate Data Fetch error:", error);
@@ -155,6 +157,7 @@ export const onHealthInformationRequest = async (
     );
 
     const originalRequestId =
+      body.response?.requestId ||
       body.resp?.requestId ||
       body.requestId ||
       (req.headers["request-id"] as string);
@@ -232,35 +235,69 @@ export const onHealthInformationTransfer = async (
 };
 
 import { ExternalHealthRecordModel } from "../../models/ExternalHealthRecord";
+import { ConsentArtefactModel, ConsentArtefactStatus } from "../../models/ConsentArtefact";
+import { PHRConsentArtefactModel } from "../../models/PHRConsentArtefact";
 import { Types } from "mongoose";
 
 export const getExternalRecords = async (req: Request, res: Response) => {
   try {
     const { patientId } = req.params;
-    const { page = 1, limit = 20, sourceHipId } = req.query;
+    const { page = 1, limit = 20, sourceHipId, consentArtefactId } = req.query;
 
+    console.log(`[HIU] getExternalRecords called. Params:`, {
+      patientId,
+      query: req.query,
+    });
+
+    // Check if patientId is "undefined" string
+    if (patientId === "undefined" || patientId === "null") {
+      console.warn("[HIU] Received invalid patientId string:", patientId);
+      return res.status(STATUS_CODE.SUCCESS).json({
+        status: "success",
+        data: [],
+        pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+      });
+    }
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const limitNum = Math.min(
       100,
       Math.max(1, parseInt(limit as string, 10) || 20),
     );
     const skip = (pageNum - 1) * limitNum;
-
     let query: any = {};
-
     if (Types.ObjectId.isValid(patientId as string)) {
       query.patientId = new Types.ObjectId(patientId as string);
     } else {
       query.patientAbhaAddress = patientId;
     }
-
     if (sourceHipId) {
       query.sourceHipId = sourceHipId;
     }
+    if (consentArtefactId) {
+      query.consentArtefactId = consentArtefactId;
+    }
+
+    // Only return records whose consent is still GRANTED (revoked/expired data is removed on notify; this is a safety filter)
+    const grantedArtefactIds = await ConsentArtefactModel.distinct("artefactId", {
+      status: ConsentArtefactStatus.GRANTED,
+    });
+    if (grantedArtefactIds.length > 0) {
+      if (query.consentArtefactId && typeof query.consentArtefactId === "string") {
+        if (!grantedArtefactIds.includes(query.consentArtefactId)) {
+          query.consentArtefactId = { $in: [] };
+        }
+      } else {
+        query.consentArtefactId = { $in: grantedArtefactIds };
+      }
+    } else {
+      query.consentArtefactId = { $in: [] };
+    }
+
+    console.log(`[HIU] Executing query:`, JSON.stringify(query));
 
     const [records, total] = await Promise.all([
       ExternalHealthRecordModel.find(query)
-        .sort({ receivedAt: -1 })
+        .sort({ receivedAt: -1, createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .select("-fhirBundle")
@@ -301,6 +338,18 @@ export const getExternalRecordById = async (req: Request, res: Response) => {
     const record = await ExternalHealthRecordModel.findById(recordId).lean();
 
     if (!record) {
+      return res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Record not found",
+      });
+    }
+
+    // Do not return record if its consent was revoked/expired or if it's a PHR consent (external records are HIMS only)
+    const artefactGranted = await ConsentArtefactModel.findOne({
+      artefactId: record.consentArtefactId,
+      status: ConsentArtefactStatus.GRANTED,
+    });
+    if (!artefactGranted) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
         message: "Record not found",

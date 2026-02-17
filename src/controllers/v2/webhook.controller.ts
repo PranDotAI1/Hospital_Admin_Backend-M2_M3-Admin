@@ -1,18 +1,12 @@
 import axios from "axios";
 import { HealthRecordModel } from "../../models/HealthRecord";
-import {
-  STATUS_CODE,
-  facilityId,
-  generateUID,
-} from "../../utils/constant";
+import { STATUS_CODE, facilityId, generateUID } from "../../utils/constant";
 import { MSG } from "../../utils/msgs";
 
 export const linkTokenGeneration = async (req: any, res: any) => {
   try {
     const baseUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
-    console.log(
-      "[LINK_TOKEN] Legacy link token generation start",
-    );
+    console.log("[LINK_TOKEN] Legacy link token generation start");
     console.log("[LINK_TOKEN] URL:", baseUrl);
 
     let postData = req.body;
@@ -37,7 +31,10 @@ export const linkTokenGeneration = async (req: any, res: any) => {
         },
       );
     } else {
-      console.log("[LINK_TOKEN] No HealthRecord found for:", postData.abhaAddress);
+      console.log(
+        "[LINK_TOKEN] No HealthRecord found for:",
+        postData.abhaAddress,
+      );
     }
 
     await carecontext(req, res, postData.linkToken, latestRecord);
@@ -51,7 +48,6 @@ export const linkTokenGeneration = async (req: any, res: any) => {
     }
   }
 };
-
 
 export const carecontext = async (
   req: any,
@@ -184,9 +180,8 @@ export const healthInformation = async (req: any, res: any) => {
       message: "Health information request acknowledged and processing",
     });
 
-    const { HealthInformationService } = await import(
-      "../../services/health-information.service"
-    );
+    const { HealthInformationService } =
+      await import("../../services/health-information.service");
 
     const callbackAuth =
       req.headers["authorization"] || req.headers["Authorization"] || "";

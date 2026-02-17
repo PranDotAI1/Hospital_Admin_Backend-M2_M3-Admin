@@ -175,6 +175,19 @@ export const getDischargeSummaryTemplate = (
       )
       .join("") || "";
 
+  const admissionDetails = [
+    ds.admissionDate
+      ? `<strong>Admission Date:</strong> ${new Date(ds.admissionDate).toLocaleDateString("en-IN")}`
+      : null,
+    ds.dischargeDate
+      ? `<strong>Discharge Date:</strong> ${new Date(ds.dischargeDate).toLocaleDateString("en-IN")}`
+      : null,
+    ds.ward ? `<strong>Ward:</strong> ${ds.ward}` : null,
+    ds.bed ? `<strong>Bed:</strong> ${ds.bed}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
   return `
     <html>
     <head>${css}</head>
@@ -184,10 +197,17 @@ export const getDischargeSummaryTemplate = (
       <div class="section">
         <div class="section-title">Discharge Summary</div>
         
+        ${admissionDetails ? `<p>${admissionDetails}</p>` : ""}
+        ${ds.admissionNotes ? `<p><strong>Admission Notes:</strong> ${ds.admissionNotes}</p>` : ""}
         ${ds.diagnosis ? `<p><strong>Diagnosis:</strong> ${ds.diagnosis}</p>` : ""}
+        ${ds.conditionAtDischarge ? `<p><strong>Condition at Discharge:</strong> ${ds.conditionAtDischarge}</p>` : ""}
         ${ds.clinicalSummary ? `<p><strong>Clinical Summary:</strong> ${ds.clinicalSummary}</p>` : ""}
+        ${ds.investigationsResults ? `<p><strong>Investigation Results:</strong> ${ds.investigationsResults}</p>` : ""}
         ${ds.treatmentGiven ? `<p><strong>Treatment Given:</strong> ${ds.treatmentGiven}</p>` : ""}
-        ${ds.advice ? `<p><strong>Advice on Discharge:</strong> ${ds.advice}</p>` : ""}
+        ${ds.surgicalProcedures ? `<p><strong>Surgical Procedures:</strong> ${ds.surgicalProcedures}</p>` : ""}
+        ${ds.surgicalNote ? `<p><strong>Surgical Note:</strong> ${ds.surgicalNote}</p>` : ""}
+        ${ds.followUpInstructions ? `<p><strong>Follow-up Instructions:</strong> ${ds.followUpInstructions}</p>` : ""}
+        ${ds.advice ? `<p><strong>Advice:</strong> ${ds.advice}</p>` : ""}
       </div>
 
       ${
@@ -212,7 +232,7 @@ export const getDischargeSummaryTemplate = (
       }
 
       <div class="footer">
-        <p><strong>Dr. ${visit.doctorName || "Doctor"}</strong></p>
+        <p><strong>${ds.doctorSignature ? ds.doctorSignature : `Dr. ${visit.doctorName || "Doctor"}`}</strong></p>
       </div>
     </body>
     </html>
@@ -269,6 +289,65 @@ export const getOPConsultationTemplate = (
 
       <div class="footer">
         <p><strong>Dr. ${visit.doctorName || "Doctor"}</strong></p>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+export const getInvoiceTemplate = (
+  patient: IPatient,
+  visit: IScanShareVisit,
+  billing: any,
+) => {
+  const billingRows =
+    billing.billings
+      ?.map(
+        (b: any) => `
+    <tr>
+      <td>${b.particulars || "-"}</td>
+      <td>${b.rate || "-"}</td>
+      <td>${b.unit || "-"}</td>
+      <td>${b.amount || "-"}</td>
+    </tr>
+  `,
+      )
+      .join("") || "";
+
+  return `
+    <html>
+    <head>${css}</head>
+    <body>
+      ${getPatientHeader(patient, visit)}
+      
+      <div class="section">
+        <div class="section-title">Invoice</div>
+        <p><strong>Invoice No:</strong> ${billing._id}</p>
+        <p><strong>Date:</strong> ${new Date(billing.date).toLocaleDateString("en-IN")}</p>
+        <p><strong>Status:</strong> ${billing.status}</p>
+        
+        <table>
+          <thead>
+            <tr>
+              <th>Particulars</th>
+              <th>Rate</th>
+              <th>Unit</th>
+              <th>Amount</th>
+            </tr>
+          </thead>
+          <tbody>${billingRows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3" style="text-align: right;"><strong>Total Amount:</strong></td>
+              <td><strong>${billing.totalAmount}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div class="footer">
+        <p><strong>Accountant/Cashier</strong></p>
+        <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
       </div>
     </body>
     </html>

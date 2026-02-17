@@ -36,6 +36,14 @@ export interface IPersonalHistoryEntry {
   bowel?: string;
 }
 
+export interface IDocumentUpload {
+  fileName: string;
+  mimeType: string;
+  fileData?: Buffer;
+  fileUrl?: string;
+  uploadDate: Date;
+}
+
 export interface IVisitAssessment extends Document {
   visitId: Types.ObjectId;
   patientId: Types.ObjectId;
@@ -46,7 +54,7 @@ export interface IVisitAssessment extends Document {
   surgicalHistory: ISurgicalHistoryEntry[];
   additionalDetails: IAdditionalDetailsEntry[];
   personalHistory: IPersonalHistoryEntry[];
-  documentUploads?: string[];
+  documentUploads?: IDocumentUpload[];
   dataSharingConsent?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -103,10 +111,25 @@ const PersonalHistoryEntrySchema = new Schema<IPersonalHistoryEntry>(
   { _id: false },
 );
 
+const DocumentUploadSchema = new Schema<IDocumentUpload>(
+  {
+    fileName: { type: String, required: true },
+    mimeType: { type: String, required: true },
+    fileData: { type: Buffer },
+    fileUrl: { type: String },
+    uploadDate: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 const VisitAssessmentSchema = new Schema<IVisitAssessment>(
   {
-    visitId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
-    patientId: { type: Schema.Types.ObjectId, required: true, index: true },
+    visitId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      unique: true,
+    },
+    patientId: { type: Schema.Types.ObjectId, required: true },
     vitals: { type: Schema.Types.Mixed },
     immunization: { type: ImmunizationRecordSchema },
     symptomsComplaints: { type: String, trim: true },
@@ -114,9 +137,10 @@ const VisitAssessmentSchema = new Schema<IVisitAssessment>(
     surgicalHistory: { type: [SurgicalHistoryEntrySchema], default: [] },
     additionalDetails: { type: [AdditionalDetailsEntrySchema], default: [] },
     personalHistory: { type: [PersonalHistoryEntrySchema], default: [] },
-    documentUploads: { type: [String], default: [] },
+    documentUploads: { type: [DocumentUploadSchema], default: [] },
     dataSharingConsent: { type: Boolean },
   },
+
   { timestamps: true },
 );
 

@@ -42,7 +42,7 @@ const LabReportLineSchema = new Schema<ILabReportLine>(
 const VisitLabReportSchema = new Schema<IVisitLabReport>(
   {
     visitId: { type: Schema.Types.ObjectId, required: true },
-    patientId: { type: Schema.Types.ObjectId, required: true, index: true },
+    patientId: { type: Schema.Types.ObjectId, required: true },
     reports: { type: [LabReportLineSchema], default: [] },
   },
   { timestamps: true },

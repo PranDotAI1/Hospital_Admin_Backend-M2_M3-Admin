@@ -96,7 +96,6 @@ const PatientSchema = new Schema<IPatient>(
   {
     uhid: {
       type: String,
-      unique: true,
       trim: true,
     },
     f_name: {
@@ -226,6 +225,6 @@ const PatientSchema = new Schema<IPatient>(
 PatientSchema.index({ ABHANumber: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ abhaaddress: 1 }, { sparse: true });
 PatientSchema.index({ mobile: 1 });
-PatientSchema.index({ uhid: 1 }, { sparse: true });
+PatientSchema.index({ uhid: 1 }, { unique: true, sparse: true });
 
 export const PatientModel = model<IPatient>("Patient", PatientSchema);

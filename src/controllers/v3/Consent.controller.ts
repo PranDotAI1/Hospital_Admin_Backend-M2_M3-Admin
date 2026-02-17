@@ -54,6 +54,7 @@ export const consentInitRequest = async (req: Request, res: Response) => {
       requesterName: body.requesterName,
       purposeCode: body.purposeCode,
       purposeText: body.purposeText,
+      requestPurpose: body.requestPurpose,
     });
 
     console.log(

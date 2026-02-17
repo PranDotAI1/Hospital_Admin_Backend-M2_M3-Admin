@@ -1,4 +1,5 @@
 import axios from "axios";
+import puppeteer, { Browser } from "puppeteer";
 import {
   CareContextModel,
   ICareContext,
@@ -9,6 +10,7 @@ import {
   ConsentArtefactModel,
   ConsentArtefactStatus,
 } from "../models/ConsentArtefact";
+import { PHRConsentArtefactModel } from "../models/PHRConsentArtefact";
 import { PatientModel } from "../models/Patient";
 import { ScanShareVisitModel } from "../models/ScanShareVisit";
 import { VisitPrescriptionModel } from "../models/VisitPrescription";
@@ -16,6 +18,7 @@ import { VisitLabReportModel } from "../models/VisitLabReport";
 import { VisitSoapNotesModel } from "../models/VisitSoapNotes";
 import { VisitDischargeSummaryModel } from "../models/VisitDischargeSummary";
 import { VisitAssessmentModel } from "../models/VisitAssessment";
+import { VisitDayCareBilling } from "../models/VisitDayCareBilling";
 import {
   FhirBundleService,
   ICombinedBundleOptionalData,
@@ -175,10 +178,15 @@ const findCareContextsForConsent = async (
   consentId: string,
   dateRange?: { from: string; to: string },
 ): Promise<ICareContext[]> => {
-  // Strategy 1: Use artefact's care context references
-  const artefact = await ConsentArtefactModel.findOne({
+  // Strategy 1: Use artefact's care context references (main or PHR collection)
+  let artefact = await ConsentArtefactModel.findOne({
     artefactId: consentId,
   });
+  if (!artefact) {
+    artefact = await PHRConsentArtefactModel.findOne({
+      artefactId: consentId,
+    });
+  }
 
   if (artefact && artefact.careContexts && artefact.careContexts.length > 0) {
     const careContextRefs = artefact.careContexts.map((cc) =>
@@ -277,18 +285,68 @@ const findContextsByAbhaAndDateRange = async (
  */
 const getOptionalDataForCareContext = async (
   careContext: ICareContext,
+  consentedHiTypes?: string[],
 ): Promise<ICombinedBundleOptionalData | undefined> => {
   const visitId = careContext.visitId;
   if (!visitId) return undefined;
 
-  const [prescription, labReport, soapNotes, dischargeSummary, assessment] =
-    await Promise.all([
-      VisitPrescriptionModel.findOne({ visitId }).lean(),
-      VisitLabReportModel.findOne({ visitId }).lean(),
-      VisitSoapNotesModel.findOne({ visitId }).lean(),
-      VisitDischargeSummaryModel.findOne({ visitId }).lean(),
-      VisitAssessmentModel.findOne({ visitId }).lean(),
-    ]);
+  // Helper to check if we should fetch specific data based on consent
+  const shouldFetch = (relatedHiTypes: string[]) => {
+    if (!consentedHiTypes || consentedHiTypes.length === 0) return true;
+    return relatedHiTypes.some((t) => consentedHiTypes.includes(t));
+  };
+
+  const promises: any[] = [];
+  // 0: Prescription
+  promises.push(
+    shouldFetch(["Prescription"])
+      ? VisitPrescriptionModel.findOne({ visitId }).lean()
+      : Promise.resolve(null),
+  );
+  // 1: Lab
+  promises.push(
+    shouldFetch(["DiagnosticReport"])
+      ? VisitLabReportModel.findOne({ visitId }).lean()
+      : Promise.resolve(null),
+  );
+  // 2: SOAP
+  promises.push(
+    shouldFetch(["OPConsultation", "HealthDocumentRecord", "WellnessRecord"])
+      ? VisitSoapNotesModel.findOne({ visitId }).lean()
+      : Promise.resolve(null),
+  );
+  // 3: Discharge
+  promises.push(
+    shouldFetch(["DischargeSummary"])
+      ? VisitDischargeSummaryModel.findOne({ visitId }).lean()
+      : Promise.resolve(null),
+  );
+  // 4: Assessment
+  promises.push(
+    shouldFetch([
+      "OPConsultation",
+      "WellnessRecord",
+      "ImmunizationRecord",
+      "HealthDocumentRecord",
+    ])
+      ? VisitAssessmentModel.findOne({ visitId }).lean()
+      : Promise.resolve(null),
+  );
+  // 5: Billing
+  promises.push(
+    shouldFetch(["Invoice", "OPConsultation"])
+      ? VisitDayCareBilling.findOne({ visitId }).lean()
+      : Promise.resolve(null),
+  );
+
+  const [
+    prescription,
+    labReport,
+    soapNotes,
+    dischargeSummary,
+    assessment,
+    billing,
+  ] = await Promise.all(promises);
 
   const hasAny =
     (prescription?.medications?.length ?? 0) > 0 ||
@@ -298,6 +356,7 @@ const getOptionalDataForCareContext = async (
         soapNotes.objective ||
         soapNotes.assessment ||
         soapNotes.plan)) ||
+    (billing && billing.billings && billing.billings.length > 0) ||
     (dischargeSummary &&
       (dischargeSummary.diagnosis ||
         dischargeSummary.clinicalSummary ||
@@ -341,9 +400,14 @@ const getOptionalDataForCareContext = async (
           admissionDate: dischargeSummary.admissionDate,
           dischargeDate: dischargeSummary.dischargeDate,
           ward: dischargeSummary.ward,
+          bed: dischargeSummary.bed,
           conditionAtDischarge: dischargeSummary.conditionAtDischarge,
           followUpInstructions: dischargeSummary.followUpInstructions,
           surgicalProcedures: dischargeSummary.surgicalProcedures,
+          surgicalNote: dischargeSummary.surgicalNote,
+          admissionNotes: dischargeSummary.admissionNotes,
+          investigationsResults: dischargeSummary.investigationsResults,
+          doctorSignature: dischargeSummary.doctorSignature,
         }
       : undefined,
     assessment: assessment
@@ -358,6 +422,7 @@ const getOptionalDataForCareContext = async (
           documentUploads: assessment.documentUploads ?? [],
         }
       : undefined,
+    billing: billing as any,
   };
 };
 
@@ -378,6 +443,7 @@ const pushHealthData = async (
   authToken: string,
   /** hiTypes from consent artefact; when set, we share only these (∩ careContext.hiTypes) */
   consentedHiTypes?: string[],
+  browser?: Browser,
 ): Promise<boolean> => {
   try {
     // Look up patient: by patientId first, then fallback to UHID/ABHA when ref is orphaned
@@ -456,7 +522,10 @@ const pushHealthData = async (
     } as any;
 
     // Load optional real data (prescription, lab, SOAP, discharge, immunization) when available
-    const optionalData = await getOptionalDataForCareContext(careContext);
+    const optionalData = await getOptionalDataForCareContext(
+      careContext,
+      consentedHiTypes,
+    );
 
     // Detailed logging: show what clinical data was found
     const clinicalDataFound: string[] = [];
@@ -518,6 +587,7 @@ const pushHealthData = async (
         careContext,
         optionalData,
         allowedHiTypes,
+        browser,
       );
     const fhirBundleJson = JSON.stringify(combinedBundle);
     console.log(
@@ -739,6 +809,7 @@ const processHealthInfoRequest = async (
     }
   }
 
+  let careContexts: ICareContext[] = [];
   try {
     // Step 0: Validate consent artefact
     const artefact = await ConsentService.validateConsentForDataPush(consentId);
@@ -755,23 +826,28 @@ const processHealthInfoRequest = async (
     // If artefact was explicitly blocked (REVOKED/EXPIRED returns null),
     // we need to check if it was found but invalid
     if (artefact === null) {
-      const existingArtefact = await ConsentArtefactModel.findOne({
+      let existingArtefact = await ConsentArtefactModel.findOne({
         artefactId: consentId,
       });
+      if (!existingArtefact) {
+        existingArtefact = await PHRConsentArtefactModel.findOne({
+          artefactId: consentId,
+        });
+      }
 
       if (
         existingArtefact &&
         existingArtefact.status !== ConsentArtefactStatus.GRANTED
       ) {
         console.error(
-          `${LOG_PREFIX} Consent ${consentId} is ${existingArtefact.status}. Sending FAILED notification.`,
+          `${LOG_PREFIX} Consent ${consentId} is ${existingArtefact.status}. Cannot fulfill request.`,
         );
 
         // Acknowledge anyway
         await acknowledgeHealthInfoRequest(request, requestId, abdmToken);
 
-        // Notify ABDM that we cannot fulfill the request
-        await notifyHealthInfoTransfer(consentId, transactionId, [], abdmToken);
+        // Cannot send transfer notification with empty statusResponses (ABDM requires non-empty).
+        // Request is acknowledged; ABDM will handle timeout/retry if needed.
         return;
       }
     }
@@ -793,10 +869,10 @@ const processHealthInfoRequest = async (
 
     if (careContexts.length === 0) {
       console.warn(
-        `${LOG_PREFIX} No care contexts found for consent: ${consentId}`,
+        `${LOG_PREFIX} No care contexts found for consent: ${consentId}. Request already acknowledged; skipping transfer notification (ABDM requires non-empty statusResponses).`,
       );
-      // Still notify ABDM that we have no data
-      await notifyHealthInfoTransfer(consentId, transactionId, [], abdmToken);
+      // Request already acknowledged in Step 1. ABDM requires statusResponses to be non-empty,
+      // so we cannot send a notification with empty care contexts. ABDM will handle timeout/retry if needed.
       return;
     }
 
@@ -819,15 +895,38 @@ const processHealthInfoRequest = async (
 
     // Step 3: Push health data for each care context (only consented hiTypes when artefact available)
     const consentedHiTypes = artefact?.hiTypes;
-    for (const cc of careContexts) {
-      await pushHealthData(
-        dataPushUrl,
-        transactionId,
-        cc,
-        keyMaterial,
-        abdmToken,
-        consentedHiTypes,
+
+    let browser: Browser | undefined;
+    try {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+
+      console.log(
+        `${LOG_PREFIX} Launched shared browser for ${careContexts.length} contexts`,
       );
+
+      await Promise.all(
+        careContexts.map((cc) =>
+          pushHealthData(
+            dataPushUrl,
+            transactionId,
+            cc,
+            keyMaterial,
+            abdmToken,
+            consentedHiTypes,
+            browser,
+          ),
+        ),
+      );
+    } catch (err: any) {
+      console.error(`${LOG_PREFIX} Error during parallel data push:`, err);
+    } finally {
+      if (browser) {
+        await browser.close();
+        console.log(`${LOG_PREFIX} Closed shared browser`);
+      }
     }
 
     // Refresh care contexts to get updated statuses
@@ -852,13 +951,20 @@ const processHealthInfoRequest = async (
       error.message,
     );
 
-    // Notify ABDM about the failure using same token (no extra getToken call)
-    try {
-      await notifyHealthInfoTransfer(consentId, transactionId, [], abdmToken);
-    } catch (notifyError: any) {
-      console.error(
-        `${LOG_PREFIX} Failed to send failure notification:`,
-        notifyError.message,
+    // Notify ABDM about the failure only if we have care contexts to report status for
+    // (ABDM requires non-empty statusResponses, so we can't notify with empty array)
+    if (careContexts && careContexts.length > 0) {
+      try {
+        await notifyHealthInfoTransfer(consentId, transactionId, careContexts, abdmToken);
+      } catch (notifyError: any) {
+        console.error(
+          `${LOG_PREFIX} Failed to send failure notification:`,
+          notifyError.message,
+        );
+      }
+    } else {
+      console.warn(
+        `${LOG_PREFIX} Cannot send failure notification: no care contexts to report status for (ABDM requires non-empty statusResponses).`,
       );
     }
   }

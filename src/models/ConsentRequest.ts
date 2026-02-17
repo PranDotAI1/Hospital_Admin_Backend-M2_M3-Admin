@@ -57,6 +57,9 @@ export interface IConsentRequest extends Document {
 
   consentArtefacts: string[];
 
+  /** Why we initiated this consent: HIMS = for our hospital to fetch and hold; PHR = for patient's PHR (pull records). Used to avoid using PHR consents for HIMS external records. */
+  requestPurpose?: "HIMS" | "PHR";
+
   grantedAt?: Date;
 
   consentExpiryOn?: Date;
@@ -81,7 +84,7 @@ export interface IConsentRequest extends Document {
 const ConsentRequestSchema = new Schema<IConsentRequest>(
   {
     consentRequestId: { type: String, unique: true, sparse: true },
-    requestId: { type: String, required: true, index: true },
+    requestId: { type: String, required: true },
     status: {
       type: String,
       enum: [
@@ -93,9 +96,8 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
         "EXPIRED",
       ],
       default: "INITIATED",
-      index: true,
     },
-    patientAbhaId: { type: String, required: true, index: true },
+    patientAbhaId: { type: String, required: true },
 
     patientName: { type: String },
     abhaAddress: { type: String },
@@ -133,6 +135,7 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
       },
     },
     consentArtefacts: [{ type: String }],
+    requestPurpose: { type: String, enum: ["HIMS", "PHR"] },
     grantedAt: { type: Date },
     consentExpiryOn: { type: Date },
     approvedHiTypes: [{ type: String }],
@@ -153,7 +156,6 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
 
 ConsentRequestSchema.index({ patientAbhaId: 1, status: 1 });
 ConsentRequestSchema.index({ consentRequestId: 1, status: 1 });
-ConsentRequestSchema.index({ status: 1, createdAt: -1 });
 
 export const ConsentRequestModel = model<IConsentRequest>(
   "ConsentRequest",

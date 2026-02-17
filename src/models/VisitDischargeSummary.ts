@@ -43,8 +43,8 @@ const DischargeMedicationSchema = new Schema<IDischargeMedication>(
 
 const VisitDischargeSummarySchema = new Schema<IVisitDischargeSummary>(
   {
-    visitId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
-    patientId: { type: Schema.Types.ObjectId, required: true, index: true },
+    visitId: { type: Schema.Types.ObjectId, required: true, unique: true },
+    patientId: { type: Schema.Types.ObjectId, required: true },
     admissionDate: { type: Date },
     dischargeDate: { type: Date },
     ward: { type: String, trim: true },

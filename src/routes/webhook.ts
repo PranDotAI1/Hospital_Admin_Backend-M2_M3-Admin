@@ -20,11 +20,14 @@ const webook = Router();
 // ============================================
 webook.get("/api/v3/hip/callback-urls", (_req, res) => {
   const base = GET_URL || "(ABDM_CALLBACK_URL not set)";
-  const b = base !== "(ABDM_CALLBACK_URL not set)" ? base.replace(/\/$/, "") : null;
+  const b =
+    base !== "(ABDM_CALLBACK_URL not set)" ? base.replace(/\/$/, "") : null;
   res.json({
     message: "Use these to verify ABDM callback registration and reachability.",
     baseUrl: base,
-    healthInformationRequest: b ? `${b}/api/v3/hip/health-information/request` : null,
+    healthInformationRequest: b
+      ? `${b}/api/v3/hip/health-information/request`
+      : null,
     discover: b
       ? [
           `${b}/api/v3/care-contexts/discover`,
@@ -33,7 +36,10 @@ webook.get("/api/v3/hip/callback-urls", (_req, res) => {
         ]
       : null,
     linkInit: b
-      ? [`${b}/api/v3/links/link/init`, `${b}/api/v3/hip/link/care-context/init`]
+      ? [
+          `${b}/api/v3/links/link/init`,
+          `${b}/api/v3/hip/link/care-context/init`,
+        ]
       : null,
     linkConfirm: b
       ? [
@@ -111,6 +117,7 @@ webook.post("/api/v3/hiu/consent/request/notify", handleConsentHipNotify);
 
 // Consent Fetch callback: ABDM returns full artefact details
 webook.post("/:requestid/api/v3/hiu/consent/on-fetch", handleConsentOnFetch);
+webook.post("/api/v3/hiu/consent/on-fetch", handleConsentOnFetch); // Fallback route for ABDM callbacks without requestid in path
 
 // Consent Status callback: ABDM returns consent status
 webook.post("/api/v3/hiu/consent/request/on-status", handleConsentOnStatus);

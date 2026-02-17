@@ -20,6 +20,9 @@ export interface IHIURequest extends Document {
 
   status: HIURequestStatus;
 
+  /** When true, store received data in ExternalHealthRecord (for HIMS use). When false (e.g. PHR "pull records"), do not store – compliance: consent was for patient's PHR, not our HIMS. */
+  storeAsExternalRecord: boolean;
+
   callbacks: Array<{
     type: string;
     timestamp: Date;
@@ -45,11 +48,9 @@ const HIURequestSchema = new Schema<IHIURequest>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     transactionId: {
       type: String,
-      index: true,
     },
     patientAbhaAddress: {
       type: String,
@@ -72,6 +73,10 @@ const HIURequestSchema = new Schema<IHIURequest>(
       type: String,
       enum: Object.values(HIURequestStatus),
       default: HIURequestStatus.INITIATED,
+    },
+    storeAsExternalRecord: {
+      type: Boolean,
+      default: false,
     },
     callbacks: [
       {

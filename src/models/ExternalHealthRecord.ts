@@ -18,6 +18,7 @@ export interface IExternalHealthRecord extends Document {
 
   fhirBundle: object;
   hiTypes: string[];
+  dataEraseAt?: Date;
 
   dateRange: {
     from: Date;
@@ -49,23 +50,19 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
     patientAbhaAddress: {
       type: String,
       required: true,
-      index: true,
     },
     patientId: {
       type: Schema.Types.ObjectId,
       ref: "Patient",
-      index: true,
     },
 
     consentArtefactId: {
       type: String,
       required: true,
-      index: true,
     },
     transactionId: {
       type: String,
       required: true,
-      index: true,
     },
     requestId: {
       type: String,
@@ -74,7 +71,6 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
     sourceHipId: {
       type: String,
       required: true,
-      index: true,
     },
     sourceHipName: {
       type: String,
@@ -106,6 +102,9 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
         ],
       },
     ],
+    dataEraseAt: {
+      type: Date,
+    },
 
     dateRange: {
       from: { type: Date },
@@ -116,7 +115,6 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
       type: String,
       enum: Object.values(ExternalRecordStatus),
       default: ExternalRecordStatus.RECEIVED,
-      index: true,
     },
     receivedAt: {
       type: Date,
@@ -142,14 +140,13 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
   },
 );
 
-ExternalHealthRecordSchema.index({
-  patientAbhaAddress: 1,
-  receivedAt: -1,
-});
-ExternalHealthRecordSchema.index({
-  transactionId: 1,
-  careContextReference: 1,
-});
+ExternalHealthRecordSchema.index({ patientAbhaAddress: 1, receivedAt: -1 });
+ExternalHealthRecordSchema.index({ consentArtefactId: 1 });
+ExternalHealthRecordSchema.index({ transactionId: 1, careContextReference: 1 });
+ExternalHealthRecordSchema.index(
+  { dataEraseAt: 1 },
+  { expireAfterSeconds: 0 },
+);
 
 export const ExternalHealthRecordModel = mongoose.model<IExternalHealthRecord>(
   "ExternalHealthRecord",

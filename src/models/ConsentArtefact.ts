@@ -51,6 +51,9 @@ export interface IConsentArtefact extends Document {
     refUri?: string;
   };
 
+  /** Set from ConsentRequest when we store from HIP notify: HIMS = we may use for external records; PHR = from pull records, do not use for HIMS. */
+  requestPurpose?: "HIMS" | "PHR";
+
   requester?: {
     name: string;
     identifier?: {
@@ -65,6 +68,7 @@ export interface IConsentArtefact extends Document {
   grantedAt?: Date;
 
   revokedAt?: Date;
+  deniedAt?: Date;
 
   expiryDate?: Date;
 
@@ -76,7 +80,7 @@ export interface IConsentArtefact extends Document {
   updatedAt: Date;
 }
 
-const ConsentCareContextSchema = new Schema(
+export const ConsentCareContextSchema = new Schema(
   {
     patientReference: { type: String, required: true },
     careContextReference: { type: String, required: true },
@@ -84,7 +88,7 @@ const ConsentCareContextSchema = new Schema(
   { _id: false },
 );
 
-const ConsentPermissionSchema = new Schema(
+export const ConsentPermissionSchema = new Schema(
   {
     accessMode: { type: String, default: "VIEW" },
     dateRange: {
@@ -113,20 +117,17 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
       type: String,
       required: true,
       trim: true,
-      index: true,
     },
     status: {
       type: String,
       enum: Object.values(ConsentArtefactStatus),
       required: true,
       default: ConsentArtefactStatus.GRANTED,
-      index: true,
     },
     patientAbhaAddress: {
       type: String,
       required: true,
       trim: true,
-      index: true,
     },
     hipId: {
       type: String,
@@ -154,6 +155,7 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
       text: { type: String },
       refUri: { type: String },
     },
+    requestPurpose: { type: String, enum: ["HIMS", "PHR"] },
     requester: {
       name: { type: String },
       identifier: {
@@ -165,6 +167,7 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
     signature: { type: String },
     grantedAt: { type: Date },
     revokedAt: { type: Date },
+    deniedAt: { type: Date },
     expiryDate: { type: Date },
     lastFetchedAt: { type: Date },
     rawConsentDetail: { type: Schema.Types.Mixed },

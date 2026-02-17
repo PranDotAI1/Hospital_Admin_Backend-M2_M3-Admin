@@ -85,29 +85,25 @@ const ScanShareVisitSchema = new Schema<IScanShareVisit>(
       type: String,
       required: true,
       trim: true,
-      index: true,
     },
     visitStatus: {
       type: String,
       enum: Object.values(ScanShareVisitStatus),
       default: ScanShareVisitStatus.PENDING,
       required: true,
-      index: true,
     },
     visitDate: {
       type: Date,
       default: Date.now,
       required: true,
-      index: true,
     },
     counterId: {
       type: String,
       required: true,
       trim: true,
-      index: true,
     },
 
-    abhaAddress: { type: String, required: false, trim: true, index: true },
+    abhaAddress: { type: String, required: false, trim: true },
     abhaNumber: { type: String, required: false, trim: true },
     name: { type: String, required: false, trim: true },
     gender: { type: String, required: false, trim: true },
@@ -127,7 +123,7 @@ const ScanShareVisitSchema = new Schema<IScanShareVisit>(
     payment: { type: PaymentSchema, required: false },
     insurance: { type: InsuranceSchema, required: false },
 
-    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: false, index: true },
+    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: false },
   },
   {
     timestamps: true,
@@ -138,6 +134,7 @@ const ScanShareVisitSchema = new Schema<IScanShareVisit>(
 ScanShareVisitSchema.index({ visitStatus: 1, visitDate: 1 });
 ScanShareVisitSchema.index({ tokenNumber: 1, visitStatus: 1 });
 ScanShareVisitSchema.index({ abhaAddress: 1, visitDate: 1 });
+ScanShareVisitSchema.index({ patientId: 1 });
 
 export const ScanShareVisitModel = model<IScanShareVisit>(
   "ScanShareVisit",

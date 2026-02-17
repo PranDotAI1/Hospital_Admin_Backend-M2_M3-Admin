@@ -44,12 +44,8 @@ router.get(
   getExternalRecords,
 );
 
-// GET /api/v3/hiu/patient/:patientId/external-records/:recordId
+// GET /api/v3/hiu/external-records/:recordId
 // Returns single external record with full FHIR bundle
-router.get(
-  "/patient/:patientId/external-records/:recordId",
-  checkToken,
-  getExternalRecordById,
-);
+router.get("/external-records/:recordId", checkToken, getExternalRecordById);
 
 export default router;

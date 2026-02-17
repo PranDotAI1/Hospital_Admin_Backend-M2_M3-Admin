@@ -37,7 +37,7 @@ const MedicationLineSchema = new Schema<IMedicationLine>(
 const VisitPrescriptionSchema = new Schema<IVisitPrescription>(
   {
     visitId: { type: Schema.Types.ObjectId, required: true },
-    patientId: { type: Schema.Types.ObjectId, required: true, index: true },
+    patientId: { type: Schema.Types.ObjectId, required: true },
     medications: { type: [MedicationLineSchema], default: [] },
     advice: { type: String, trim: true },
   },

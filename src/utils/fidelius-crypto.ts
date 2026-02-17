@@ -115,28 +115,27 @@ const xorBytes = (a: Buffer, b: Buffer): Buffer => {
   return result;
 };
 
-// Helper: Decode public key from X509 or Raw
+// Helper: Decode public key from X509 or Raw. Elliptic expects uncompressed hex: 04 + X + Y (65 bytes = 130 hex chars).
 const decodePeerKey = (b64: string): string => {
   const buf = Buffer.from(b64, "base64");
-  // If X509 (large), extract last 64 bytes (X+Y)
-  // Wait, does it have 04?
-  // If standard X509 from Python, it has the header (ending in 04) + X + Y.
-  // So last 64 bytes is X+Y.
-  // If I use `ec.keyFromPublic`, it expects 04 + X + Y usually.
-  // Or {x, y}.
-  // Let's verify what `keyFromPublic` expects for 'hex'.
-  // Usually uncompressed string starting with 04.
-  // So I should take last 65 bytes if header ends with 04?
-  // My header ends with 04.
-  // Key (X+Y) is 64 bytes.
-  // So `buf` ends with 04 + X + Y ?
-  // No, `buf` = `Header(ending in 04)` + `X` + `Y`.
-  // So `buf` matches `...04 [32bytes] [32bytes]`.
-  // So last 65 bytes ARE `04` + `X` + `Y`.
   if (buf.length > 100) {
-    return buf.subarray(buf.length - 65).toString("hex");
+    // X.509/SPKI: BIT STRING often has unused-bits byte then key. Common layouts:
+    // - Last 66 bytes: 00 04 X Y (unused 0, then uncompressed 04 X Y) — e.g. BouncyCastle/Java
+    // - Last 65 bytes: 04 X Y
+    // - Last 64 bytes: X Y (prepend 04)
+    if (buf.length >= 66) {
+      const last66 = buf.subarray(buf.length - 66);
+      if (last66[0] === 0x00 && last66[1] === 0x04) {
+        return Buffer.concat([Buffer.from([0x04]), last66.subarray(2)]).toString("hex");
+      }
+    }
+    const last65 = buf.subarray(buf.length - 65);
+    if (last65[0] === 0x04) {
+      return last65.toString("hex");
+    }
+    return Buffer.concat([Buffer.from([0x04]), buf.subarray(buf.length - 64)]).toString("hex");
   }
-  // If raw 88 chars (65 bytes decoded), it is already 04+X+Y
+  // Raw 88 chars (65 bytes decoded) is already 04+X+Y
   return buf.toString("hex");
 };
 
@@ -165,7 +164,6 @@ export const generateKeyMaterial = (): KeyMaterial => {
   // publicKeyUncompressed starts with 04.
   // So we strip 04 from publicKeyUncompressed.
   const pubKeyXY = publicKeyUncompressed.substring(2);
-
   const x509B64 = Buffer.from(X509_HEADER_HEX + pubKeyXY, "hex").toString(
     "base64",
   );

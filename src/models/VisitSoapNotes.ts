@@ -13,8 +13,8 @@ export interface IVisitSoapNotes extends Document {
 
 const VisitSoapNotesSchema = new Schema<IVisitSoapNotes>(
   {
-    visitId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
-    patientId: { type: Schema.Types.ObjectId, required: true, index: true },
+    visitId: { type: Schema.Types.ObjectId, required: true, unique: true },
+    patientId: { type: Schema.Types.ObjectId, required: true },
     subjective: { type: String, trim: true },
     objective: { type: String, trim: true },
     assessment: { type: String, trim: true },

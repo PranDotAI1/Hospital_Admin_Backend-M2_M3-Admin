@@ -1,4 +1,8 @@
 import { NextFunction, Request, Response, Router } from "express";
+import multer from "multer";
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 import {
   addDepartment,
   departmentList,
@@ -167,6 +171,7 @@ router.post(
 router.post(
   "/visit/:visitId/clinical/assessment",
   checkToken,
+  upload.array("files"),
   recordAssessment,
 );
 
@@ -279,5 +284,9 @@ router.post(
     }
   },
 );
+
+import dayCareBillingRoutes from "./billing.routes";
+
+router.use("/billing", dayCareBillingRoutes);
 
 export default router;

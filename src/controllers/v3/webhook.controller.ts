@@ -111,10 +111,10 @@ export const handleConsentHipNotify = async (req: any, res: any) => {
 export const handleConsentOnFetch = async (req: any, res: any) => {
   try {
     const body = req.body;
-    const paramRequestId = req.params.requestid;
+    const paramRequestId = req.params.requestid || body.response?.requestId;
 
     console.log(
-      `${LOG_PREFIX} on-fetch callback received for request: ${paramRequestId}`,
+      `${LOG_PREFIX} on-fetch callback received for request: ${paramRequestId || "unknown"}`,
     );
 
     if (body.error) {
@@ -137,10 +137,26 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
 
       const resolvedConsentRequestId =
         consentDetail.consentRequestId || paramRequestId;
+      
+      const consentReq = resolvedConsentRequestId
+        ? await ConsentRequestModel.findOne({
+            $or: [
+              { consentRequestId: resolvedConsentRequestId },
+              { requestId: resolvedConsentRequestId },
+            ],
+          })
+            .select("requestPurpose")
+            .lean()
+        : null;
+      const usePHRCollection = consentReq
+        ? consentReq.requestPurpose === "PHR"
+        : true;
+      
       const artefact = await ConsentService.storeArtefactDetails(
         consentDetail,
         consentStatus,
         resolvedConsentRequestId,
+        usePHRCollection,
       );
 
       if (artefact) {
