@@ -556,24 +556,31 @@ export const completeRegistration = async (req: Request, res: Response) => {
 
     if (gender) updateData.gender = gender;
 
-    const updatedVisit = await ScanShareVisitModel.findByIdAndUpdate(
-      scanShareVisit._id,
-      { $set: updateData },
-      { new: true },
-    );
+    // RC4: Parallelize visit update + queue update (independent writes)
+    const queueUpdatePromise =
+      scanShareVisit.counterId && scanShareVisit.tokenNumber
+        ? (() => {
+            const todayDate = getTodayDateString();
+            const tokenNum = parseInt(scanShareVisit.tokenNumber, 10);
+            if (!isNaN(tokenNum)) {
+              return ScanShareDailyQueueModel.findOneAndUpdate(
+                { date: todayDate, counterId: scanShareVisit.counterId },
+                { $set: { currentServingToken: tokenNum } },
+                { upsert: false },
+              );
+            }
+            return Promise.resolve(null);
+          })()
+        : Promise.resolve(null);
 
-    if (scanShareVisit.counterId && scanShareVisit.tokenNumber) {
-      const todayDate = getTodayDateString();
-      const tokenNum = parseInt(scanShareVisit.tokenNumber, 10);
-
-      if (!isNaN(tokenNum)) {
-        await ScanShareDailyQueueModel.findOneAndUpdate(
-          { date: todayDate, counterId: scanShareVisit.counterId },
-          { $set: { currentServingToken: tokenNum } },
-          { upsert: false },
-        );
-      }
-    }
+    const [updatedVisit] = await Promise.all([
+      ScanShareVisitModel.findByIdAndUpdate(
+        scanShareVisit._id,
+        { $set: updateData },
+        { new: true },
+      ),
+      queueUpdatePromise,
+    ]);
 
     if (updatedVisit && scanShareVisit.abhaNumber) {
       try {
@@ -700,26 +707,31 @@ export const completeRegistration = async (req: Request, res: Response) => {
           console.log("New patient record created:", newPatient._id);
         }
 
-        await ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
-          $set: { patientId: patientId },
-        });
-
-        try {
-          const careContext =
-            await CareContextService.createCareContextForVisit(
-              patientId,
-              updatedVisit._id,
-              ["OPConsultation"],
-            );
-          if (careContext) {
-            console.log(
-              "CareContext created for Scan & Share visit:",
-              careContext.careContextReference,
-            );
-          }
-        } catch (ccError) {
-          console.error("CareContext creation error (Scan & Share):", ccError);
-        }
+        // RC4: Parallelize visit link-back + CareContext creation (independent writes)
+        await Promise.all([
+          ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
+            $set: { patientId: patientId },
+          }),
+          CareContextService.createCareContextForVisit(
+            patientId,
+            updatedVisit._id,
+            ["OPConsultation"],
+          )
+            .then((careContext) => {
+              if (careContext) {
+                console.log(
+                  "CareContext created for Scan & Share visit:",
+                  careContext.careContextReference,
+                );
+              }
+            })
+            .catch((ccError) => {
+              console.error(
+                "CareContext creation error (Scan & Share):",
+                ccError,
+              );
+            }),
+        ]);
       } catch (patientError: any) {
         console.error("Error updating patient record:", {
           message: patientError.message,

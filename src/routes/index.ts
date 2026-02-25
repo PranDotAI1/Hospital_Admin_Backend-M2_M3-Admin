@@ -49,6 +49,7 @@ import {
   listPatients,
   getAllPatients,
   sendDeepLinkSms,
+  addVisit,
 } from "../controllers/v3/patient.controller";
 import {
   recordPrescription,
@@ -127,6 +128,7 @@ router.get(
 );
 
 router.post("/patient/register", checkToken, registerPatient);
+router.post("/patient/:id/visit", checkToken, addVisit);
 router.post("/patient/:id/link-abha", checkToken, linkAbha);
 router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);
 router.get("/patient/:id", checkToken, getPatient);

@@ -8,11 +8,13 @@
     "dev": "nodemon --watch src --ext ts --exec ts-node src/bin/www"
   },
   "dependencies": {
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/elliptic": "^6.4.18",
     "axios": "^1.10.0",
     "bcrypt": "^6.0.0",
     "bn.js": "^5.2.2",
+    "compression": "^1.8.1",
     "cookie-parser": "~1.4.4",
     "cors": "^2.8.6",
     "debug": "~2.6.9",

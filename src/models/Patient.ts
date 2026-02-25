@@ -226,5 +226,6 @@ PatientSchema.index({ ABHANumber: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ abhaaddress: 1 }, { sparse: true });
 PatientSchema.index({ mobile: 1 });
 PatientSchema.index({ uhid: 1 }, { unique: true, sparse: true });
+PatientSchema.index({ isMerged: 1, status: 1, updatedAt: -1 });
 
 export const PatientModel = model<IPatient>("Patient", PatientSchema);

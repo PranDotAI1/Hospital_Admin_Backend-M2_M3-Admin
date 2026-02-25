@@ -918,6 +918,53 @@ export const detectHiTypesForVisit = async (
  * @param triggerLinking - If true, attempt to link with ABDM immediately
  * @returns Number of CareContexts created
  */
+export const bulkUpdateCareContextsForPatient = async (
+  patientId: Types.ObjectId | string,
+  abhaAddress: string,
+): Promise<number> => {
+  try {
+    const patient = await PatientModel.findById(patientId).lean();
+    if (!patient) {
+      console.log(
+        "CareContext: bulkUpdateCareContextsForPatient - Patient not found",
+      );
+      return 0;
+    }
+
+    const patientReference = patient.uhid || patient._id.toString();
+
+    // Single bulk update operation - FAST!
+    const result = await CareContextModel.updateMany(
+      {
+        patientId,
+        // Only update if abhaAddress is missing or different
+        $or: [
+          { abhaAddress: { $exists: false } },
+          { abhaAddress: { $ne: abhaAddress } },
+        ],
+      },
+      {
+        $set: {
+          abhaAddress,
+          patientReference,
+        },
+      },
+    );
+
+    console.log(
+      `CareContext: Bulk updated ${result.modifiedCount} care contexts with ABHA for patient ${patientId}`,
+    );
+
+    return result.modifiedCount;
+  } catch (error: any) {
+    console.error(
+      "CareContext: bulkUpdateCareContextsForPatient error:",
+      error.message,
+    );
+    return 0;
+  }
+};
+
 export const createCareContextsForExistingVisits = async (
   patientId: Types.ObjectId | string,
   abhaAddress: string,
@@ -1111,6 +1158,7 @@ export const CareContextService = {
   // Retroactive Creation (when ABHA linked after visits)
   detectHiTypesForVisit,
   createCareContextsForExistingVisits,
+  bulkUpdateCareContextsForPatient,
 };
 
 export default CareContextService;
