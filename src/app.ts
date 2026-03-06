@@ -17,6 +17,7 @@ import v3router from "./routes/v3";
 import webook from "./routes/webhook";
 import V4router from "./routes/v4";
 import { proxyRequest } from "./controllers/proxy.controller";
+import { apiLimiter } from "./middlewares/rate.limiter";
 
 const app = express();
 
@@ -77,11 +78,13 @@ app.use("/api/v2", V2router);
 app.use("/api/v4", V4router);
 
 // ALL OTHERS ROUTES
-app.use("/api", indexRouter);
+app.use("/api", apiLimiter, indexRouter);
 app.use("/api/users", usersRouter);
 
-// this is for  dev purpose only dont uncomment in prod - @harshithreddy
-app.all("/proxy/*", proxyRequest);
+// this is for  dev purpose only - @harshithreddy
+if (process.env.NODE_ENV === "development") {
+  app.all("/proxy/*", proxyRequest);
+}
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   const err = new Error("Not Found");

@@ -368,7 +368,7 @@ export const getPendingTokens = async (req: Request, res: Response) => {
         $lte: endOfToday,
       },
     })
-      .sort({ tokenNumber: 1 })
+      .sort({ createdAt: -1 })
       .lean();
 
     const visitsWithAge = pendingVisits.map((visit: any) => {
@@ -637,7 +637,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
 
           const updateOps: any = {
             $push: {
-              visits: { $each: [visitRef], $position: 0 },
+              visits: { $each: [visitRef], $sort: { visitDate: -1 } },
             },
             $set: {
               lastVisitDate: updatedVisit.visitDate,
@@ -1315,7 +1315,7 @@ export const getAllVisits = async (req: Request, res: Response) => {
     const skip = (safePage - 1) * safeLimit;
     const [visits, total] = await Promise.all([
       ScanShareVisitModel.find(query)
-        .sort({ visitDate: -1, tokenNumber: -1 })
+        .sort({ visitDate: -1, createdAt: -1 })
         .skip(skip)
         .limit(safeLimit)
         .lean(),
@@ -1408,7 +1408,7 @@ export const getPatientVisitHistory = async (req: Request, res: Response) => {
     }
 
     const visits = await ScanShareVisitModel.find({ abhaAddress })
-      .sort({ visitDate: -1 })
+      .sort({ createdAt: -1 })
       .lean();
 
     return res.status(STATUS_CODE.SUCCESS).json({

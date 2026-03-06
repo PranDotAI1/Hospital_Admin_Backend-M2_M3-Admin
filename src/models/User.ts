@@ -151,7 +151,7 @@ const UserSchema = new Schema<IUser>({
     version_m4: { type: Object, required: false, },
     previous_passwords: { type: [], required: false },
     reset_otp: { type: Number, default: null, required: false },
-    role_id: { type: Number, default: 2, required: false },
+    role_id: { type: Number, default: 4, required: false },
     created_by: { type: String, trim: true, required: false },
     updated_by: { type: String, trim: true, required: false },
     deleted_by: { type: String, trim: true, required: false }

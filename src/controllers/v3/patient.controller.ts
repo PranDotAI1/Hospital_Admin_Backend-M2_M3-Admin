@@ -176,7 +176,7 @@ export const registerPatient = async (req: Request, res: Response) => {
 
       const updatePayload: any = {
         $push: {
-          visits: { $each: [visitInfo], $position: 0 },
+          visits: { $each: [visitInfo], $sort: { visitDate: -1 } },
         },
         $inc: { totalVisits: 1 },
         $set: {
@@ -278,7 +278,7 @@ export const registerPatient = async (req: Request, res: Response) => {
 
         const updatePayload: any = {
           $push: {
-            visits: { $each: [visitInfo], $position: 0 },
+            visits: { $each: [visitInfo], $sort: { visitDate: -1 } },
           },
           $inc: { totalVisits: 1 },
           $set: { lastVisitDate: visitDate },
@@ -970,11 +970,12 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
           insurance: { $each: victimPatient.insurance },
         };
       }
-      // CRITICAL: Move visits from Victim to Master
+      // CRITICAL: Move visits from Victim to Master (use $push with $sort to maintain order)
       if (victimPatient.visits && victimPatient.visits.length > 0) {
-        updateData.$addToSet = {
-          ...(updateData.$addToSet || {}),
-          visits: { $each: victimPatient.visits },
+        if (!updateData.$push) updateData.$push = {};
+        updateData.$push.visits = {
+          $each: victimPatient.visits,
+          $sort: { visitDate: -1 },
         };
       }
 
@@ -1288,7 +1289,7 @@ export const addVisit = async (req: Request, res: Response) => {
 
     const updatePayload: any = {
       $push: {
-        visits: { $each: [visitInfo], $position: 0 },
+        visits: { $each: [visitInfo], $sort: { visitDate: -1 } },
       },
       $inc: { totalVisits: 1 },
       $set: {
@@ -1352,3 +1353,5 @@ export const addVisit = async (req: Request, res: Response) => {
     });
   }
 };
+
+

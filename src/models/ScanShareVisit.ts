@@ -131,9 +131,10 @@ const ScanShareVisitSchema = new Schema<IScanShareVisit>(
   },
 );
 
-ScanShareVisitSchema.index({ visitStatus: 1, visitDate: 1 });
+ScanShareVisitSchema.index({ visitDate: 1, createdAt: -1 });
+ScanShareVisitSchema.index({ visitStatus: 1, visitDate: 1, createdAt: -1 });
 ScanShareVisitSchema.index({ tokenNumber: 1, visitStatus: 1 });
-ScanShareVisitSchema.index({ abhaAddress: 1, visitDate: 1 });
+ScanShareVisitSchema.index({ abhaAddress: 1, createdAt: -1 });
 ScanShareVisitSchema.index({ patientId: 1 });
 
 export const ScanShareVisitModel = model<IScanShareVisit>(

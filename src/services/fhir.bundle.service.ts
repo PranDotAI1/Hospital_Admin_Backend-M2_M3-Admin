@@ -131,6 +131,22 @@ const toSafeLocaleDateString = (
     : d.toLocaleDateString("en-IN");
 };
 
+const toFhirDate = (dob: string | Date | undefined | null): string => {
+  if (dob == null || dob === "") return "";
+  if (dob instanceof Date) {
+    return Number.isNaN(dob.getTime()) ? "" : dob.toISOString().slice(0, 10);
+  }
+  const s = String(dob).trim();
+  const ddmmyyyy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (ddmmyyyy) {
+    const [, dd, mm, yyyy] = ddmmyyyy;
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+};
+
 const generateUUID = (): string => {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
@@ -572,7 +588,9 @@ export const buildPatientResource = (
         },
       ],
       gender: fhirGender,
-      ...(patient.dob && { birthDate: patient.dob }),
+      ...(patient.dob && {
+        birthDate: toFhirDate(patient.dob),
+      }),
       ...(patient.mobile && {
         telecom: [
           {

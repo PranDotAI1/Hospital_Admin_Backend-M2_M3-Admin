@@ -25,7 +25,9 @@ import {
   userV2Onboard,
 } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
-import { checkToken } from "../middlewares/user.authentication";
+import { checkToken, requireRole } from "../middlewares/user.authentication";
+import { loginLimiter } from "../middlewares/rate.limiter";
+import { ROLE } from "../utils/constant";
 import {
   getPendingTokens,
   completeRegistration,
@@ -74,27 +76,62 @@ router.get("/testing", (req: any, res: any) => {
   res.send("Welcome to the new API");
 });
 // onboarding Routes
-router.post("/login", login);
+router.post("/login", loginLimiter, login);
 router.get("/logout", checkToken, logout);
 router.get("/profile", checkToken, userProfile);
 
 //Hospital Routes
 router.get("/hospital", checkToken, listing);
-router.post("/hospital", checkToken, add);
-router.put("/hospital/:id", checkToken, update);
+router.post(
+  "/hospital",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  add,
+);
+router.put(
+  "/hospital/:id",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  update,
+);
 
 //User Routes
 router.get("/users", checkToken, userListing);
-router.post("/user/add", checkToken, userAdd);
-router.put("/user/:id", checkToken, userUpdate);
-router.put("/user/update/password/:id", updatePassword);
+router.post(
+  "/user/add",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  userAdd,
+);
+router.put(
+  "/user/:id",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  userUpdate,
+);
+router.put("/user/update/password/:id", checkToken, updatePassword);
 
-router.post("/user/new-add", userNewAdd);
+router.post(
+  "/user/new-add",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  userNewAdd,
+);
 
 // Department Routes
 router.get("/departments", checkToken, departmentList);
-router.post("/department", checkToken, addDepartment);
-router.put("/department/:id", checkToken, updateDepartment);
+router.post(
+  "/department",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  addDepartment,
+);
+router.put(
+  "/department/:id",
+  checkToken,
+  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  updateDepartment,
+);
 
 //ABHA Routes
 router.post("/registration", checkToken, userV2Onboard);
@@ -102,7 +139,7 @@ router.post("/token-generation", checkToken, tokenGeneration);
 //router.post("/test-token", tokenGeneration1)
 
 // get ABHA user information
-router.get("/abha/user/listing", abhauserListing);
+router.get("/abha/user/listing", checkToken, abhauserListing);
 router.get("/abha/user/notify-response/:id", checkToken, userNotifyResponse);
 
 //Webhook hit
