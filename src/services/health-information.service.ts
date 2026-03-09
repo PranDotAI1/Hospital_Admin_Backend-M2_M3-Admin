@@ -789,20 +789,23 @@ const processHealthInfoRequest = async (
     `${LOG_PREFIX} Processing request for consent: ${consentId}, transaction: ${transactionId}`,
   );
 
-  // Resolve token once so we can reuse it for failure notification (avoids 403 in catch)
+  // Always use a fresh session token for data push & notification.
   let abdmToken: string;
-  if (abdmCallbackAuth && abdmCallbackAuth.trim()) {
-    abdmToken = abdmCallbackAuth.trim();
-    if (!abdmToken.toLowerCase().startsWith("bearer ")) {
-      abdmToken = `Bearer ${abdmToken}`;
-    }
-    console.log(`${LOG_PREFIX} Using callback request token for data flow`);
-  } else {
-    try {
-      abdmToken = await AbdmTokenService.getToken();
-    } catch (tokenError: any) {
+  try {
+    abdmToken = await AbdmTokenService.getToken();
+    console.log(`${LOG_PREFIX} Using session token for data flow`);
+  } catch (tokenError: any) {
+    if (abdmCallbackAuth && abdmCallbackAuth.trim()) {
+      abdmToken = abdmCallbackAuth.trim();
+      if (!abdmToken.toLowerCase().startsWith("bearer ")) {
+        abdmToken = `Bearer ${abdmToken}`;
+      }
+      console.warn(
+        `${LOG_PREFIX} Session token failed, falling back to callback auth: ${tokenError.message}`,
+      );
+    } else {
       console.error(
-        `${LOG_PREFIX} No callback token and getToken failed:`,
+        `${LOG_PREFIX} No session token and no callback token available:`,
         tokenError.message,
       );
       return;
@@ -955,7 +958,12 @@ const processHealthInfoRequest = async (
     // (ABDM requires non-empty statusResponses, so we can't notify with empty array)
     if (careContexts && careContexts.length > 0) {
       try {
-        await notifyHealthInfoTransfer(consentId, transactionId, careContexts, abdmToken);
+        await notifyHealthInfoTransfer(
+          consentId,
+          transactionId,
+          careContexts,
+          abdmToken,
+        );
       } catch (notifyError: any) {
         console.error(
           `${LOG_PREFIX} Failed to send failure notification:`,
