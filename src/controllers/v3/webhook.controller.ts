@@ -137,9 +137,9 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
 
       const resolvedConsentRequestId =
         consentDetail.consentRequestId || paramRequestId;
-      
+
       const isPHRPull = consentDetail.purpose?.code === "PATRQT";
-      
+
       let usePHRCollection = isPHRPull;
       if (!isPHRPull) {
         const consentReq = resolvedConsentRequestId
@@ -154,15 +154,15 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
           : null;
         usePHRCollection = consentReq?.requestPurpose === "PHR";
       }
-      
+
       if (isPHRPull) {
         console.log(
           `${LOG_PREFIX} Detected PHR pull record (purpose.code=PATRQT). Using PHR collection.`,
         );
       }
-      
+
       const artefactId = consentDetail.consentId || body.consent.id;
-      
+
       const artefact = await ConsentService.storeArtefactDetails(
         consentDetail,
         consentStatus,
@@ -193,6 +193,14 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
         console.log(
           `${LOG_PREFIX} Artefact details stored for ${artefact.artefactId}`,
         );
+
+        // AUTO-TRIGGER: Fetch health data immediately after the artefact details are stored.
+        if (consentStatus === "GRANTED" && !usePHRCollection) {
+          console.log(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Consent GRANTED, initiating HIU data fetch for ${artefact.artefactId}`,
+          );
+          ConsentService.triggerHiuDataFetchAsync([artefact.artefactId]);
+        }
       }
     } else {
       console.warn(
@@ -241,6 +249,21 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         },
         { $set: statusUpdate },
       );
+
+      // Add auto-trigger for data fetch if status is GRANTED
+      if (
+        body.consentRequest.status === "GRANTED" &&
+        body.consentRequest.consentArtefacts &&
+        body.consentRequest.consentArtefacts.length > 0
+      ) {
+        const artefactIds = body.consentRequest.consentArtefacts.map(
+          (a: any) => a.id,
+        );
+        console.log(
+          `${LOG_PREFIX} Consent status is GRANTED via on-status callback. Triggering data fetch for artefacts: ${artefactIds.join(", ")}`,
+        );
+        ConsentService.triggerHiuDataFetchAsync(artefactIds);
+      }
 
       console.log(
         `${LOG_PREFIX} Consent status updated: id=${body.consentRequest.id}, status=${statusUpdate.status}, matched=${updateResult.matchedCount}`,

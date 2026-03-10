@@ -235,9 +235,13 @@ export const onHealthInformationTransfer = async (
 };
 
 import { ExternalHealthRecordModel } from "../../models/ExternalHealthRecord";
-import { ConsentArtefactModel, ConsentArtefactStatus } from "../../models/ConsentArtefact";
+import {
+  ConsentArtefactModel,
+  ConsentArtefactStatus,
+} from "../../models/ConsentArtefact";
 import { PHRConsentArtefactModel } from "../../models/PHRConsentArtefact";
 import { Types } from "mongoose";
+import { ConsentService } from "../../services/consent.service";
 
 export const getExternalRecords = async (req: Request, res: Response) => {
   try {
@@ -265,7 +269,8 @@ export const getExternalRecords = async (req: Request, res: Response) => {
     );
     const skip = (pageNum - 1) * limitNum;
     let query: any = {};
-    if (Types.ObjectId.isValid(patientId as string)) {
+    const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+    if (objectIdRegex.test(patientId as string)) {
       query.patientId = new Types.ObjectId(patientId as string);
     } else {
       query.patientAbhaAddress = patientId;
@@ -278,11 +283,17 @@ export const getExternalRecords = async (req: Request, res: Response) => {
     }
 
     // Only return records whose consent is still GRANTED (revoked/expired data is removed on notify; this is a safety filter)
-    const grantedArtefactIds = await ConsentArtefactModel.distinct("artefactId", {
-      status: ConsentArtefactStatus.GRANTED,
-    });
+    const grantedArtefactIds = await ConsentArtefactModel.distinct(
+      "artefactId",
+      {
+        status: ConsentArtefactStatus.GRANTED,
+      },
+    );
     if (grantedArtefactIds.length > 0) {
-      if (query.consentArtefactId && typeof query.consentArtefactId === "string") {
+      if (
+        query.consentArtefactId &&
+        typeof query.consentArtefactId === "string"
+      ) {
         if (!grantedArtefactIds.includes(query.consentArtefactId)) {
           query.consentArtefactId = { $in: [] };
         }
@@ -304,6 +315,22 @@ export const getExternalRecords = async (req: Request, res: Response) => {
         .lean(),
       ExternalHealthRecordModel.countDocuments(query),
     ]);
+
+    console.log(
+      `[HIU] returning total: ${total}, returning records length: ${records.length}`,
+    );
+
+    // Add auto-trigger for data fetch if we have GRANTED artefacts but no records
+    if (records.length === 0 && grantedArtefactIds.length > 0) {
+      console.log(
+        `[HIU] No external records found, but ${grantedArtefactIds.length} GRANTED artefacts exist. Triggering auto-fetch as fallback.`,
+      );
+
+      // Pass only the ones matching the patient context if possible, but triggerHiuDataFetchAsync deduplicates anyway
+      ConsentService.triggerHiuDataFetchAsync(
+        query.consentArtefactId?.$in || grantedArtefactIds,
+      );
+    }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",

@@ -209,10 +209,18 @@ export const handleHipNotify = async (
             );
             
             const hasCareContexts =
-              (detail.careContexts && Array.isArray(detail.careContexts) && detail.careContexts.length > 0) ||
-              (detail.consentDetail?.careContexts && Array.isArray(detail.consentDetail.careContexts) && detail.consentDetail.careContexts.length > 0);
-            
-            if (!hasCareContexts && artefact.careContexts?.length === 0 && !usePHRCollection) {
+              (detail.careContexts &&
+                Array.isArray(detail.careContexts) &&
+                detail.careContexts.length > 0) ||
+              (detail.consentDetail?.careContexts &&
+                Array.isArray(detail.consentDetail.careContexts) &&
+                detail.consentDetail.careContexts.length > 0);
+
+            if (
+              !hasCareContexts &&
+              artefact.careContexts?.length === 0 &&
+              !usePHRCollection
+            ) {
               console.warn(
                 `${LOG_PREFIX} Inline consentDetail for ${detailArtefactId} has no care contexts. Triggering fetch to get full detail from ABDM.`,
               );
@@ -227,7 +235,9 @@ export const handleHipNotify = async (
         // (b)/(c) Artefact IDs without inline detail
         let finalUsePHRCollection = usePHRCollection;
         for (const aid of artefactIds) {
-          const existingPHR = await PHRConsentArtefactModel.findOne({ artefactId: aid });
+          const existingPHR = await PHRConsentArtefactModel.findOne({
+            artefactId: aid,
+          });
           if (existingPHR) {
             finalUsePHRCollection = true;
             console.warn(
@@ -273,8 +283,8 @@ export const handleHipNotify = async (
 
       // ======== AUTO-TRIGGER: Fetch health data (only for HIMS consents; PHR app calls fetch itself) ========
       if (artefactIds.length > 0 && !usePHRCollection) {
-        const anyInPHR = await PHRConsentArtefactModel.findOne({ 
-          artefactId: { $in: artefactIds } 
+        const anyInPHR = await PHRConsentArtefactModel.findOne({
+          artefactId: { $in: artefactIds },
         });
         if (!anyInPHR) {
           triggerHiuDataFetchAsync(artefactIds);
@@ -424,7 +434,7 @@ export const handleHipNotify = async (
  * Runs asynchronously (fire-and-forget) to not block the main consent flow.
  * Includes deduplication to prevent duplicate requests.
  */
-const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
+export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
   if (!artefactIds || artefactIds.length === 0) return;
 
   // Import models for deduplication and date range lookup
@@ -473,7 +483,7 @@ const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
           );
           continue;
         }
-        
+
         artefact = await ConsentArtefactModel.findOne({ artefactId });
         if (!artefact) {
           console.warn(
@@ -481,19 +491,19 @@ const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
           );
           continue;
         }
-        
+
         const purposeCode = artefact.rawConsentDetail?.purpose?.code;
         const isPHRPull = purposeCode === "PATRQT";
-        
+
         if (isPHRPull) {
           console.log(
             `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - PHR pull record (purpose.code=PATRQT). PHR consents don't use AUTO-TRIGGER.`,
           );
           continue;
         }
-        
+
         const isHIMS = true; // If not PHR, it's HIMS
-        
+
         console.log(
           `${LOG_PREFIX} [AUTO-TRIGGER] Artefact ${artefactId} is HIMS (purpose.code=${purposeCode || "not PATRQT"}). Proceeding with AUTO-TRIGGER.`,
         );
@@ -793,7 +803,7 @@ export const storeArtefactDetails = async (
       console.error(`${LOG_PREFIX} No artefact ID in consent detail`);
       return null;
     }
-    
+
     const purposeCode = consentDetail.purpose?.code;
     if (purposeCode === "PATRQT") {
       usePHRCollection = true;
@@ -1462,6 +1472,7 @@ export const ConsentService = {
   getArtefactsByConsentRequest,
   getActiveArtefactsForPatient,
   getCareContextRefsForArtefact,
+  triggerHiuDataFetchAsync,
 };
 
 export default ConsentService;

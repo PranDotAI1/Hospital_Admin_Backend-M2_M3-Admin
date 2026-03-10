@@ -21,10 +21,15 @@ export const consentInitRequest = async (req: Request, res: Response) => {
         message: "Missing required field: facilityId (HIU ID)",
       });
     }
-    if (!body.hiTypes || !Array.isArray(body.hiTypes) || body.hiTypes.length === 0) {
+    if (
+      !body.hiTypes ||
+      !Array.isArray(body.hiTypes) ||
+      body.hiTypes.length === 0
+    ) {
       return res.status(400).json({
         status: "error",
-        message: "Missing or invalid field: hiTypes (must be a non-empty array)",
+        message:
+          "Missing or invalid field: hiTypes (must be a non-empty array)",
       });
     }
     if (!body.from || !body.to) {
@@ -116,7 +121,10 @@ export const getConsentRequests = async (req: Request, res: Response) => {
       page: { limit: Number(limit), skip: Number(skip) },
     });
   } catch (error: any) {
-    console.error(`${LOG_PREFIX} Error fetching consent requests:`, error.message);
+    console.error(
+      `${LOG_PREFIX} Error fetching consent requests:`,
+      error.message,
+    );
     return res.status(500).json({
       status: "error",
       error: "Failed to fetch consent requests",
@@ -141,6 +149,19 @@ export const getConsentStatus = async (req: Request, res: Response) => {
     );
 
     const result = await ConsentService.checkConsentStatus(consentRequestId);
+
+    if (
+      result.data?.consentRequest?.status === "GRANTED" &&
+      result.data?.consentRequest?.consentArtefacts?.length > 0
+    ) {
+      const artefactIds = result.data.consentRequest.consentArtefacts.map(
+        (a: any) => a.id,
+      );
+      console.log(
+        `${LOG_PREFIX} Consent status is GRANTED on check. Triggering data fetch for artefacts: ${artefactIds.join(", ")}`,
+      );
+      ConsentService.triggerHiuDataFetchAsync(artefactIds);
+    }
 
     return res.status(200).json({
       status: "success",
@@ -195,7 +216,10 @@ export const getConsentArtefacts = async (req: Request, res: Response) => {
       page: { limit: Number(limit), skip: Number(skip) },
     });
   } catch (error: any) {
-    console.error(`${LOG_PREFIX} Error fetching consent artefacts:`, error.message);
+    console.error(
+      `${LOG_PREFIX} Error fetching consent artefacts:`,
+      error.message,
+    );
     return res.status(500).json({
       status: "error",
       error: "Failed to fetch consent artefacts",
@@ -215,9 +239,7 @@ export const fetchArtefactDetails = async (req: Request, res: Response) => {
       });
     }
 
-    console.log(
-      `${LOG_PREFIX} Manual artefact fetch for ${artefactId}`,
-    );
+    console.log(`${LOG_PREFIX} Manual artefact fetch for ${artefactId}`);
 
     await ConsentService.fetchConsentArtefact(artefactId);
 
