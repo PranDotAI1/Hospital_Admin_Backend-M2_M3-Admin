@@ -9,6 +9,13 @@ export interface IMedicationLine {
   form?: string;
   route?: string;
   method?: string;
+  timing?: {
+    frequency: number;
+    period: number;
+    periodUnit: string;
+  };
+  durationUnit?: string;
+  customInstructions?: string;
 }
 
 export interface IVisitPrescription extends Document {
@@ -30,6 +37,13 @@ const MedicationLineSchema = new Schema<IMedicationLine>(
     form: { type: String, trim: true },
     route: { type: String, trim: true },
     method: { type: String, trim: true },
+    timing: {
+      frequency: { type: Number },
+      period: { type: Number },
+      periodUnit: { type: String, trim: true },
+    },
+    durationUnit: { type: String, trim: true },
+    customInstructions: { type: String, trim: true },
   },
   { _id: false },
 );

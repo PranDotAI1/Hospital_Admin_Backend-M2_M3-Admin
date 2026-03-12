@@ -6,6 +6,16 @@ export interface IDischargeMedication {
   frequency?: string;
   duration?: string;
   instructions?: string;
+  form?: string;
+  route?: string;
+  method?: string;
+  timing?: {
+    frequency: number;
+    period: number;
+    periodUnit: string;
+  };
+  durationUnit?: string;
+  customInstructions?: string;
 }
 
 export interface IVisitDischargeSummary extends Document {
@@ -37,6 +47,16 @@ const DischargeMedicationSchema = new Schema<IDischargeMedication>(
     frequency: { type: String, trim: true },
     duration: { type: String, trim: true },
     instructions: { type: String, trim: true },
+    form: { type: String, trim: true },
+    route: { type: String, trim: true },
+    method: { type: String, trim: true },
+    timing: {
+      frequency: { type: Number },
+      period: { type: Number },
+      periodUnit: { type: String, trim: true },
+    },
+    durationUnit: { type: String, trim: true },
+    customInstructions: { type: String, trim: true },
   },
   { _id: false },
 );

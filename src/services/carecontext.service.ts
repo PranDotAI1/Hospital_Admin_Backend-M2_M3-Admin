@@ -351,6 +351,143 @@ export const createCareContextForVisit = async (
   }
 };
 
+/** Friendly display names for HI types */
+const HI_TYPE_DISPLAY_NAMES: Record<string, string> = {
+  Prescription: "Prescription",
+  DiagnosticReport: "Diagnostic Report",
+  OPConsultation: "OP Consultation",
+  DischargeSummary: "Discharge Summary",
+  ImmunizationRecord: "Immunization Record",
+  HealthDocumentRecord: "Health Document",
+  WellnessRecord: "Wellness Record",
+  Invoice: "Invoice",
+};
+
+/**
+ * Create a separate CareContext for a specific HI type on a visit.
+ *
+ * New per-type model: each HI type (Prescription, DiagnosticReport, etc.)
+ * gets its own CareContext. This replaces the old approach of accumulating
+ * hiTypes into a single CareContext per visit.
+ *
+ * Idempotent: if a CareContext already exists for (patientId, visitId, hiType),
+ * returns the existing one.
+ */
+export const createCareContextForHiType = async (
+  patientId: Types.ObjectId | string,
+  visitId: Types.ObjectId | string,
+  hiType: HIType,
+): Promise<ICareContext | null> => {
+  try {
+    const patient = await PatientModel.findById(patientId);
+    if (!patient) {
+      console.log("[CareContext] createCareContextForHiType: Patient not found", patientId);
+      return null;
+    }
+
+    // Check if a CareContext already exists for this (patientId, visitId, hiType) combo
+    const existingContext = await CareContextModel.findOne({
+      patientId,
+      visitId,
+      hiType,
+    });
+    if (existingContext) {
+      console.log(
+        "CareContext: Already exists for visit",
+        visitId,
+        "hiType",
+        hiType,
+      );
+      return existingContext;
+    }
+
+    // Get visit details for display
+    const visit = await ScanShareVisitModel.findById(visitId);
+    const department = visit?.department;
+    const visitDate = visit?.visitDate || new Date();
+
+    const patientRef = patient.uhid || patient._id.toString();
+
+    // Generate unique care context reference (includes hiType suffix for uniqueness)
+    const careContextReference = await generateCareContextReference(
+      patientRef,
+      visitDate,
+    );
+
+    // Generate display text including the HI type name
+    const hiTypeDisplay = HI_TYPE_DISPLAY_NAMES[hiType] || hiType;
+    const display = generateDisplayText(hiTypeDisplay, department, visitDate);
+
+    // Create care context record with single hiType
+    const careContext = await CareContextModel.create({
+      patientId,
+      visitId,
+      careContextReference,
+      patientReference: patientRef,
+      abhaAddress: patient.abhaaddress || "",
+      display,
+      hiType,
+      hiTypes: [hiType],
+      linkingStatus: CareContextStatus.PENDING,
+      linkAttempts: 0,
+      facilityId: facilityId,
+      facilityName: facilityName,
+    });
+
+    console.log(
+      "CareContext: Created for hiType",
+      hiType,
+      "->",
+      careContext.careContextReference,
+    );
+
+    if (patient.abhaaddress) {
+      if (isLinkTokenValid(patient)) {
+        console.log(
+          "CareContext: Patient has valid link token, auto-linking...",
+        );
+        setImmediate(async () => {
+          try {
+            const abdmToken = await AbdmTokenService.getToken();
+            await linkCareContext(careContext._id, abdmToken);
+          } catch (autoLinkError) {
+            console.error(
+              "CareContext: Auto-link failed (non-blocking):",
+              autoLinkError,
+            );
+          }
+        });
+      } else {
+        console.log(
+          "CareContext: No valid link token for patient",
+          patient.uhid || patient._id,
+          "-> requesting link token from ABDM (cooldown-protected)",
+        );
+        setImmediate(async () => {
+          try {
+            await requestLinkToken(patient);
+          } catch (tokenErr) {
+            console.error(
+              "CareContext: Link token request failed (non-blocking):",
+              tokenErr,
+            );
+          }
+        });
+      }
+    } else {
+      console.log(
+        "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
+      );
+    }
+
+    return careContext;
+  } catch (error) {
+    console.error("CareContext: Error creating for hiType", hiType, error);
+    return null;
+  }
+};
+
+/** @deprecated Use createCareContextForHiType instead */
 export const addHiTypesForVisit = async (
   patientId: Types.ObjectId | string,
   visitId: Types.ObjectId | string,
@@ -467,7 +604,7 @@ export const linkCareContext = async (
               display: careContext.display,
             },
           ],
-          hiType: careContext.hiTypes[0] || "Prescription",
+          hiType: careContext.hiType || careContext.hiTypes[0] || "Prescription",
           count: 1,
         },
       ],
@@ -634,7 +771,7 @@ export const notifyContext = async (
           patientReference: patient.uhid || patient._id.toString(),
           careContextReference: careContext.careContextReference,
         },
-        hiTypes: careContext.hiTypes,
+        hiTypes: careContext.hiType ? [careContext.hiType] : careContext.hiTypes,
         date: new Date().toISOString(),
         hip: {
           id: facilityId,
@@ -1013,29 +1150,6 @@ export const createCareContextsForExistingVisits = async (
     // Process each visit
     for (const visitId of visitIds) {
       try {
-        // Check if CareContext already exists
-        const existingCC = await CareContextModel.findOne({
-          patientId,
-          visitId,
-        });
-        if (existingCC) {
-          console.log(
-            `[CareContext] Retroactive: CareContext already exists for visit ${visitId}`,
-          );
-
-          // Update abhaAddress if needed
-          if (
-            !existingCC.abhaAddress ||
-            existingCC.abhaAddress !== abhaAddress
-          ) {
-            await CareContextModel.updateOne(
-              { _id: existingCC._id },
-              { $set: { abhaAddress } },
-            );
-          }
-          continue;
-        }
-
         // Detect hiTypes from existing clinical data
         const hiTypes = await detectHiTypesForVisit(visitId);
         console.log(
@@ -1043,63 +1157,87 @@ export const createCareContextsForExistingVisits = async (
           hiTypes,
         );
 
-        // Get visit date for display text
-        let visitDate = new Date();
-        const ssVisit = scanShareVisits.find(
-          (v) => v._id.toString() === visitId.toString(),
-        );
-        if (ssVisit) {
-          visitDate = ssVisit.visitDate;
-        } else {
-          const embeddedVisit = patient.visits?.find(
-            (v) => v.visitId?.toString() === visitId.toString(),
-          );
-          if (embeddedVisit?.visitDate) {
-            visitDate = embeddedVisit.visitDate;
-          }
-        }
-
-        // Generate care context reference
-        const ccRef = await generateCareContextReference(uhid, visitDate);
-        const display = generateDisplayText(
-          ssVisit?.department || "OPD Visit",
-          ssVisit?.department,
-          visitDate,
-        );
-
-        // Create CareContext
-        const newCC = await CareContextModel.create({
-          patientId: patient._id,
-          visitId,
-          careContextReference: ccRef,
-          patientReference: uhid,
-          abhaAddress,
-          display,
-          hiTypes,
-          linkingStatus: CareContextStatus.PENDING,
-          linkAttempts: 0,
-          facilityId,
-          facilityName,
-        });
-
-        result.created++;
-        console.log(
-          `[CareContext] Retroactive: Created CareContext ${ccRef} with hiTypes:`,
-          hiTypes,
-        );
-
-        // Trigger linking if requested and patient has valid link token
-        if (triggerLinking && isLinkTokenValid(patient)) {
-          try {
-            const linked = await linkCareContext(newCC._id);
-            if (linked) {
-              result.linked++;
+        // Create a separate CareContext for each detected HI type
+        for (const hiType of hiTypes) {
+          // Check if CareContext already exists for this (patientId, visitId, hiType)
+          const existingCC = await CareContextModel.findOne({
+            patientId,
+            visitId,
+            hiType,
+          });
+          if (existingCC) {
+            // Update abhaAddress if needed
+            if (
+              !existingCC.abhaAddress ||
+              existingCC.abhaAddress !== abhaAddress
+            ) {
+              await CareContextModel.updateOne(
+                { _id: existingCC._id },
+                { $set: { abhaAddress } },
+              );
             }
-          } catch (linkErr: any) {
-            console.error(
-              `[CareContext] Retroactive: Link error for ${ccRef}:`,
-              linkErr.message,
+            continue;
+          }
+
+          // Get visit date for display text
+          let visitDate = new Date();
+          const ssVisit = scanShareVisits.find(
+            (v) => v._id.toString() === visitId.toString(),
+          );
+          if (ssVisit) {
+            visitDate = ssVisit.visitDate;
+          } else {
+            const embeddedVisit = patient.visits?.find(
+              (v) => v.visitId?.toString() === visitId.toString(),
             );
+            if (embeddedVisit?.visitDate) {
+              visitDate = embeddedVisit.visitDate;
+            }
+          }
+
+          // Generate care context reference
+          const ccRef = await generateCareContextReference(uhid, visitDate);
+          const hiTypeDisplay = HI_TYPE_DISPLAY_NAMES[hiType] || hiType;
+          const display = generateDisplayText(
+            hiTypeDisplay,
+            ssVisit?.department,
+            visitDate,
+          );
+
+          // Create CareContext for this specific HI type
+          const newCC = await CareContextModel.create({
+            patientId: patient._id,
+            visitId,
+            careContextReference: ccRef,
+            patientReference: uhid,
+            abhaAddress,
+            display,
+            hiType,
+            hiTypes: [hiType],
+            linkingStatus: CareContextStatus.PENDING,
+            linkAttempts: 0,
+            facilityId,
+            facilityName,
+          });
+
+          result.created++;
+          console.log(
+            `[CareContext] Retroactive: Created CareContext ${ccRef} for hiType: ${hiType}`,
+          );
+
+          // Trigger linking if requested and patient has valid link token
+          if (triggerLinking && isLinkTokenValid(patient)) {
+            try {
+              const linked = await linkCareContext(newCC._id);
+              if (linked) {
+                result.linked++;
+              }
+            } catch (linkErr: any) {
+              console.error(
+                `[CareContext] Retroactive: Link error for ${ccRef}:`,
+                linkErr.message,
+              );
+            }
           }
         }
       } catch (visitErr: any) {
@@ -1135,6 +1273,7 @@ export const CareContextService = {
 
   // CRUD
   createCareContextForVisit,
+  createCareContextForHiType,
   addHiTypesForVisit,
 
   // HIP-Initiated Linking

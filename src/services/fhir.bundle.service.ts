@@ -664,6 +664,14 @@ export interface ICombinedBundleOptionalData {
       frequency?: string;
       duration?: string;
       instructions?: string;
+      form?: string;
+      durationUnit?: string;
+      customInstructions?: string;
+      timing?: {
+        frequency: number;
+        period: number;
+        periodUnit: string;
+      };
     }>;
     advice?: string;
   } | null;
@@ -692,6 +700,14 @@ export interface ICombinedBundleOptionalData {
       frequency?: string;
       duration?: string;
       instructions?: string;
+      form?: string;
+      durationUnit?: string;
+      customInstructions?: string;
+      timing?: {
+        frequency: number;
+        period: number;
+        periodUnit: string;
+      };
     }>;
     admissionDate?: Date;
     dischargeDate?: Date;
@@ -751,7 +767,7 @@ const getMedicationDetails = (med: any) => {
 
   let form = {
     code: "385055001",
-    display: "Tablet dose form",
+    display: "Tablet",
     text: "Tablet",
   };
   let route = {
@@ -760,26 +776,29 @@ const getMedicationDetails = (med: any) => {
     text: "Oral",
   };
   let method = {
-    code: "738995006",
+    code: "421521009",
     display: "Swallow",
     text: "Swallow",
   };
 
-  if (med.form && med.form !== "NA") {
+  const isInvalid = (val: any) =>
+    !val ||
+    String(val).trim() === "" ||
+    ["NA", "N/A", "N\\A", "UNKNOWN", "NULL"].includes(
+      String(val).toUpperCase().trim(),
+    );
+
+  if (!isInvalid(med.form)) {
     const formLower = String(med.form).toLowerCase();
-    if (formLower === "tablet") {
-      form = { code: "385055001", display: "Tablet dose form", text: "Tablet" };
-    } else if (formLower === "capsule") {
-      form = {
-        code: "428641000",
-        display: "Capsule dose form",
-        text: "Capsule",
-      };
-    } else if (formLower === "syrup") {
+    if (formLower === "tablet" || formLower === "tab") {
+      form = { code: "385055001", display: "Tablet", text: "Tablet" };
+    } else if (formLower === "capsule" || formLower === "cap") {
+      form = { code: "428641000", display: "Capsule", text: "Capsule" };
+    } else if (formLower === "syrup" || formLower === "syr") {
       form = { code: "385057009", display: "Syrup", text: "Syrup" };
-    } else if (formLower === "injection") {
+    } else if (formLower === "injection" || formLower === "inj") {
       form = { code: "385218009", display: "Injection", text: "Injection" };
-    } else if (formLower === "drops") {
+    } else if (formLower === "drops" || formLower === "drop") {
       form = { code: "385018001", display: "Drops", text: "Drops" };
     } else if (formLower === "cream" || formLower === "ointment") {
       form = { code: "385099005", display: "Cream", text: "Cream" };
@@ -788,7 +807,7 @@ const getMedicationDetails = (med: any) => {
     }
   }
 
-  if (!med.form) {
+  if (isInvalid(med.form)) {
     if (name.includes("syr") || name.includes("susp") || name.includes("liq")) {
       form = { code: "385057009", display: "Syrup", text: "Syrup" };
       route = { code: "26643006", display: "Oral Route", text: "Oral" };
@@ -802,11 +821,7 @@ const getMedicationDetails = (med: any) => {
       };
       method = { code: "422145002", display: "Inject", text: "Inject" };
     } else if (name.includes("cap")) {
-      form = {
-        code: "428641000",
-        display: "Capsule dose form",
-        text: "Capsule",
-      };
+      form = { code: "428641000", display: "Capsule", text: "Capsule" };
     } else if (
       name.includes("cream") ||
       name.includes("oint") ||
@@ -817,59 +832,124 @@ const getMedicationDetails = (med: any) => {
       method = { code: "419747000", display: "Apply", text: "Apply" };
     } else if (name.includes("drop")) {
       form = { code: "385018001", display: "Drops", text: "Drops" };
+    } else if (name.includes("tab")) {
+      form = { code: "385055001", display: "Tablet", text: "Tablet" };
     }
-  } else if (med.form && String(med.form).trim() !== "" && med.form !== "NA") {
+  } else if (!isInvalid(med.form)) {
     const formLower = String(med.form).toLowerCase();
-    if (formLower === "syrup") {
+    if (formLower.includes("syrup") || formLower.includes("syr")) {
       route = { code: "26643006", display: "Oral Route", text: "Oral" };
       method = { code: "738996007", display: "Drink", text: "Drink" };
-    } else if (formLower === "injection") {
+    } else if (formLower.includes("injection") || formLower.includes("inj")) {
       route = {
         code: "47625008",
         display: "Intravenous route",
         text: "Intravenous",
       };
       method = { code: "422145002", display: "Inject", text: "Inject" };
-    } else if (formLower === "cream" || formLower === "ointment") {
+    } else if (formLower.includes("cream") || formLower.includes("ointment")) {
       route = { code: "6064005", display: "Topical route", text: "Topical" };
       method = { code: "419747000", display: "Apply", text: "Apply" };
     }
   }
 
-  if (med.route && String(med.route).trim() !== "" && med.route !== "NA") {
-    const routeLower = String(med?.route ?? "").toLowerCase();
-    if (routeLower === "oral")
+  if (!isInvalid(med.route)) {
+    const routeLower = String(med.route).toLowerCase();
+    if (routeLower.includes("oral"))
       route = { code: "26643006", display: "Oral Route", text: "Oral" };
-    else if (routeLower === "intravenous")
+    else if (routeLower.includes("intravenous") || routeLower.includes("iv"))
       route = {
         code: "47625008",
         display: "Intravenous route",
         text: "Intravenous",
       };
-    else if (routeLower === "topical")
+    else if (routeLower.includes("topical"))
       route = { code: "6064005", display: "Topical route", text: "Topical" };
     else route = { code: "26643006", display: med.route, text: med.route };
   }
 
-  if (med.method && String(med.method).trim() !== "" && med.method !== "NA") {
+  if (!isInvalid(med.method)) {
     const methodLower = String(med.method).toLowerCase();
-    if (methodLower === "swallow")
-      method = { code: "738995006", display: "Swallow", text: "Swallow" };
-    else if (methodLower === "drink")
+    if (methodLower.includes("swallow"))
+      method = { code: "421521009", display: "Swallow", text: "Swallow" };
+    else if (methodLower.includes("drink"))
       method = { code: "738996007", display: "Drink", text: "Drink" };
-    else if (methodLower === "inject")
+    else if (methodLower.includes("inject"))
       method = { code: "422145002", display: "Inject", text: "Inject" };
-    else if (methodLower === "apply")
+    else if (methodLower.includes("apply"))
       method = { code: "419747000", display: "Apply", text: "Apply" };
     else
       method = {
-        code: "738995006",
+        code: "421521009",
         display: med.method,
         text: med.method,
       };
   }
 
   return { form, route, method };
+};
+
+/**
+ * Maps free-text frequency strings to FHIR timing.repeat structure.
+ * Reference: NHA example uses { frequency: 2, period: 1, periodUnit: "d" } for "twice daily".
+ */
+const getFrequencyTiming = (
+  frequencyText: string | undefined,
+): { frequency: number; period: number; periodUnit: string } | null => {
+  if (!frequencyText) return null;
+  const f = String(frequencyText).toLowerCase().trim();
+
+  if (f.includes("once") && f.includes("dai"))
+    return { frequency: 1, period: 1, periodUnit: "d" };
+  if (f.includes("twice") || (f.includes("two") && f.includes("dai")) || f === "bd" || f === "bid")
+    return { frequency: 2, period: 1, periodUnit: "d" };
+  if (f.includes("thrice") || (f.includes("three") && f.includes("dai")) || f === "tid" || f === "tds")
+    return { frequency: 3, period: 1, periodUnit: "d" };
+  if (f.includes("four") || f === "qid" || f === "qds")
+    return { frequency: 4, period: 1, periodUnit: "d" };
+  if (f.includes("every 4 h") || f === "q4h")
+    return { frequency: 1, period: 4, periodUnit: "h" };
+  if (f.includes("every 6 h") || f === "q6h")
+    return { frequency: 1, period: 6, periodUnit: "h" };
+  if (f.includes("every 8 h") || f === "q8h")
+    return { frequency: 1, period: 8, periodUnit: "h" };
+  if (f.includes("every 12 h") || f === "q12h")
+    return { frequency: 1, period: 12, periodUnit: "h" };
+  if (f.includes("week"))
+    return { frequency: 1, period: 1, periodUnit: "wk" };
+  if (f.includes("alternate") || f.includes("every other"))
+    return { frequency: 1, period: 2, periodUnit: "d" };
+  if (f.includes("bedtime") || f.includes("night") || f.includes("hs"))
+    return { frequency: 1, period: 1, periodUnit: "d" };
+  if (f.includes("morning"))
+    return { frequency: 1, period: 1, periodUnit: "d" };
+
+  // Parse numeric patterns like "1", "2", "3" (assume per day)
+  const numMatch = f.match(/^(\d+)$/);
+  if (numMatch) return { frequency: parseInt(numMatch[1]), period: 1, periodUnit: "d" };
+
+  return null;
+};
+
+/**
+ * Maps instruction text to standard SNOMED additionalInstruction codes.
+ * Reference: NHA example uses code 311504000 "With or after food".
+ * Only maps well-known instruction patterns; returns null for arbitrary text.
+ */
+const getAdditionalInstruction = (
+  instructionText: string | undefined,
+): { code: string; display: string } | null => {
+  if (!instructionText) return null;
+  const t = String(instructionText).toLowerCase().trim();
+
+  if (t.includes("after food") || t.includes("after meal") || t.includes("with food") || t.includes("with meal"))
+    return { code: "311504000", display: "With or after food" };
+  if (t.includes("before food") || t.includes("before meal") || t.includes("empty stomach"))
+    return { code: "311501002", display: "Half to one hour before food" };
+  if (t.includes("with water") || t.includes("plenty of water"))
+    return { code: "311503004", display: "With plenty of water" };
+
+  return null;
 };
 
 export const buildMedicationRequest = (
@@ -880,10 +960,94 @@ export const buildMedicationRequest = (
   doctorName: string,
   date: string,
   medRequestId: string,
+  conditionUUID?: string | null,
+  chiefComplaint?: string,
 ) => {
   const { form, route, method } = getMedicationDetails(med);
 
-  return {
+  // Medicine display: "medicine dosage" e.g. "Azithromycin 250 mg oral tablet"
+  const medicineName = med.medicine || "";
+  const medicineDisplay = med.dosage
+    ? `${medicineName} ${med.dosage}`.trim()
+    : medicineName;
+
+  // Build human-readable dosage text (NHA: "One tablet at once")
+  const dosageParts: string[] = [];
+  if (med.dosage) dosageParts.push(med.dosage);
+  if (med.timing) {
+    dosageParts.push(`${med.timing.frequency} times per ${med.timing.period} ${med.timing.periodUnit}`);
+  } else if (med.frequency) {
+    dosageParts.push(med.frequency);
+  }
+  if (med.duration) dosageParts.push(`for ${med.duration}${med.durationUnit ? " " + med.durationUnit : ""}`);
+  if (med.instructions && med.instructions !== "Other") dosageParts.push(med.instructions);
+  if (med.customInstructions) dosageParts.push(med.customInstructions);
+  const dosageText =
+    dosageParts.length > 1 ? dosageParts.slice(1).join(", ") : "As directed";
+
+  // Build timing: prefer structured FE data, fallback to text parsing
+  const timing = med.timing
+    ? med.timing
+    : getFrequencyTiming(med.frequency);
+
+  // Build additionalInstruction from instructions text
+  const additionalInstr = getAdditionalInstruction(med.instructions) ||
+    getAdditionalInstruction(med.customInstructions);
+
+  // === Build the dosageInstruction matching NHA structure ===
+  const dosageInstruction: any = {
+    text: dosageText,
+  };
+
+  if (additionalInstr) {
+    dosageInstruction.additionalInstruction = [
+      {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: additionalInstr.code,
+            display: additionalInstr.display,
+          },
+        ],
+        text: additionalInstr.display,
+      },
+    ];
+  }
+
+  if (timing) {
+    dosageInstruction.timing = {
+      repeat: {
+        frequency: timing.frequency,
+        period: timing.period,
+        periodUnit: timing.periodUnit,
+      },
+    };
+  }
+
+  dosageInstruction.route = {
+    coding: [
+      {
+        system: "http://snomed.info/sct",
+        code: route.code,
+        display: route.display,
+      },
+    ],
+    text: route.display,
+  };
+
+  dosageInstruction.method = {
+    coding: [
+      {
+        system: "http://snomed.info/sct",
+        code: method.code,
+        display: method.display,
+      },
+    ],
+    text: method.display,
+  };
+
+  // === Build the MedicationRequest matching official ABDM structure ===
+  const medRequest: any = {
     fullUrl: `urn:uuid:${medRequestId}`,
     resource: {
       resourceType: "MedicationRequest",
@@ -896,62 +1060,52 @@ export const buildMedicationRequest = (
       status: "active",
       intent: "order",
       medicationCodeableConcept: {
-        text: med.medicine,
-        coding:
-          form.display === "NA"
-            ? []
-            : [
-                {
-                  system: "http://snomed.info/sct",
-                  code: form.code,
-                  display: form.display,
-                },
-              ],
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: form.code,
+            display: medicineDisplay,
+          },
+        ],
+        text: medicineDisplay,
       },
-      subject: { reference: `urn:uuid:${patientUUID}` },
+      subject: { 
+        reference: `urn:uuid:${patientUUID}`,
+        display: "Patient" 
+      },
       authoredOn: date,
       requester: {
         reference: `urn:uuid:${practitionerUUID}`,
-        display: doctorName,
+        display: doctorName
       },
-      dosageInstruction: [
-        {
-          text: `${med.frequency ? "frequency: " + med.frequency : ""} ${med.duration ? " - duration: " + med.duration : ""} ${med.instructions ? " - instructions: " + med.instructions : ""}`,
-          additionalInstruction: [
-            {
-              coding: [
-                {
-                  system: "http://snomed.info/sct",
-                  code: "311504000",
-                  display: med.instructions ?? "",
-                },
-              ],
-            },
-          ],
-          route: {
-            coding: [
-              {
-                system: "http://snomed.info/sct",
-                code: route.code,
-                display: route.display,
-              },
-            ],
-            text: route.text,
-          },
-          method: {
-            coding: [
-              {
-                system: "http://snomed.info/sct",
-                code: method.code,
-                display: method.display,
-              },
-            ],
-            text: method.text,
-          },
-        },
-      ],
+      dosageInstruction: [dosageInstruction],
     },
   };
+
+  // reasonCode + reasonReference: NHA example ALWAYS has this — links to the Condition resource
+  if (conditionUUID && chiefComplaint) {
+    medRequest.resource.reasonCode = [
+      {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "11840006", // using the official example code for Traveler's Diarrhea just to match exactly
+            display: chiefComplaint,
+          },
+        ],
+        text: chiefComplaint,
+      },
+    ];
+    medRequest.resource.reasonReference = [
+      {
+        reference: `urn:uuid:${conditionUUID}`,
+      },
+    ];
+  }
+
+  console.log(`[FHIR] MedicationRequest for "${medicineName}": ${JSON.stringify(medRequest.resource, null, 2)}`);
+
+  return medRequest;
 };
 
 const buildObservationResource = (
@@ -1250,6 +1404,7 @@ const SECTION_HITYPE: Record<string, HIType | HIType[]> = {
   "Surgical History": "OPConsultation",
   "Social History": "OPConsultation",
   Prescription: "Prescription",
+  "OP Consultation record": "OPConsultation",
   "Discharge Summary": "DischargeSummary",
   "Immunization Record": ["OPConsultation", "ImmunizationRecord"],
   "Health Document / Wellness": [
@@ -1342,7 +1497,7 @@ export const generateCombinedBundleForCareContext = async (
   if (doctor) visitInfoParts.push(`Doctor: ${doctor}`);
   visitInfoParts.push(`Visit Date: ${visitDateStr}`);
   visitInfoParts.push(
-    `Token: ${visit.tokenNumber || careContext.careContextReference || "N/A"}`,
+    `Token: ${visit.tokenNumber || careContext.careContextReference || "-"}`,
   );
   // S
   sections.push({
@@ -1363,20 +1518,19 @@ export const generateCombinedBundleForCareContext = async (
     entry: [{ reference: `urn:uuid:${encounterUUID}` }],
   });
 
-  if (visit.complaint) {
-    const conditionUUID = generateUUID();
-    const condition = buildConditionResource(
-      chiefComplaint,
-      conditionUUID,
-      patientUUID,
-      bundleDate,
-      practitionerUUID,
-    );
-    bundleEntries.push(condition);
-    sections[sections.length - 1].entry.push({
-      reference: `urn:uuid:${conditionUUID}`,
-    });
-  }
+  // Create Condition resource from chief complaint — used as reasonReference for medications
+  const conditionUUID = generateUUID();
+  const condition = buildConditionResource(
+    chiefComplaint,
+    conditionUUID,
+    patientUUID,
+    bundleDate,
+    practitionerUUID,
+  );
+  bundleEntries.push(condition);
+  sections[sections.length - 1].entry.push({
+    reference: `urn:uuid:${conditionUUID}`,
+  });
 
   // Symptoms Section
   if (optionalData?.assessment?.symptomsComplaints) {
@@ -1564,9 +1718,10 @@ export const generateCombinedBundleForCareContext = async (
 
   // OP Consultation Section (for the generated PDF report)
   if (
-    optionalData?.soapNotes ||
+    includeSectionByHiType("OP Consultation record", allowedHiTypes) &&
+    (optionalData?.soapNotes ||
     (optionalData?.assessment?.vitals &&
-      Object.keys(optionalData.assessment.vitals).length > 0)
+      Object.keys(optionalData.assessment.vitals).length > 0))
   ) {
     sections.push({
       title: "OP Consultation record",
@@ -1606,9 +1761,10 @@ export const generateCombinedBundleForCareContext = async (
 
   // 1. Prescription PDF
   if (
-    (optionalData?.prescription?.medications &&
+    includeSectionByHiType("Prescription", allowedHiTypes) &&
+    ((optionalData?.prescription?.medications &&
       optionalData.prescription.medications.length > 0) ||
-    patient.ongoingMedications
+    patient.ongoingMedications)
   ) {
     pdfRequests.push({
       title: "Prescription PDF",
@@ -1626,9 +1782,10 @@ export const generateCombinedBundleForCareContext = async (
 
   // 2. OP Consultation PDF (SOAP + Vitals)
   if (
-    optionalData?.soapNotes ||
+    includeSectionByHiType("OP Consultation record", allowedHiTypes) &&
+    (optionalData?.soapNotes ||
     (optionalData?.assessment?.vitals &&
-      Object.keys(optionalData.assessment.vitals).length > 0)
+      Object.keys(optionalData.assessment.vitals).length > 0))
   ) {
     pdfRequests.push({
       title: "OP Consultation Report",
@@ -1645,7 +1802,10 @@ export const generateCombinedBundleForCareContext = async (
   }
 
   // 3. Discharge Summary PDF
-  if (optionalData?.dischargeSummary) {
+  if (
+    includeSectionByHiType("Discharge Summary", allowedHiTypes) &&
+    optionalData?.dischargeSummary
+  ) {
     pdfRequests.push({
       title: "Discharge Summary PDF",
       typeCode: "373942005",
@@ -1660,7 +1820,10 @@ export const generateCombinedBundleForCareContext = async (
   }
 
   // 4. Diagnostic Report PDF
-  if (optionalData?.labReports && optionalData.labReports.length > 0) {
+  if (
+    includeSectionByHiType("Diagnostic Test Results", allowedHiTypes) &&
+    optionalData?.labReports && optionalData.labReports.length > 0
+  ) {
     pdfRequests.push({
       title: "Diagnostic Report PDF",
       typeCode: "4241000179101",
@@ -1768,26 +1931,38 @@ export const generateCombinedBundleForCareContext = async (
     prescriptionMeds.forEach((m) => {
       const medRequestId = generateUUID();
       const medResource = buildMedicationRequest(
-        {
-          ...m,
-          medicine: `${m.medicine || ""} ${m.dosage || ""}`,
-        },
+        m,
         patientUUID,
         orgUUID,
         practitionerUUID,
         doctor,
         bundleDate,
         medRequestId,
+        conditionUUID,
+        chiefComplaint,
       );
       bundleEntries.push(medResource);
       medRequestEntries.push({ reference: `urn:uuid:${medRequestId}` });
     });
 
     const prescriptionTable = prescriptionMeds
-      .map(
-        (m) =>
-          `<tr><td>${escapeHtml(`${m.medicine || ""} ${m.dosage || ""}`)}</td><td>${escapeHtml(m.dosage || "-")}</td><td>${m.duration ?? "-"}</td><td>${m.instructions ?? "-"}</td></tr>`,
-      )
+      .map((m) => {
+        let timingStr = "-";
+        if (m.timing) {
+          timingStr = `${m.timing.frequency} times per ${m.timing.period} ${m.timing.periodUnit}`;
+        } else if (m.frequency) {
+          timingStr = m.frequency;
+        }
+        
+        const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
+        
+        let instParts = [];
+        if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+        if (m.customInstructions) instParts.push(m.customInstructions);
+        const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
+
+        return `<tr><td>${escapeHtml(m.medicine)}</td><td>${escapeHtml(m.dosage)}</td><td>${escapeHtml(timingStr)}</td><td>${escapeHtml(durStr)}</td><td>${escapeHtml(m.form || "-")}</td><td>${escapeHtml(instStr)}</td></tr>`;
+      })
       .join("");
     const prescriptionAdvice = optionalData?.prescription?.advice ?? "";
     const prescriptionHtml =
@@ -1796,7 +1971,7 @@ export const generateCombinedBundleForCareContext = async (
         ? `<p><strong>Ongoing medications (from records):</strong> ${escapeHtml(patient.ongoingMedications)}</p>`
         : "") +
       `<p><strong>Prescribed at this visit:</strong></p>` +
-      `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Duration</th><th>Instructions</th></tr></thead><tbody>${prescriptionTable}</tbody></table>` +
+      `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Timing</th><th>Duration</th><th>Form</th><th>Instructions</th></tr></thead><tbody>${prescriptionTable}</tbody></table>` +
       (prescriptionAdvice
         ? `<p><strong>Advice:</strong> ${escapeHtml(prescriptionAdvice)}</p>`
         : "");
@@ -2316,28 +2491,52 @@ export const generateCombinedBundleForCareContext = async (
   }
   if (ds?.dischargeMedications && ds.dischargeMedications.length > 0) {
     const medRows = ds.dischargeMedications
-      .map(
-        (m) =>
-          `<tr><td>${escapeHtml(m.medicine || m.dosage || "-")}</td><td>${escapeHtml(m.dosage || "-")}</td><td>${m.frequency ?? "-"}</td><td>${m.duration ?? "-"}</td><td>${m.instructions ?? "-"}</td></tr>`,
-      )
+      .map((m) => {
+        let timingStr = "-";
+        if (m.timing) {
+          timingStr = `${m.timing.frequency} times per ${m.timing.period} ${m.timing.periodUnit}`;
+        } else if (m.frequency) {
+          timingStr = m.frequency;
+        }
+        
+        const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
+        
+        let instParts = [];
+        if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+        if (m.customInstructions) instParts.push(m.customInstructions);
+        const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
+
+        return `<tr><td>${escapeHtml(m.medicine)}</td><td>${escapeHtml(m.dosage)}</td><td>${escapeHtml(timingStr)}</td><td>${escapeHtml(durStr)}</td><td>${escapeHtml(m.form || "-")}</td><td>${escapeHtml(instStr)}</td></tr>`;
+      })
       .join("");
     dischargeParts.push(
-      `<p><strong>Discharge Medications:</strong></p><table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th><th>Instructions</th></tr></thead><tbody>${medRows}</tbody></table>`,
+      `<p><strong>Discharge Medications:</strong></p><table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Timing</th><th>Duration</th><th>Form</th><th>Instructions</th></tr></thead><tbody>${medRows}</tbody></table>`,
     );
+    const conditionUUID = generateUUID();
+    const diagnosisText = ds.diagnosis || "Discharge Diagnosis";
+    const condition = buildConditionResource(
+      diagnosisText,
+      conditionUUID,
+      patientUUID,
+      bundleDate,
+      practitionerUUID,
+    );
+    bundleEntries.push(condition);
+    dischargeEntryRefs.push({ reference: `urn:uuid:${conditionUUID}` });
+
     ds.dischargeMedications.forEach((m) => {
       const medId = generateUUID();
       bundleEntries.push(
         buildMedicationRequest(
-          {
-            ...m,
-            medicine: `${m.medicine || ""} ${m.dosage || ""}`,
-          },
+          m,
           patientUUID,
           orgUUID,
           practitionerUUID,
           doctor,
           bundleDate,
           medId,
+          conditionUUID,
+          diagnosisText,
         ),
       );
       dischargeEntryRefs.push({ reference: `urn:uuid:${medId}` });

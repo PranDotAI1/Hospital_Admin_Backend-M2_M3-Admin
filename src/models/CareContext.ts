@@ -37,6 +37,9 @@ export interface ICareContext extends Document {
   abhaAddress: string;
   display: string;
 
+  /** Single HI type for this CareContext (new per-type model) */
+  hiType?: HIType;
+  /** @deprecated Kept for backward compat with old combined CareContexts */
   hiTypes: HIType[];
 
   linkingStatus: CareContextStatus;
@@ -98,10 +101,14 @@ const CareContextSchema = new Schema<ICareContext>(
       trim: true,
     },
 
+    hiType: {
+      type: String,
+      enum: HI_TYPES,
+    },
     hiTypes: {
       type: [String],
       enum: HI_TYPES,
-      default: ["OPConsultation"],
+      default: [],
     },
 
     linkingStatus: {
@@ -173,7 +180,7 @@ const CareContextSchema = new Schema<ICareContext>(
   },
 );
 
-CareContextSchema.index({ patientId: 1, visitId: 1 });
+CareContextSchema.index({ patientId: 1, visitId: 1, hiType: 1 });
 CareContextSchema.index({ abhaAddress: 1, linkingStatus: 1 });
 CareContextSchema.index({ linkRequestId: 1 }, { sparse: true });
 CareContextSchema.index({ consentId: 1 }, { sparse: true });

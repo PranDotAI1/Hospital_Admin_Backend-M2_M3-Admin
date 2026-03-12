@@ -198,27 +198,6 @@ export const registerPatient = async (req: Request, res: Response) => {
         throw new Error("Failed to update existing ABHA patient");
       }
 
-      let careContextCreated = false;
-      try {
-        const careContext = await CareContextService.createCareContextForVisit(
-          updatedPatient._id,
-          visitId,
-          ["OPConsultation"],
-        );
-        if (careContext) {
-          careContextCreated = true;
-          console.log(
-            "CareContext created for existing ABHA patient visit:",
-            careContext.careContextReference,
-          );
-        }
-      } catch (ccError) {
-        console.error(
-          "CareContext creation error (ABHA existing patient, non-blocking):",
-          ccError,
-        );
-      }
-
       return res.status(STATUS_CODE.CREATED).json({
         status: "success",
         message: "Existing patient found by ABHA; visit added",
@@ -231,7 +210,6 @@ export const registerPatient = async (req: Request, res: Response) => {
             updatedPatient.ABHANumber || updatedPatient.abhaaddress
           ),
           visit: visitInfo,
-          careContextCreated,
         },
       });
     }
@@ -298,25 +276,6 @@ export const registerPatient = async (req: Request, res: Response) => {
           throw new Error("Failed to add visit to existing patient");
         }
 
-        let careContextCreated = false;
-        try {
-          const careContext =
-            await CareContextService.createCareContextForVisit(
-              updatedPatient._id,
-              visitId,
-              ["OPConsultation"],
-            );
-          if (careContext) {
-            careContextCreated = true;
-            console.log(
-              "CareContext created for existing patient (no ABHA) visit:",
-              careContext.careContextReference,
-            );
-          }
-        } catch (ccError) {
-          console.error("CareContext creation error (non-blocking):", ccError);
-        }
-
         return res.status(STATUS_CODE.CREATED).json({
           status: "success",
           message: "Existing patient found by mobile and name; visit added",
@@ -329,7 +288,6 @@ export const registerPatient = async (req: Request, res: Response) => {
               updatedPatient.ABHANumber || updatedPatient.abhaaddress
             ),
             visit: visitInfo,
-            careContextCreated,
           },
         });
       }
@@ -397,24 +355,6 @@ export const registerPatient = async (req: Request, res: Response) => {
       throw new Error("Failed to create or retrieve patient record");
     }
 
-    let careContextCreated = false;
-    try {
-      const careContext = await CareContextService.createCareContextForVisit(
-        patientRecord._id,
-        visitId,
-        ["OPConsultation"],
-      );
-      if (careContext) {
-        careContextCreated = true;
-        console.log(
-          "CareContext created for visit:",
-          careContext.careContextReference,
-        );
-      }
-    } catch (ccError) {
-      console.error("CareContext creation error (non-blocking):", ccError);
-    }
-
     return res.status(STATUS_CODE.CREATED).json({
       status: "success",
       message: "Patient registered successfully",
@@ -425,7 +365,6 @@ export const registerPatient = async (req: Request, res: Response) => {
         mobile: patientRecord.mobile,
         abhaLinked: !!patientRecord.ABHANumber,
         visit: visitInfo,
-        careContextCreated,
       },
     });
   } catch (error: any) {
@@ -1311,27 +1250,6 @@ export const addVisit = async (req: Request, res: Response) => {
       throw new Error("Failed to update patient with new visit");
     }
 
-    let careContextCreated = false;
-    try {
-      const careContext = await CareContextService.createCareContextForVisit(
-        updatedPatient._id,
-        visitId,
-        ["OPConsultation"],
-      );
-      if (careContext) {
-        careContextCreated = true;
-        console.log(
-          "CareContext created for manual new visit:",
-          careContext.careContextReference,
-        );
-      }
-    } catch (ccError) {
-      console.error(
-        "CareContext creation error (manual new visit, non-blocking):",
-        ccError,
-      );
-    }
-
     return res.status(STATUS_CODE.CREATED).json({
       status: "success",
       message: "Visit added successfully",
@@ -1341,7 +1259,6 @@ export const addVisit = async (req: Request, res: Response) => {
         name: updatedPatient.name,
         mobile: updatedPatient.mobile,
         visit: visitInfo,
-        careContextCreated,
         patientData: updatedPatient,
       },
     });

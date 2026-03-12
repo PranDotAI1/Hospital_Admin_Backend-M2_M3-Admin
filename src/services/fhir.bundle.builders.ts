@@ -1,11 +1,10 @@
 /**
  * Per-HI-type FHIR Bundle Builders (standalone bundles, NOT currently used in production).
  *
- * Production health-information sharing flows use `generateCombinedBundleForCareContext`
- * in fhir.bundle.service.ts instead.
+ * Production flows use `generateCombinedBundleForCareContext` in fhir.bundle.service.ts
+ * with `allowedHiTypes` filtering for both per-type and legacy CareContexts.
  *
- * These builders are kept for potential future use (e.g. if ABDM moves to per-HI-type bundles)
- * and to avoid cluttering the main service file.
+ * These builders are kept for potential future use and reference.
  */
 import { IPatient } from "../models/Patient";
 import { IScanShareVisit } from "../models/ScanShareVisit";
@@ -50,7 +49,7 @@ const toSafeLocaleDateString = (
 };
 
 const escapeHtml = (s: string): string => {
-  return s
+  return String(s || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -351,6 +350,18 @@ const buildPrescriptionBundle = (
   const sections: any[] = [];
   const medRequestRefs: any[] = [];
 
+  const chiefComplaint = visit.complaint || "General OPD consultation";
+  const conditionUUID = generateUUID();
+  const condition = buildConditionResource(
+    chiefComplaint,
+    conditionUUID,
+    patientUUID,
+    bundleDate,
+    practitionerUUID,
+  );
+  bundleEntries.push(condition);
+  medRequestRefs.push({ reference: `urn:uuid:${conditionUUID}` });
+
   const meds = optionalData?.prescription?.medications;
   if (meds && meds.length > 0) {
     meds.forEach((m) => {
@@ -363,23 +374,39 @@ const buildPrescriptionBundle = (
         doctor,
         bundleDate,
         medId,
+        conditionUUID,
+        chiefComplaint,
       );
       bundleEntries.push(medResource);
       medRequestRefs.push({ reference: `urn:uuid:${medId}` });
     });
 
     const medTable = meds
-      .map(
-        (m) =>
-          `<tr><td>${escapeHtml(m.medicine)}</td><td>${escapeHtml(m.dosage)}</td><td>${m.frequency ?? "-"}</td><td>${m.duration ?? "-"}</td><td>${m.instructions ?? "-"}</td></tr>`,
-      )
+      .map((m) => {
+        let timingStr = "-";
+        if (m.timing) {
+          timingStr = `${m.timing.frequency} times per ${m.timing.period} ${m.timing.periodUnit}`;
+        } else if (m.frequency) {
+          timingStr = m.frequency;
+        }
+        
+        const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
+        
+        let instParts = [];
+        if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+        if (m.customInstructions) instParts.push(m.customInstructions);
+        const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
+
+        return `<tr><td>${escapeHtml(m.medicine)}</td><td>${escapeHtml(m.dosage)}</td><td>${escapeHtml(timingStr)}</td><td>${escapeHtml(durStr)}</td><td>${escapeHtml(m.form || "-")}</td><td>${escapeHtml(instStr)}</td></tr>`;
+      })
       .join("");
+      
     const prescriptionHtml =
       `<p><strong>Consultation:</strong> ${escapeHtml(dept)} - ${visitDateStr} - ${escapeHtml(doctor)}</p>` +
       (patient.ongoingMedications
         ? `<p><strong>Ongoing medications:</strong> ${escapeHtml(patient.ongoingMedications)}</p>`
         : "") +
-      `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th><th>Instructions</th></tr></thead><tbody>${medTable}</tbody></table>` +
+      `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Timing</th><th>Duration</th><th>Form</th><th>Instructions</th></tr></thead><tbody>${medTable}</tbody></table>` +
       (optionalData?.prescription?.advice
         ? `<p><strong>Advice:</strong> ${escapeHtml(optionalData.prescription.advice)}</p>`
         : "");

@@ -22,13 +22,30 @@ const css = `
 const getPatientHeader = (patient: IPatient, visit: IScanShareVisit) => {
   const name =
     patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
-  const gender = patient.gender || "N/A";
-  const age = patient.age || "N/A";
-  const address = patient.address || "N/A";
-  const mobile = patient.mobile || "N/A";
+  const gender = patient.gender || "";
+  const age = patient.age || "";
+  const address = patient.address || "";
+  const mobile = patient.mobile || "";
   const date = visit.visitDate
     ? new Date(visit.visitDate).toLocaleDateString("en-IN")
     : new Date().toLocaleDateString("en-IN");
+
+  const abhaAddress = visit.abhaAddress || patient.abhaaddress || "";
+  const abhaNumber = visit.abhaNumber || patient.ABHANumber || "";
+  const uhid = patient?.uhid || "";
+  const consultingDoctor = visit.doctorName || "";
+
+  // Build info rows conditionally — only show fields that have data
+  const rows: string[] = [];
+  if (name) rows.push(`<div><strong>Patient Name:</strong> ${name}</div>`);
+  if (age || gender) rows.push(`<div><strong>Age/Gender:</strong> ${age}${age && gender ? " / " : ""}${gender}</div>`);
+  if (mobile) rows.push(`<div><strong>Mobile:</strong> ${mobile}</div>`);
+  if (address) rows.push(`<div><strong>Address:</strong> ${address}</div>`);
+  rows.push(`<div><strong>Visit Date:</strong> ${date}</div>`);
+  if (uhid) rows.push(`<div><strong>Patient ID (UHID):</strong> ${uhid}</div>`);
+  if (abhaNumber) rows.push(`<div><strong>ABHA Number:</strong> ${abhaNumber}</div>`);
+  if (abhaAddress) rows.push(`<div><strong>ABHA Address:</strong> ${abhaAddress}</div>`);
+  if (consultingDoctor) rows.push(`<div style="flex-basis: 100%;"><strong>Consulting Doctor:</strong> Dr. ${consultingDoctor}</div>`);
 
   return `
     <div class="header">
@@ -36,12 +53,7 @@ const getPatientHeader = (patient: IPatient, visit: IScanShareVisit) => {
       <p>Clinical Report</p>
     </div>
     <div class="patient-info">
-      <div><strong>Patient Name:</strong> ${name}</div>
-      <div><strong>Age/Gender:</strong> ${age} / ${gender}</div>
-      <div><strong>Mobile:</strong> ${mobile}</div>
-      <div><strong>Address:</strong> ${address}</div>
-      <div><strong>Visit Date:</strong> ${date}</div>
-      <div><strong>Patient ID:</strong> ${patient?.uhid || patient?.abhaaddress || "N/A"}</div>
+      ${rows.join("\n      ")}
     </div>
   `;
 };
@@ -53,16 +65,31 @@ export const getPrescriptionTemplate = (
   advice?: string,
 ) => {
   const medRows = medications
-    .map(
-      (m) => `
+    .map((m) => {
+      let timingStr = "-";
+      if (m.timing) {
+        timingStr = `${m.timing.frequency} times / ${m.timing.period} ${m.timing.periodUnit}`;
+      } else if (m.frequency) {
+        timingStr = m.frequency;
+      }
+      
+      const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
+      
+      let instParts = [];
+      if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+      if (m.customInstructions) instParts.push(m.customInstructions);
+      const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
+
+      return `
     <tr>
       <td>${m.medicine || ""} ${m.dosage || ""}</td>
-      <td>${m.frequency || "-"}</td>
-      <td>${m.duration || "-"}</td>
-      <td>${m.instructions || "-"}</td>
+      <td>${timingStr}</td>
+      <td>${durStr}</td>
+      <td>${m.form || "-"}</td>
+      <td>${instStr}</td>
     </tr>
-  `,
-    )
+  `;
+    })
     .join("");
 
   return `
@@ -77,8 +104,9 @@ export const getPrescriptionTemplate = (
           <thead>
             <tr>
               <th>Medicine</th>
-              <th>Frequency</th>
+              <th>Timing</th>
               <th>Duration</th>
+              <th>Form</th>
               <th>Instructions</th>
             </tr>
           </thead>
@@ -162,17 +190,32 @@ export const getDischargeSummaryTemplate = (
 ) => {
   const medRows =
     ds.dischargeMedications
-      ?.map(
-        (m: any) => `
+      ?.map((m: any) => {
+        let timingStr = "-";
+        if (m.timing) {
+          timingStr = `${m.timing.frequency} times per ${m.timing.period} ${m.timing.periodUnit}`;
+        } else if (m.frequency) {
+          timingStr = m.frequency;
+        }
+        
+        const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
+        
+        let instParts = [];
+        if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+        if (m.customInstructions) instParts.push(m.customInstructions);
+        const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
+
+        return `
     <tr>
       <td>${m.medicine || "-"}</td>
       <td>${m.dosage || "-"}</td>
-      <td>${m.frequency || "-"}</td>
-      <td>${m.duration || "-"}</td>
-      <td>${m.instructions || "-"}</td>
+      <td>${timingStr}</td>
+      <td>${durStr}</td>
+      <td>${m.form || "-"}</td>
+      <td>${instStr}</td>
     </tr>
-  `,
-      )
+  `;
+      })
       .join("") || "";
 
   const admissionDetails = [
@@ -220,8 +263,9 @@ export const getDischargeSummaryTemplate = (
             <tr>
               <th>Medicine</th>
               <th>Dosage</th>
-              <th>Frequency</th>
+              <th>Timing</th>
               <th>Duration</th>
+              <th>Form</th>
               <th>Instructions</th>
             </tr>
           </thead>

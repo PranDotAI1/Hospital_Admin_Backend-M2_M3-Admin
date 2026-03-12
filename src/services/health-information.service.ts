@@ -572,15 +572,31 @@ const pushHealthData = async (
       );
     }
 
-    // Generate FHIR bundle; when consent artefact provided hiTypes, only include those (∩ careContext.hiTypes)
-    const careContextHiTypes = careContext.hiTypes || [];
+    // Generate FHIR bundle using the combined generator for both new and legacy CareContexts.
+    // For new per-type CareContexts, we filter to just the single hiType via allowedHiTypes.
+    // This ensures identical output quality (PDFs, formatting, SNOMED codes) regardless of CareContext type.
+    const effectiveHiType = careContext.hiType; // single type for new per-type CareContexts
+    const careContextHiTypes = effectiveHiType
+      ? [effectiveHiType]
+      : (careContext.hiTypes || []);
+
+    // Intersect with consented HI types if consent provides them
     const allowedHiTypes =
       consentedHiTypes && consentedHiTypes.length > 0
         ? (careContextHiTypes.filter((t) =>
             consentedHiTypes.includes(t),
           ) as import("../models/CareContext").HIType[])
-        : undefined;
-    const combinedBundle =
+        : (effectiveHiType ? [effectiveHiType] as import("../models/CareContext").HIType[] : undefined);
+
+    // Skip if consent doesn't include any of this CareContext's HI types
+    if (allowedHiTypes && allowedHiTypes.length === 0) {
+      console.log(
+        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no matching hiTypes between CareContext and consent`,
+      );
+      return false;
+    }
+
+    const fhirBundle =
       await FhirBundleService.generateCombinedBundleForCareContext(
         patient,
         visit as any,
@@ -589,9 +605,9 @@ const pushHealthData = async (
         allowedHiTypes,
         browser,
       );
-    const fhirBundleJson = JSON.stringify(combinedBundle);
+    const fhirBundleJson = JSON.stringify(fhirBundle);
     console.log(
-      `${LOG_PREFIX} FHIR bundle generated: ${fhirBundleJson.length} chars, ${combinedBundle.entry?.length || 0} entries`,
+      `${LOG_PREFIX} FHIR bundle generated: ${fhirBundleJson.length} chars, ${fhirBundle.entry?.length || 0} entries`,
     );
 
     // Build encrypted payload (can throw if keyMaterial is invalid)
@@ -665,6 +681,9 @@ const pushHealthData = async (
       `${LOG_PREFIX} Error response body:`,
       JSON.stringify(error.response?.data || error.message),
     );
+    if (!error.response) {
+      console.error(`${LOG_PREFIX} Error stack:`, error.stack);
+    }
 
     await CareContextModel.updateOne(
       { _id: careContext._id },

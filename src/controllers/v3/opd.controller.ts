@@ -707,31 +707,12 @@ export const completeRegistration = async (req: Request, res: Response) => {
           console.log("New patient record created:", newPatient._id);
         }
 
-        // RC4: Parallelize visit link-back + CareContext creation (independent writes)
-        await Promise.all([
-          ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
-            $set: { patientId: patientId },
-          }),
-          CareContextService.createCareContextForVisit(
-            patientId,
-            updatedVisit._id,
-            ["OPConsultation"],
-          )
-            .then((careContext) => {
-              if (careContext) {
-                console.log(
-                  "CareContext created for Scan & Share visit:",
-                  careContext.careContextReference,
-                );
-              }
-            })
-            .catch((ccError) => {
-              console.error(
-                "CareContext creation error (Scan & Share):",
-                ccError,
-              );
-            }),
-        ]);
+
+        // Link the visit back to the patient record
+        await ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
+          $set: { patientId: patientId },
+        });
+
       } catch (patientError: any) {
         console.error("Error updating patient record:", {
           message: patientError.message,

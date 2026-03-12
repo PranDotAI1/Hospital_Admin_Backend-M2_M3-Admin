@@ -45,16 +45,17 @@ const resolvePatientAndVisitId = async (
   return null;
 };
 
-// Helper: Update Care Context
+// Helper: Create CareContext for Invoice HI type
 const updateCareContext = async (
   patientId: Types.ObjectId | string,
   visitId: Types.ObjectId | string,
 ) => {
   try {
-    const { updated, careContext } =
-      await CareContextService.addHiTypesForVisit(patientId, visitId, [
-        "Invoice",
-      ]);
+    const careContext = await CareContextService.createCareContextForHiType(
+      patientId,
+      visitId,
+      "Invoice",
+    );
     if (careContext) {
       CareContextService.notifyContext(careContext as any).then((notified) => {
         if (notified) {
@@ -65,7 +66,7 @@ const updateCareContext = async (
       });
     }
   } catch (error) {
-    console.error("Billing: Failed to update care context", error);
+    console.error("Billing: Failed to create care context for Invoice", error);
   }
 };
 

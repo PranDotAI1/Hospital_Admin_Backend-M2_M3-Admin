@@ -59,30 +59,29 @@ const resolvePatientAndVisitId = async (
   return null;
 };
 
-const saveAndLinkHiTypes = async (
+const saveAndCreateCareContext = async (
   resolved: { patientId: Types.ObjectId; visitId: Types.ObjectId },
-  hiTypesToAdd: HIType[],
-): Promise<{ careContext: any; updated: number } | null> => {
-  const { updated, careContext } = await CareContextService.addHiTypesForVisit(
+  hiType: HIType,
+): Promise<{ careContext: any; created: boolean } | null> => {
+  const careContext = await CareContextService.createCareContextForHiType(
     resolved.patientId,
     resolved.visitId,
-    hiTypesToAdd,
+    hiType,
   );
-  if (updated === 0) return null;
-  if (careContext) {
-    CareContextService.notifyContext(careContext as any).then((notified) => {
-      if (notified)
-        console.log(
-          "Visit clinical: context/notify sent after adding hiTypes",
-          hiTypesToAdd,
-        );
-      else
-        console.warn(
-          "Visit clinical: context/notify failed (e.g. no link token).",
-        );
-    });
-  }
-  return { careContext, updated };
+  if (!careContext) return null;
+  // Trigger context/notify for ABDM
+  CareContextService.notifyContext(careContext as any).then((notified) => {
+    if (notified)
+      console.log(
+        "Visit clinical: context/notify sent after creating CareContext for",
+        hiType,
+      );
+    else
+      console.warn(
+        "Visit clinical: context/notify failed (e.g. no link token).",
+      );
+  });
+  return { careContext, created: true };
 };
 
 export const recordPrescription = async (req: Request, res: Response) => {
@@ -105,6 +104,14 @@ export const recordPrescription = async (req: Request, res: Response) => {
         duration?: string;
         instructions?: string;
         frequency?: string;
+        form?: string;
+        timing?: {
+          frequency: number;
+          period: number;
+          periodUnit: string;
+        };
+        durationUnit?: string;
+        customInstructions?: string;
       }>;
       advice?: string;
     };
@@ -126,7 +133,7 @@ export const recordPrescription = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndLinkHiTypes(resolved, ["Prescription"]);
+    const result = await saveAndCreateCareContext(resolved, "Prescription");
     if (!result) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
@@ -187,7 +194,7 @@ export const recordSoapNotes = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndLinkHiTypes(resolved, ["HealthDocumentRecord"]);
+    const result = await saveAndCreateCareContext(resolved, "HealthDocumentRecord");
     if (!result) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
@@ -275,7 +282,7 @@ export const recordLabResults = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndLinkHiTypes(resolved, ["DiagnosticReport"]);
+    const result = await saveAndCreateCareContext(resolved, "DiagnosticReport");
     if (!result) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
@@ -336,6 +343,14 @@ export const recordDischargeSummary = async (req: Request, res: Response) => {
         frequency?: string;
         duration?: string;
         instructions?: string;
+        form?: string;
+        timing?: {
+          frequency: number;
+          period: number;
+          periodUnit: string;
+        };
+        durationUnit?: string;
+        customInstructions?: string;
       }>;
     };
     const dischargeMedications = Array.isArray(body?.dischargeMedications)
@@ -372,7 +387,7 @@ export const recordDischargeSummary = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndLinkHiTypes(resolved, ["DischargeSummary"]);
+    const result = await saveAndCreateCareContext(resolved, "DischargeSummary");
     if (!result) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
@@ -578,16 +593,19 @@ export const recordAssessment = async (req: Request, res: Response) => {
 
     let contextData: any = null;
     if (hiTypes.length > 0) {
-      const linkResult = await saveAndLinkHiTypes(resolved, hiTypes);
-      if (linkResult?.careContext) {
-        contextData = {
-          careContextId: linkResult.careContext._id,
-          hiTypes: linkResult.careContext.hiTypes,
-        };
-      } else {
-        console.warn(
-          "Visit clinical: Data saved but Care Context update/notify skipped (no context found).",
-        );
+      // Create a separate CareContext for each applicable HI type
+      for (const hiType of hiTypes) {
+        const linkResult = await saveAndCreateCareContext(resolved, hiType);
+        if (linkResult?.careContext) {
+          contextData = {
+            careContextId: linkResult.careContext._id,
+            hiType: linkResult.careContext.hiType,
+          };
+        } else {
+          console.warn(
+            `Visit clinical: Data saved but CareContext creation skipped for ${hiType} (no patient context found).`,
+          );
+        }
       }
     }
 
@@ -651,7 +669,7 @@ export const recordImmunization = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndLinkHiTypes(resolved, ["ImmunizationRecord"]);
+    const result = await saveAndCreateCareContext(resolved, "ImmunizationRecord");
     if (!result) {
       return res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
