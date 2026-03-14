@@ -406,16 +406,16 @@ const HI_TYPE_DISPLAY_NAMES: Record<string, string> = {
 };
 
 /**
- * Create a separate CareContext for a specific HI type on a visit.
+ * Create or update a single CareContext for a visit, adding the given hiType.
  *
- * New per-type model: each HI type (Prescription, DiagnosticReport, etc.)
- * gets its own CareContext. This replaces the old approach of accumulating
- * hiTypes into a single CareContext per visit.
+ * One-CareContext-per-visit model: all HI types for a single visit
+ * are accumulated in one CareContext's hiTypes array, but each type
+ * gets its own separate FHIR bundle when data is pushed to ABDM.
  *
- * Idempotent: if a CareContext already exists for (patientId, visitId, hiType),
- * returns the existing one.
+ * Idempotent: if a CareContext already exists for (patientId, visitId),
+ * the hiType is added to its hiTypes array (if not already present).
  */
-export const createCareContextForHiType = async (
+export const createOrUpdateCareContextForVisit = async (
   patientId: Types.ObjectId | string,
   visitId: Types.ObjectId | string,
   hiType: HIType,
@@ -424,35 +424,41 @@ export const createCareContextForHiType = async (
     const patient = await PatientModel.findById(patientId);
     if (!patient) {
       console.log(
-        "[CareContext] createCareContextForHiType: Patient not found",
+        "[CareContext] createOrUpdateCareContextForVisit: Patient not found",
         patientId,
       );
       return null;
     }
 
-    // Check if a CareContext already exists for this (patientId, visitId, hiType) combo
+    // Check if a CareContext already exists for this visit
     const existingContext = await CareContextModel.findOne({
       patientId,
       visitId,
-      hiType,
     });
     if (existingContext) {
-      console.log(
-        "CareContext: Already exists for visit",
-        visitId,
-        "hiType",
-        hiType,
-      );
-
-      if (
-        existingContext.hiType !== hiType ||
-        !Array.isArray(existingContext.hiTypes) ||
-        existingContext.hiTypes.length !== 1 ||
-        existingContext.hiTypes[0] !== hiType
-      ) {
-        existingContext.hiType = hiType;
-        existingContext.hiTypes = [hiType];
-        await existingContext.save();
+      // Add the new hiType to the existing context (idempotent via $addToSet)
+      const alreadyHasType = Array.isArray(existingContext.hiTypes) && existingContext.hiTypes.includes(hiType);
+      if (!alreadyHasType) {
+        await CareContextModel.updateOne(
+          { _id: existingContext._id },
+          { $addToSet: { hiTypes: hiType } },
+        );
+        existingContext.hiTypes = [...(existingContext.hiTypes || []), hiType];
+        console.log(
+          "CareContext: Added hiType",
+          hiType,
+          "to existing context for visit",
+          visitId,
+          "-> hiTypes:",
+          existingContext.hiTypes,
+        );
+      } else {
+        console.log(
+          "CareContext: Already has hiType",
+          hiType,
+          "for visit",
+          visitId,
+        );
       }
 
       // Existing context may still need sync actions after clinical updates.
@@ -509,18 +515,17 @@ export const createCareContextForHiType = async (
 
     const patientRef = patient.uhid || patient._id.toString();
 
-    // Generate unique care context reference (includes hiType suffix for uniqueness)
+    // Generate unique care context reference
     const careContextReference = await generateCareContextReference(
       patientRef,
       visitDate,
     );
 
-    // Generate display text including the HI type name
-    const hiTypeDisplay = HI_TYPE_DISPLAY_NAMES[hiType] || hiType;
-    const display = generateDisplayText(hiTypeDisplay, department, visitDate);
+    // Display text uses generic "OPD Visit" since one context covers all HI types
+    const display = generateDisplayText("OPD Visit", department, visitDate);
 
-    // Create care context record with single hiType
-    // Retry with new reference if duplicate key error (E11000) occurs
+    // Create care context record with the initial hiType
+    // Retry with new reference if duplicate key error (E11000) on careContextReference occurs
     let careContext: ICareContext;
     let retries = 3;
     while (true) {
@@ -545,26 +550,30 @@ export const createCareContextForHiType = async (
         });
         break;
       } catch (createErr: any) {
+        // Duplicate key on (patientId, visitId) means another request created it
+        // between our findOne and create. Just find and update it.
         if (
           createErr?.code === 11000 &&
           (createErr?.keyPattern?.patientId ||
             createErr?.keyPattern?.visitId ||
             String(createErr?.message || "").includes("patientId_1_visitId_1"))
         ) {
-          console.error(
-            "CareContext: Duplicate key on (patientId, visitId) blocked creating per-hiType CareContext. " +
-              "This usually means a legacy unique index still exists in MongoDB (patientId_1_visitId_1). " +
-              "Drop that legacy unique index so one visit can have multiple HI-type contexts.",
-            {
-              patientId: String(patientId),
-              visitId: String(visitId),
-              hiType,
-              keyPattern: createErr?.keyPattern,
-            },
+          console.log(
+            "CareContext: Concurrent creation detected for visit",
+            visitId,
+            "— merging hiType",
+            hiType,
           );
+          const raceContext = await CareContextModel.findOneAndUpdate(
+            { patientId, visitId },
+            { $addToSet: { hiTypes: hiType } },
+            { new: true },
+          );
+          if (raceContext) return raceContext;
           return null;
         }
 
+        // Duplicate careContextReference collision — retry with new ref
         if (createErr.code === 11000 && retries > 1) {
           retries--;
           console.warn(
@@ -579,7 +588,9 @@ export const createCareContextForHiType = async (
     }
 
     console.log(
-      "CareContext: Created for hiType",
+      "CareContext: Created for visit",
+      visitId,
+      "with hiType",
       hiType,
       "->",
       careContext.careContextReference,
@@ -626,12 +637,21 @@ export const createCareContextForHiType = async (
 
     return careContext;
   } catch (error) {
-    console.error("CareContext: Error creating for hiType", hiType, error);
+    console.error("CareContext: Error in createOrUpdateCareContextForVisit", hiType, error);
     return null;
   }
 };
 
-/** @deprecated Use createCareContextForHiType instead */
+/** @deprecated Use createOrUpdateCareContextForVisit instead */
+export const createCareContextForHiType = async (
+  patientId: Types.ObjectId | string,
+  visitId: Types.ObjectId | string,
+  hiType: HIType,
+): Promise<ICareContext | null> => {
+  return createOrUpdateCareContextForVisit(patientId, visitId, hiType);
+};
+
+/** @deprecated Use createOrUpdateCareContextForVisit instead */
 export const addHiTypesForVisit = async (
   patientId: Types.ObjectId | string,
   visitId: Types.ObjectId | string,
@@ -640,14 +660,12 @@ export const addHiTypesForVisit = async (
   if (!hiTypesToAdd || hiTypesToAdd.length === 0) {
     return { updated: 0, careContext: null };
   }
-  // Never merge multiple HI types into a single CareContext.
-  // Create/return one separate CareContext per HI type instead.
   const uniqueTypes = Array.from(new Set(hiTypesToAdd)) as HIType[];
   let updated = 0;
   let lastContext: ICareContext | null = null;
 
   for (const hiType of uniqueTypes) {
-    const ctx = await createCareContextForHiType(patientId, visitId, hiType);
+    const ctx = await createOrUpdateCareContextForVisit(patientId, visitId, hiType);
     if (ctx) {
       updated++;
       lastContext = ctx;
@@ -907,28 +925,24 @@ export const notifyContext = async (
     const abdmToken = authToken || (await AbdmTokenService.getToken());
     const requestId = generateUID();
 
-    // Resolve the single correct hiType for this CareContext.
-    // For new CareContexts, careContext.hiType is already set correctly.
-    // For legacy CareContexts (no hiType, multi-value hiTypes array),
-    // detect the correct type from actual clinical data and persist it.
+    // Resolve the primary hiType for ABDM notify payload.
+    // The CareContext may have multiple hiTypes (one per visit), but ABDM link/notify
+    // needs a single primary type. Use hiType field (set at creation time).
     let resolvedHiType = careContext.hiType || careContext.hiTypes?.[0];
     if (!resolvedHiType && careContext.visitId) {
       try {
         const detectedTypes = await detectHiTypesForVisit(careContext.visitId);
-        // Prefer the most specific type — anything other than the OPConsultation baseline
         const specific = detectedTypes.find((t) => t !== "OPConsultation");
         resolvedHiType =
           specific || detectedTypes[0] || careContext.hiTypes?.[0];
-        if (resolvedHiType) {
-          // Persist so subsequent notifies are immediate (no re-detection).
-          // Also normalize legacy multi-type hiTypes to the resolved single type
-          // to avoid UI/reporting showing stale combos like "Prescription, OPConsultation".
+        if (resolvedHiType && !careContext.hiType) {
+          // Set primary hiType if not set yet
           await CareContextModel.updateOne(
             { _id: careContext._id },
-            { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
+            { $set: { hiType: resolvedHiType } },
           );
           console.log(
-            `CareContext notifyContext: Resolved hiType for legacy context ${careContext.careContextReference} → ${resolvedHiType}`,
+            `CareContext notifyContext: Set primary hiType for context ${careContext.careContextReference} → ${resolvedHiType}`,
           );
         }
       } catch (detectErr: any) {
@@ -950,16 +964,11 @@ export const notifyContext = async (
       return false;
     }
 
-    // Keep DB normalized as one CareContext -> one hiType.
-    if (
-      careContext.hiType !== resolvedHiType ||
-      !careContext.hiTypes ||
-      careContext.hiTypes.length !== 1 ||
-      careContext.hiTypes[0] !== resolvedHiType
-    ) {
+    // Ensure primary hiType is set on the CareContext.
+    if (!careContext.hiType && resolvedHiType) {
       await CareContextModel.updateOne(
         { _id: careContext._id },
-        { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
+        { $set: { hiType: resolvedHiType } },
       );
     }
 
@@ -972,7 +981,10 @@ export const notifyContext = async (
           patientReference: patient.uhid || patient._id.toString(),
           careContextReference: careContext.careContextReference,
         },
-        hiTypes: [resolvedHiType],
+        // Send ALL hiTypes so PHR shows all record types for this visit
+        hiTypes: Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
+          ? careContext.hiTypes
+          : [resolvedHiType],
         date: new Date().toISOString(),
         hip: {
           id: facilityId,
@@ -1584,6 +1596,7 @@ export const CareContextService = {
 
   // CRUD
   createCareContextForVisit,
+  createOrUpdateCareContextForVisit,
   createCareContextForHiType,
   addHiTypesForVisit,
 

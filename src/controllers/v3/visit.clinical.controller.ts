@@ -628,7 +628,10 @@ export const recordAssessment = async (req: Request, res: Response) => {
     }
 
     const files = (req.files as Express.Multer.File[]) || [];
-    const newUploads = files.map((file) => ({
+    const validFiles = files.filter(
+      (file) => file.size > 0 && file.originalname && file.originalname.trim() !== ""
+    );
+    const newUploads = validFiles.map((file) => ({
       fileName: file.originalname,
       mimeType: file.mimetype,
       fileData: file.buffer,

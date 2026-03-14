@@ -37,9 +37,9 @@ export interface ICareContext extends Document {
   abhaAddress: string;
   display: string;
 
-  /** Single HI type for this CareContext (new per-type model) */
+  /** Primary HI type for this CareContext (used in ABDM link payload) */
   hiType?: HIType;
-  /** @deprecated Kept for backward compat with old combined CareContexts */
+  /** All HI types associated with this visit's CareContext */
   hiTypes: HIType[];
 
   linkingStatus: CareContextStatus;
@@ -185,26 +185,32 @@ const CareContextSchema = new Schema<ICareContext>(
   },
 );
 
-// Invariant: one CareContext = one HI type.
+// Ensure hiType and hiTypes stay in sync (hiType = primary / first type).
 CareContextSchema.pre("validate", function (next) {
   const doc = this as ICareContext;
 
-  if (doc.hiType) {
+  if (doc.hiType && (!Array.isArray(doc.hiTypes) || doc.hiTypes.length === 0)) {
+    // hiType set but hiTypes empty → seed hiTypes
     doc.hiTypes = [doc.hiType];
-    return next();
+  } else if (
+    (!doc.hiType) &&
+    Array.isArray(doc.hiTypes) &&
+    doc.hiTypes.length > 0
+  ) {
+    // hiTypes set but no hiType → pick first as primary
+    doc.hiType = doc.hiTypes[0] as HIType;
   }
 
-  if (Array.isArray(doc.hiTypes) && doc.hiTypes.length > 0) {
-    doc.hiType = doc.hiTypes[0] as HIType;
-    doc.hiTypes = [doc.hiType];
-  } else {
-    doc.hiTypes = [];
+  // Ensure hiType is always present in hiTypes
+  if (doc.hiType && Array.isArray(doc.hiTypes) && !doc.hiTypes.includes(doc.hiType)) {
+    doc.hiTypes.unshift(doc.hiType);
   }
 
   return next();
 });
 
-CareContextSchema.index({ patientId: 1, visitId: 1, hiType: 1 });
+// One CareContext per visit (all HI types merged into one context).
+CareContextSchema.index({ patientId: 1, visitId: 1 }, { unique: true, sparse: true });
 CareContextSchema.index({ abhaAddress: 1, linkingStatus: 1 });
 CareContextSchema.index({ linkRequestId: 1 }, { sparse: true });
 CareContextSchema.index({ notifyRequestId: 1 }, { sparse: true });

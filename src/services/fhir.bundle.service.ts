@@ -3,6 +3,7 @@ import { IScanShareVisit } from "../models/ScanShareVisit";
 import { ICareContext, HIType } from "../models/CareContext";
 import { IVisitDayCareBilling } from "../models/VisitDayCareBilling";
 import { Browser } from "puppeteer";
+import * as crypto from "crypto";
 
 import { facilityId, facilityName } from "../utils/constant";
 import { generateMultiplePdfs, generatePdfFromHtml } from "./pdf.service";
@@ -154,6 +155,11 @@ const generateUUID = (): string => {
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+};
+
+const generateDeterministicUUID = (seed: string): string => {
+  const hash = crypto.createHash("md5").update(seed).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 };
 
 const escapeHtml = (s: string): string =>
@@ -1615,27 +1621,21 @@ export const generateCombinedBundleForCareContext = async (
   allowedHiTypes?: HIType[],
   browser?: Browser,
 ): Promise<any> => {
-  const careContextHiType =
-    careContext.hiType ||
-    (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1
-      ? careContext.hiTypes[0]
-      : undefined);
-
-  // Enforce one carecontext = one hiType to avoid cross-hiType section leakage.
-  if (careContextHiType) {
-    allowedHiTypes = [careContextHiType];
-  } else if (allowedHiTypes && allowedHiTypes.length > 1) {
-    // Do not infer hiType by array index; it can mismatch careContext and leak wrong data.
-    allowedHiTypes = undefined;
-  }
-
+  // allowedHiTypes is now passed explicitly by the caller (one per call from pushHealthData).
+  // No override needed — trust the caller's filter.
   console.log("allowedHiTypes", allowedHiTypes);
-  const bundleId = generateUUID();
-  const patientUUID = generateUUID();
-  const orgUUID = generateUUID();
-  const practitionerUUID = generateUUID();
-  const encounterUUID = generateUUID();
-  const compositionUUID = generateUUID();
+  
+  // Seed for deterministic UUIDs to prevent PHR appending duplicates on subsequent syncs
+  const contextBaseId = careContext._id.toString();
+  const allowedHiTypesStr = (allowedHiTypes || []).join("-");
+  const idPrefix = `${contextBaseId}_${allowedHiTypesStr}`;
+
+  const bundleId = generateDeterministicUUID(`${idPrefix}_bundle`);
+  const patientUUID = generateDeterministicUUID(`${patient.abhaaddress || patient.uhid || patient._id}_patient`);
+  const orgUUID = generateDeterministicUUID(`${facilityId}_org`);
+  const practitionerUUID = generateDeterministicUUID(`${visit.doctorName || "doctor"}_practitioner`);
+  const encounterUUID = generateDeterministicUUID(`${idPrefix}_encounter`);
+  const compositionUUID = generateDeterministicUUID(`${idPrefix}_composition`);
   const dischargeSummaryDocId = generateUUID();
   const prescriptionDocId = generateUUID();
   const diagnosticReportDocId = generateUUID();

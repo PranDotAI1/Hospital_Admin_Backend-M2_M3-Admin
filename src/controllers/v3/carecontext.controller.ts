@@ -27,49 +27,6 @@ export const listByPatient = async (req: Request, res: Response) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Enforce one CareContext = one HI type in response and normalize legacy rows.
-    const normalizedCareContexts = careContexts.map((c: any) => {
-      const resolvedHiType = c.hiType || c.hiTypes?.[0];
-      if (!resolvedHiType) return c;
-      return {
-        ...c,
-        hiType: resolvedHiType,
-        hiTypes: [resolvedHiType],
-      };
-    });
-
-    // Best-effort DB normalization for legacy combined rows (non-breaking).
-    try {
-      const ops = normalizedCareContexts
-        .filter((c: any) => {
-          const original = careContexts.find(
-            (o: any) => String(o._id) === String(c._id),
-          ) as any;
-          if (!original || !c.hiType) return false;
-          return (
-            !original.hiType ||
-            !Array.isArray(original.hiTypes) ||
-            original.hiTypes.length !== 1 ||
-            original.hiTypes[0] !== c.hiType
-          );
-        })
-        .map((c: any) => ({
-          updateOne: {
-            filter: { _id: c._id },
-            update: { $set: { hiType: c.hiType, hiTypes: [c.hiType] } },
-          },
-        }));
-
-      if (ops.length > 0) {
-        await CareContextModel.bulkWrite(ops, { ordered: false });
-      }
-    } catch (normErr: any) {
-      console.warn(
-        "CareContext listByPatient: normalization warning:",
-        normErr?.message,
-      );
-    }
-
     const patient = await PatientModel.findById(patientId)
       .select("uhid name abhaaddress ABHANumber abdmLinkToken")
       .lean();
@@ -87,22 +44,22 @@ export const listByPatient = async (req: Request, res: Response) => {
                 : false,
             }
           : null,
-        careContexts: normalizedCareContexts,
+        careContexts,
         summary: {
-          total: normalizedCareContexts.length,
-          pending: normalizedCareContexts.filter(
+          total: careContexts.length,
+          pending: careContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.PENDING,
           ).length,
-          linking: normalizedCareContexts.filter(
+          linking: careContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.LINKING,
           ).length,
-          linked: normalizedCareContexts.filter(
+          linked: careContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.LINKED,
           ).length,
-          notified: normalizedCareContexts.filter(
+          notified: careContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.NOTIFIED,
           ).length,
-          failed: normalizedCareContexts.filter(
+          failed: careContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.FAILED,
           ).length,
         },

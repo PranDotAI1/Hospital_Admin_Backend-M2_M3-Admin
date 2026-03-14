@@ -41,6 +41,10 @@ import { ConsentService } from "./consent.service";
 
 const LOG_PREFIX = "[HEALTH_INFO]";
 
+// In-memory lock to prevent exact-millisecond race conditions from duplicate ABDM webhooks.
+// ABDM often sends immediate retries with DIFFERENT transactionIds, but the SAME consentId.
+const activeConsentProcessing = new Set<string>();
+
 /**
  * Resolve exactly one HI type for a CareContext.
  * For legacy rows with multiple hiTypes, prefer a specific non-OP type.
@@ -320,71 +324,30 @@ const findContextsByAbhaAndDateRange = async (
 // ============================================================================
 
 /**
- * Load real clinical data for this care context from our DB (visit_prescriptions, visit_lab_reports, etc.).
- * Used when building the FHIR bundle for pull records so we send actual saved data, not placeholders.
+ * Load ALL clinical data for this care context's visit from our DB.
+ * Per-HI-type filtering is handled downstream by FHIR bundle service (allowedHiTypes param).
  */
 const getOptionalDataForCareContext = async (
   careContext: ICareContext,
-  consentedHiTypes?: string[],
+  _consentedHiTypes?: string[],
 ): Promise<ICombinedBundleOptionalData | undefined> => {
   const visitId = careContext.visitId;
   if (!visitId) return undefined;
 
-  // For per-type CareContexts (new model), use the careContext's own hiType as the data constraint.
-  // For legacy multi-type CareContexts, fall back to consent-based filtering.
-  const careContextType = careContext.hiType;
-  const shouldFetch = (relatedHiTypes: string[]) => {
-    if (careContextType) {
-      // Per-type CareContext: only fetch data relevant to this specific HI type
-      return relatedHiTypes.includes(careContextType);
-    }
-    // Legacy CareContext: use consent-based filtering
-    if (!consentedHiTypes || consentedHiTypes.length === 0) return true;
-    return relatedHiTypes.some((t) => consentedHiTypes.includes(t));
-  };
-
+  // Fetch ALL clinical data for this visit — FHIR bundle service handles per-type filtering
   const promises: any[] = [];
   // 0: Prescription
-  promises.push(
-    shouldFetch(["Prescription"])
-      ? VisitPrescriptionModel.findOne({ visitId }).lean()
-      : Promise.resolve(null),
-  );
+  promises.push(VisitPrescriptionModel.findOne({ visitId }).lean());
   // 1: Lab
-  promises.push(
-    shouldFetch(["DiagnosticReport"])
-      ? VisitLabReportModel.findOne({ visitId }).lean()
-      : Promise.resolve(null),
-  );
+  promises.push(VisitLabReportModel.findOne({ visitId }).lean());
   // 2: SOAP
-  promises.push(
-    shouldFetch(["OPConsultation", "HealthDocumentRecord", "WellnessRecord"])
-      ? VisitSoapNotesModel.findOne({ visitId }).lean()
-      : Promise.resolve(null),
-  );
+  promises.push(VisitSoapNotesModel.findOne({ visitId }).lean());
   // 3: Discharge
-  promises.push(
-    shouldFetch(["DischargeSummary"])
-      ? VisitDischargeSummaryModel.findOne({ visitId }).lean()
-      : Promise.resolve(null),
-  );
+  promises.push(VisitDischargeSummaryModel.findOne({ visitId }).lean());
   // 4: Assessment
-  promises.push(
-    shouldFetch([
-      "OPConsultation",
-      "WellnessRecord",
-      "ImmunizationRecord",
-      "HealthDocumentRecord",
-    ])
-      ? VisitAssessmentModel.findOne({ visitId }).lean()
-      : Promise.resolve(null),
-  );
+  promises.push(VisitAssessmentModel.findOne({ visitId }).lean());
   // 5: Billing
-  promises.push(
-    shouldFetch(["Invoice", "OPConsultation"])
-      ? VisitDayCareBilling.findOne({ visitId }).lean()
-      : Promise.resolve(null),
-  );
+  promises.push(VisitDayCareBilling.findOne({ visitId }).lean());
 
   const [
     prescription,
@@ -576,38 +539,35 @@ const pushHealthData = async (
       complaint: soaps?.subjective ?? undefined,
     } as any;
 
-    const effectiveHiType = resolveSingleHiTypeForCareContext(
-      careContext,
-      consentedHiTypes,
-    );
+    // Determine which HI types to push: intersection of CareContext.hiTypes and consent
+    const contextHiTypes = Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
+      ? careContext.hiTypes
+      : careContext.hiType ? [careContext.hiType] : [];
 
-    if (!effectiveHiType) {
+    if (contextHiTypes.length === 0) {
       console.warn(
-        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: unable to resolve single hiType`,
+        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no hiTypes on CareContext`,
       );
       return false;
     }
 
-    // Keep DB and runtime model aligned to one context = one type.
-    if (
-      careContext.hiType !== effectiveHiType ||
-      !Array.isArray(careContext.hiTypes) ||
-      careContext.hiTypes.length !== 1 ||
-      careContext.hiTypes[0] !== effectiveHiType
-    ) {
-      await CareContextModel.updateOne(
-        { _id: careContext._id },
-        { $set: { hiType: effectiveHiType, hiTypes: [effectiveHiType] } },
+    const applicableHiTypes = consentedHiTypes && consentedHiTypes.length > 0
+      ? contextHiTypes.filter((t) => consentedHiTypes.includes(t))
+      : contextHiTypes;
+
+    if (applicableHiTypes.length === 0) {
+      console.log(
+        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no matching hiTypes between CareContext(${contextHiTypes}) and consent(${consentedHiTypes})`,
       );
-      careContext.hiType = effectiveHiType;
-      careContext.hiTypes = [effectiveHiType];
+      return false;
     }
 
-    // Load only type-relevant clinical data for this context.
-    const optionalData = await getOptionalDataForCareContext(
-      careContext,
-      consentedHiTypes,
+    console.log(
+      `${LOG_PREFIX} CareContext ${careContext.careContextReference}: will push ${applicableHiTypes.length} bundle(s) for hiTypes: ${JSON.stringify(applicableHiTypes)}`,
     );
+
+    // Load ALL clinical data once (per-type filtering handled by FHIR bundle service)
+    const optionalData = await getOptionalDataForCareContext(careContext);
 
     // Detailed logging: show what clinical data was found
     const clinicalDataFound: string[] = [];
@@ -650,119 +610,118 @@ const pushHealthData = async (
       );
     } else {
       console.warn(
-        `${LOG_PREFIX} ⚠️ NO clinical data found for ${careContext.careContextReference} (visitId=${careContext.visitId}). FHIR bundle will be minimal.`,
+        `${LOG_PREFIX} ⚠️ NO clinical data found for ${careContext.careContextReference} (visitId=${careContext.visitId}). FHIR bundles will be minimal.`,
       );
     }
 
-    // Intersect with consented HI types if consent provides them.
-    const allowedHiTypes =
-      consentedHiTypes && consentedHiTypes.length > 0
-        ? consentedHiTypes.includes(effectiveHiType)
-          ? [effectiveHiType]
-          : []
-        : [effectiveHiType];
+    // Generate and push a separate bundle for each applicable HI type
+    let allPushed = true;
+    for (const hiType of applicableHiTypes) {
+      try {
+        const hiTypeFilter = [hiType];
+        console.log(
+          `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} [${hiType}]`,
+        );
+        const fhirBundle = await FhirBundleService.generateCombinedBundleForCareContext(
+          patient,
+          visit as any,
+          careContext,
+          optionalData,
+          hiTypeFilter,
+          browser,
+        );
+        const fhirBundleJson = JSON.stringify(fhirBundle);
+        const entryCount = fhirBundle.entry?.length || 0;
+        console.log(
+          `${LOG_PREFIX} FHIR bundle [${hiType}]: ${fhirBundleJson.length} chars, ${entryCount} entries`,
+        );
 
-    // Skip if consent doesn't include this CareContext's HI type
-    if (allowedHiTypes && allowedHiTypes.length === 0) {
-      console.log(
-        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no matching hiTypes between CareContext and consent`,
-      );
-      return false;
+        // Guard: ImmunizationRecord bundles need at least one Immunization resource
+        if (
+          hiType === "ImmunizationRecord" &&
+          entryCount <= 5 &&
+          !fhirBundle.entry?.some(
+            (e: any) => e.resource?.resourceType === "Immunization",
+          )
+        ) {
+          console.warn(
+            `${LOG_PREFIX} Skipping push for ${careContext.careContextReference} [${hiType}]: ImmunizationRecord bundle has no Immunization resources`,
+          );
+          continue;
+        }
+
+        // Guard: Skip empty bundles (only base entries: Composition + Patient + Org + Practitioner + Encounter)
+        if (entryCount <= 5) {
+          console.log(
+            `${LOG_PREFIX} Skipping push for ${careContext.careContextReference} [${hiType}]: bundle has only base entries (${entryCount})`,
+          );
+          continue;
+        }
+
+        // Build encrypted payload
+        let payload: any;
+        try {
+          payload = buildDataPushPayload(
+            fhirBundleJson,
+            transactionId,
+            careContext.careContextReference,
+            keyMaterial,
+          );
+        } catch (encErr: any) {
+          console.error(
+            `${LOG_PREFIX} Encryption failed for ${careContext.careContextReference} [${hiType}]: ${encErr.message}`,
+          );
+          allPushed = false;
+          continue;
+        }
+
+        const keyVal = payload?.keyMaterial?.dhPublicKey?.keyValue ?? "";
+        console.log(
+          `${LOG_PREFIX} Data push [${hiType}] keyValue length=${keyVal.length} careContext=${careContext.careContextReference}`,
+        );
+
+        const requestId = generateUID();
+        console.log(`${LOG_PREFIX} Pushing [${hiType}] data to: ${dataPushUrl}`);
+
+        const response = await axios.post(dataPushUrl, payload, {
+          headers: {
+            "Content-Type": "application/json",
+            "REQUEST-ID": requestId,
+            TIMESTAMP: new Date().toISOString(),
+            "X-CM-ID": X_CM_ID,
+            "X-HIP-ID": X_HIP_ID || facilityId,
+            Authorization: authToken,
+          },
+        });
+
+        console.log(
+          `${LOG_PREFIX} Data [${hiType}] pushed successfully, status: ${response.status}, careContext: ${careContext.careContextReference}`,
+        );
+      } catch (pushErr: any) {
+        console.error(
+          `${LOG_PREFIX} Push failed for ${careContext.careContextReference} [${hiType}]:`,
+          pushErr.response?.status,
+          pushErr.response?.statusText || pushErr.message,
+        );
+        allPushed = false;
+      }
     }
-
-    const hiTypeFilter = [effectiveHiType];
-    let fhirBundle: any;
-    console.log(
-      `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} (hiTypeFilter: ${JSON.stringify(hiTypeFilter)})`,
-    );
-    fhirBundle = await FhirBundleService.generateCombinedBundleForCareContext(
-      patient,
-      visit as any,
-      careContext,
-      optionalData,
-      hiTypeFilter,
-      browser,
-    );
-    const fhirBundleJson = JSON.stringify(fhirBundle);
-    const entryCount = fhirBundle.entry?.length || 0;
-    console.log(
-      `${LOG_PREFIX} FHIR bundle generated: ${fhirBundleJson.length} chars, ${entryCount} entries`,
-    );
-
-    // Guard: ImmunizationRecord bundles need at least one Immunization resource
-    // (base bundle has 5 entries: Composition + Patient + Org + Practitioner + Encounter)
-    if (
-      effectiveHiType === "ImmunizationRecord" &&
-      entryCount <= 5 &&
-      !fhirBundle.entry?.some(
-        (e: any) => e.resource?.resourceType === "Immunization",
-      )
-    ) {
-      console.warn(
-        `${LOG_PREFIX} Skipping push for ${careContext.careContextReference}: ImmunizationRecord bundle has no Immunization resources`,
-      );
-      return false;
-    }
-
-    // Build encrypted payload (can throw if keyMaterial is invalid)
-    let payload: any;
-    try {
-      payload = buildDataPushPayload(
-        fhirBundleJson,
-        transactionId,
-        careContext.careContextReference,
-        keyMaterial,
-      );
-    } catch (encErr: any) {
-      console.error(
-        `${LOG_PREFIX} Data push failed for -- ${careContext.careContextReference} --: ${encErr.message}`,
-      );
-      return false;
-    }
-
-    const keyVal = payload?.keyMaterial?.dhPublicKey?.keyValue ?? "";
-    console.log(
-      `${LOG_PREFIX} Data push keyValue length=${keyVal.length} (expected 88 per ABDM: 04+X+Y=65 bytes) first2="${keyVal.slice(0, 2)}" last2="${keyVal.slice(-2)}" careContext=${careContext.careContextReference}`,
-    );
-
-    const requestId = generateUID();
-
-    // Log the push URL and key details for debugging
-    console.log(`${LOG_PREFIX} Pushing data to: ${dataPushUrl}`);
-    console.log(
-      `${LOG_PREFIX} TransactionId: ${transactionId}, CareContext: ${careContext.careContextReference}`,
-    );
-
-    const response = await axios.post(dataPushUrl, payload, {
-      headers: {
-        "Content-Type": "application/json",
-        "REQUEST-ID": requestId,
-        TIMESTAMP: new Date().toISOString(),
-        "X-CM-ID": X_CM_ID,
-        "X-HIP-ID": X_HIP_ID || facilityId,
-        Authorization: authToken,
-      },
-    });
-
-    console.log(
-      `${LOG_PREFIX} Data pushed successfully, status: ${response.status}, careContext: ${careContext.careContextReference}`,
-    );
 
     // Update care context with data transfer status
     await CareContextModel.updateOne(
       { _id: careContext._id },
       {
         $set: {
-          dataTransferStatus: DataTransferStatus.TRANSFERRED,
+          dataTransferStatus: allPushed ? DataTransferStatus.TRANSFERRED : DataTransferStatus.FAILED,
           dataTransferredAt: new Date(),
           transactionId,
           dataPushUrl,
-          dataTransferError: null,
+          dataTransferError: allPushed ? null : { message: "One or more bundle pushes failed" },
         },
       },
     );
 
-    return response.status === 200 || response.status === 202;
+    return allPushed;
   } catch (error: any) {
     // Outer catch for non-push errors (patient lookup, FHIR generation, encryption)
     console.error(
@@ -897,6 +856,48 @@ const processHealthInfoRequest = async (
     `${LOG_PREFIX} Processing request for consent: ${consentId}, transaction: ${transactionId}`,
   );
 
+  // --- ATOMIC IN-MEMORY IDEMPOTENCY LOCK (BY CONSENT) ---
+  // ABDM fires duplicate webhooks, sometimes with DIFFERENT transactionIds.
+  // Using the consentId guarantees we only process one data push for this consent at a time.
+  if (activeConsentProcessing.has(consentId)) {
+    console.warn(
+      `${LOG_PREFIX} Duplicate webhook blocked! Consent ${consentId} is already actively pushing data. (Transaction: ${transactionId}). Skipping.`,
+    );
+    return;
+  }
+  activeConsentProcessing.add(consentId);
+
+  // Helper to release the lock cleanly.
+  const releaseLock = () => {
+    activeConsentProcessing.delete(consentId);
+  };
+
+  // Auto-expire the lock as a fallback after 60 seconds.
+  const lockTimeout = setTimeout(releaseLock, 60000);
+
+  // --- DB IDEMPOTENCY CHECK (For retries that arrive later) ---
+  // ABDM sometimes triggers the /health-information/request webhook multiple times concurrently.
+  // Check if this transactionId is already being processed to avoid duplicate data pushes.
+  const existingProcessing = await CareContextModel.findOne({
+    transactionId: transactionId,
+    dataTransferStatus: { 
+      $in: [
+        DataTransferStatus.ACKNOWLEDGED, 
+        DataTransferStatus.TRANSFERRED, 
+        DataTransferStatus.FAILED
+      ] 
+    }
+  }).lean();
+
+  if (existingProcessing) {
+    console.warn(
+      `${LOG_PREFIX} Duplicate webhook received for transaction ${transactionId} (Status: ${existingProcessing.dataTransferStatus}). Skipping duplicate processing.`,
+    );
+    releaseLock();
+    clearTimeout(lockTimeout);
+    return;
+  }
+
   // Always use a fresh session token for data push & notification.
   let abdmToken: string;
   try {
@@ -916,6 +917,8 @@ const processHealthInfoRequest = async (
         `${LOG_PREFIX} No session token and no callback token available:`,
         tokenError.message,
       );
+      releaseLock();
+      clearTimeout(lockTimeout);
       return;
     }
   }
@@ -1084,6 +1087,10 @@ const processHealthInfoRequest = async (
       );
     }
   }
+
+  // Release the lock now that processing is complete
+  releaseLock();
+  clearTimeout(lockTimeout);
 };
 
 // ============================================================================
