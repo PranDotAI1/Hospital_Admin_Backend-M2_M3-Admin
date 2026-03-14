@@ -1615,6 +1615,20 @@ export const generateCombinedBundleForCareContext = async (
   allowedHiTypes?: HIType[],
   browser?: Browser,
 ): Promise<any> => {
+  const careContextHiType =
+    careContext.hiType ||
+    (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1
+      ? careContext.hiTypes[0]
+      : undefined);
+
+  // Enforce one carecontext = one hiType to avoid cross-hiType section leakage.
+  if (careContextHiType) {
+    allowedHiTypes = [careContextHiType];
+  } else if (allowedHiTypes && allowedHiTypes.length > 1) {
+    // Do not infer hiType by array index; it can mismatch careContext and leak wrong data.
+    allowedHiTypes = undefined;
+  }
+
   console.log("allowedHiTypes", allowedHiTypes);
   const bundleId = generateUUID();
   const patientUUID = generateUUID();
@@ -1758,6 +1772,7 @@ export const generateCombinedBundleForCareContext = async (
       resource: {
         resourceType: "AllergyIntolerance",
         id: allergyId,
+        recordedDate: bundleDate,
         clinicalStatus: {
           coding: [
             {
@@ -3063,6 +3078,7 @@ export const generateCombinedBundleForCareContext = async (
           resource: {
             resourceType: "AllergyIntolerance",
             id: allergyId,
+            recordedDate: bundleDate,
             clinicalStatus: {
               coding: [
                 {

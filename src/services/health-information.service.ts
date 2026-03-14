@@ -4,6 +4,7 @@ import {
   CareContextModel,
   ICareContext,
   DataTransferStatus,
+  HIType,
 } from "../models/CareContext";
 import { ConsentRequestModel } from "../models/ConsentRequest";
 import {
@@ -39,6 +40,33 @@ import { AbdmTokenService } from "./abdm.token.service";
 import { ConsentService } from "./consent.service";
 
 const LOG_PREFIX = "[HEALTH_INFO]";
+
+/**
+ * Resolve exactly one HI type for a CareContext.
+ * For legacy rows with multiple hiTypes, prefer a specific non-OP type.
+ */
+const resolveSingleHiTypeForCareContext = (
+  careContext: ICareContext,
+  consentedHiTypes?: string[],
+): HIType | undefined => {
+  if (careContext.hiType) return careContext.hiType as HIType;
+
+  const contextTypes = Array.isArray(careContext.hiTypes)
+    ? (careContext.hiTypes.filter(Boolean) as HIType[])
+    : [];
+
+  if (contextTypes.length === 0) return undefined;
+  if (contextTypes.length === 1) return contextTypes[0];
+
+  const consentScoped =
+    Array.isArray(consentedHiTypes) && consentedHiTypes.length > 0
+      ? contextTypes.filter((t) => consentedHiTypes.includes(t))
+      : contextTypes;
+
+  const candidates = consentScoped.length > 0 ? consentScoped : contextTypes;
+  const nonOp = candidates.find((t) => t !== "OPConsultation");
+  return nonOp || candidates[0];
+};
 
 /**
  * Health Information Service
@@ -548,7 +576,34 @@ const pushHealthData = async (
       complaint: soaps?.subjective ?? undefined,
     } as any;
 
-    // Load optional real data (prescription, lab, SOAP, discharge, immunization) when available
+    const effectiveHiType = resolveSingleHiTypeForCareContext(
+      careContext,
+      consentedHiTypes,
+    );
+
+    if (!effectiveHiType) {
+      console.warn(
+        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: unable to resolve single hiType`,
+      );
+      return false;
+    }
+
+    // Keep DB and runtime model aligned to one context = one type.
+    if (
+      careContext.hiType !== effectiveHiType ||
+      !Array.isArray(careContext.hiTypes) ||
+      careContext.hiTypes.length !== 1 ||
+      careContext.hiTypes[0] !== effectiveHiType
+    ) {
+      await CareContextModel.updateOne(
+        { _id: careContext._id },
+        { $set: { hiType: effectiveHiType, hiTypes: [effectiveHiType] } },
+      );
+      careContext.hiType = effectiveHiType;
+      careContext.hiTypes = [effectiveHiType];
+    }
+
+    // Load only type-relevant clinical data for this context.
     const optionalData = await getOptionalDataForCareContext(
       careContext,
       consentedHiTypes,
@@ -599,25 +654,15 @@ const pushHealthData = async (
       );
     }
 
-    // Generate FHIR bundle using the combined generator for both new and legacy CareContexts.
-    // For new per-type CareContexts, we filter to just the single hiType via allowedHiTypes.
-    // This ensures identical output quality (PDFs, formatting, SNOMED codes) regardless of CareContext type.
-    const effectiveHiType = careContext.hiType; // single type for new per-type CareContexts
-    const careContextHiTypes = effectiveHiType
-      ? [effectiveHiType]
-      : careContext.hiTypes || [];
-
-    // Intersect with consented HI types if consent provides them
+    // Intersect with consented HI types if consent provides them.
     const allowedHiTypes =
       consentedHiTypes && consentedHiTypes.length > 0
-        ? (careContextHiTypes.filter((t) =>
-            consentedHiTypes.includes(t),
-          ) as import("../models/CareContext").HIType[])
-        : effectiveHiType
-          ? ([effectiveHiType] as import("../models/CareContext").HIType[])
-          : undefined;
+        ? consentedHiTypes.includes(effectiveHiType)
+          ? [effectiveHiType]
+          : []
+        : [effectiveHiType];
 
-    // Skip if consent doesn't include any of this CareContext's HI types
+    // Skip if consent doesn't include this CareContext's HI type
     if (allowedHiTypes && allowedHiTypes.length === 0) {
       console.log(
         `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no matching hiTypes between CareContext and consent`,
@@ -625,10 +670,7 @@ const pushHealthData = async (
       return false;
     }
 
-    // Both per-HI-type and legacy CareContexts use the proven combined bundle generator.
-    // For per-HI-type: pass [hiType] as allowedHiTypes to filter to just that type.
-    // For legacy: pass consent-derived allowedHiTypes for multi-type filtering.
-    const hiTypeFilter = effectiveHiType ? [effectiveHiType] : allowedHiTypes;
+    const hiTypeFilter = [effectiveHiType];
     let fhirBundle: any;
     console.log(
       `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} (hiTypeFilter: ${JSON.stringify(hiTypeFilter)})`,
