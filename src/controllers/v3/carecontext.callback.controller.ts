@@ -54,7 +54,10 @@ export const onGenerateToken = async (req: Request, res: Response) => {
         const callbackAuth =
           req.headers["authorization"] || req.headers["Authorization"];
         if (callbackAuth) {
-          abdmToken = typeof callbackAuth === "string" ? callbackAuth : String(callbackAuth);
+          abdmToken =
+            typeof callbackAuth === "string"
+              ? callbackAuth
+              : String(callbackAuth);
           if (!abdmToken.toLowerCase().startsWith("bearer ")) {
             abdmToken = `Bearer ${abdmToken}`;
           }
@@ -160,6 +163,23 @@ export const onContextNotify = async (req: Request, res: Response) => {
       "CareContext Callback: on-context-notify received",
       JSON.stringify(req.body),
     );
+
+    const postData = req.body;
+    const requestId = postData?.response?.requestId;
+    const error = postData?.error;
+    const success = !error && postData?.acknowledgement?.status === "OK";
+
+    if (requestId) {
+      await CareContextService.handleContextNotifyCallback(
+        requestId,
+        success,
+        error,
+      );
+    } else {
+      console.warn(
+        "CareContext Callback: on-context-notify missing response.requestId",
+      );
+    }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",

@@ -27,6 +27,49 @@ export const listByPatient = async (req: Request, res: Response) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    // Enforce one CareContext = one HI type in response and normalize legacy rows.
+    const normalizedCareContexts = careContexts.map((c: any) => {
+      const resolvedHiType = c.hiType || c.hiTypes?.[0];
+      if (!resolvedHiType) return c;
+      return {
+        ...c,
+        hiType: resolvedHiType,
+        hiTypes: [resolvedHiType],
+      };
+    });
+
+    // Best-effort DB normalization for legacy combined rows (non-breaking).
+    try {
+      const ops = normalizedCareContexts
+        .filter((c: any) => {
+          const original = careContexts.find(
+            (o: any) => String(o._id) === String(c._id),
+          ) as any;
+          if (!original || !c.hiType) return false;
+          return (
+            !original.hiType ||
+            !Array.isArray(original.hiTypes) ||
+            original.hiTypes.length !== 1 ||
+            original.hiTypes[0] !== c.hiType
+          );
+        })
+        .map((c: any) => ({
+          updateOne: {
+            filter: { _id: c._id },
+            update: { $set: { hiType: c.hiType, hiTypes: [c.hiType] } },
+          },
+        }));
+
+      if (ops.length > 0) {
+        await CareContextModel.bulkWrite(ops, { ordered: false });
+      }
+    } catch (normErr: any) {
+      console.warn(
+        "CareContext listByPatient: normalization warning:",
+        normErr?.message,
+      );
+    }
+
     const patient = await PatientModel.findById(patientId)
       .select("uhid name abhaaddress ABHANumber abdmLinkToken")
       .lean();
@@ -44,22 +87,22 @@ export const listByPatient = async (req: Request, res: Response) => {
                 : false,
             }
           : null,
-        careContexts,
+        careContexts: normalizedCareContexts,
         summary: {
-          total: careContexts.length,
-          pending: careContexts.filter(
+          total: normalizedCareContexts.length,
+          pending: normalizedCareContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.PENDING,
           ).length,
-          linking: careContexts.filter(
+          linking: normalizedCareContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.LINKING,
           ).length,
-          linked: careContexts.filter(
+          linked: normalizedCareContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.LINKED,
           ).length,
-          notified: careContexts.filter(
+          notified: normalizedCareContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.NOTIFIED,
           ).length,
-          failed: careContexts.filter(
+          failed: normalizedCareContexts.filter(
             (c) => c.linkingStatus === CareContextStatus.FAILED,
           ).length,
         },
@@ -259,7 +302,7 @@ export const linkAllForPatient = async (req: Request, res: Response) => {
 
 export const createCareContext = async (req: Request, res: Response) => {
   try {
-    const { patientId, visitId, hiTypes } = req.body;
+    const { patientId, visitId, hiType, hiTypes } = req.body;
 
     if (!patientId || !Types.ObjectId.isValid(patientId)) {
       return res.status(STATUS_CODE.BAD_REQUEST).json({
@@ -268,31 +311,54 @@ export const createCareContext = async (req: Request, res: Response) => {
       });
     }
 
-    if (visitId && !Types.ObjectId.isValid(visitId)) {
+    if (!visitId || !Types.ObjectId.isValid(visitId)) {
       return res.status(STATUS_CODE.BAD_REQUEST).json({
         status: "error",
-        message: "Invalid visit ID format",
+        message: "Valid visit ID is required",
       });
     }
 
-    const careContext = await CareContextService.createCareContextForVisit(
+    // One CareContext must map to exactly one HI type.
+    const resolvedHiType: string | undefined =
+      typeof hiType === "string" && hiType.trim().length > 0
+        ? hiType.trim()
+        : Array.isArray(hiTypes) && hiTypes.length === 1
+          ? String(hiTypes[0]).trim()
+          : undefined;
+
+    if (Array.isArray(hiTypes) && hiTypes.length > 1) {
+      return res.status(STATUS_CODE.BAD_REQUEST).json({
+        status: "error",
+        message:
+          "Pass only one hiType per request. Multi-hiType arrays are not allowed.",
+      });
+    }
+
+    if (!resolvedHiType) {
+      return res.status(STATUS_CODE.BAD_REQUEST).json({
+        status: "error",
+        message:
+          "At least one hiType is required (e.g. hiType: 'Prescription')",
+      });
+    }
+
+    const careContext = await CareContextService.createCareContextForHiType(
       patientId,
       visitId,
-      hiTypes,
+      resolvedHiType as any,
     );
 
     if (!careContext) {
       return res.status(STATUS_CODE.BAD_REQUEST).json({
         status: "error",
-        message:
-          "Failed to create care context. Patient may not have ABHA linked.",
+        message: "Failed to create care context. Patient may not exist.",
       });
     }
 
     return res.status(STATUS_CODE.CREATED).json({
       status: "success",
-      message: "Care context created",
-      data: careContext,
+      message: "Created 1 care context",
+      data: [careContext],
     });
   } catch (error: any) {
     console.error("CareContext create error:", error);

@@ -2,6 +2,46 @@ import { IPatient } from "../models/Patient";
 import { IScanShareVisit } from "../models/ScanShareVisit";
 import { facilityName } from "./constant";
 
+const VITAL_DISPLAY_NAMES: Record<string, string> = {
+  pulse: "Pulse",
+  spo2: "SpO2",
+  sbp: "Systolic BP",
+  dbp: "Diastolic BP",
+  map: "Mean Arterial Pressure",
+  temp: "Temperature",
+  respiration: "Respiration Rate",
+  painScore: "Pain Score",
+  height: "Height",
+  weight: "Weight",
+  bsa: "Body Surface Area",
+  bmi: "BMI",
+  category: "Category",
+  bs: "Blood Sugar",
+  creatinine: "Creatinine",
+  egfr: "eGFR",
+  egfr2: "eGFR (CKD-EPI)",
+};
+
+const DEFAULT_VITAL_UNITS: Record<string, string> = {
+  pulse: "BPM",
+  spo2: "%",
+  sbp: "mmHg",
+  dbp: "mmHg",
+  map: "mmHg",
+  temp: "°C",
+  respiration: "bpm",
+  painScore: "",
+  height: "CM",
+  weight: "KG",
+  bsa: "m²",
+  bmi: "kg/m²",
+  category: "",
+  bs: "mg/dL",
+  creatinine: "mg/dL",
+  egfr: "mL/min/1.73m²",
+  egfr2: "mL/min/1.73m²",
+};
+
 const css = `
 <style>
   body { font-family: sans-serif; padding: 20px; color: #333; }
@@ -38,14 +78,22 @@ const getPatientHeader = (patient: IPatient, visit: IScanShareVisit) => {
   // Build info rows conditionally — only show fields that have data
   const rows: string[] = [];
   if (name) rows.push(`<div><strong>Patient Name:</strong> ${name}</div>`);
-  if (age || gender) rows.push(`<div><strong>Age/Gender:</strong> ${age}${age && gender ? " / " : ""}${gender}</div>`);
+  if (age || gender)
+    rows.push(
+      `<div><strong>Age/Gender:</strong> ${age}${age && gender ? " / " : ""}${gender}</div>`,
+    );
   if (mobile) rows.push(`<div><strong>Mobile:</strong> ${mobile}</div>`);
   if (address) rows.push(`<div><strong>Address:</strong> ${address}</div>`);
   rows.push(`<div><strong>Visit Date:</strong> ${date}</div>`);
   if (uhid) rows.push(`<div><strong>Patient ID (UHID):</strong> ${uhid}</div>`);
-  if (abhaNumber) rows.push(`<div><strong>ABHA Number:</strong> ${abhaNumber}</div>`);
-  if (abhaAddress) rows.push(`<div><strong>ABHA Address:</strong> ${abhaAddress}</div>`);
-  if (consultingDoctor) rows.push(`<div style="flex-basis: 100%;"><strong>Consulting Doctor:</strong> Dr. ${consultingDoctor}</div>`);
+  if (abhaNumber)
+    rows.push(`<div><strong>ABHA Number:</strong> ${abhaNumber}</div>`);
+  if (abhaAddress)
+    rows.push(`<div><strong>ABHA Address:</strong> ${abhaAddress}</div>`);
+  if (consultingDoctor)
+    rows.push(
+      `<div style="flex-basis: 100%;"><strong>Consulting Doctor:</strong> Dr. ${consultingDoctor}</div>`,
+    );
 
   return `
     <div class="header">
@@ -72,11 +120,14 @@ export const getPrescriptionTemplate = (
       } else if (m.frequency) {
         timingStr = m.frequency;
       }
-      
-      const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
-      
+
+      const durStr = m.duration
+        ? `${m.duration} ${m.durationUnit || "days"}`
+        : "-";
+
       let instParts = [];
-      if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+      if (m.instructions && m.instructions !== "Other")
+        instParts.push(m.instructions);
       if (m.customInstructions) instParts.push(m.customInstructions);
       const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
 
@@ -138,6 +189,9 @@ export const getDiagnosticReportTemplate = (
   visit: IScanShareVisit,
   labs: any[],
 ) => {
+  // Extract analyst name from first lab report that has one
+  const analystName = labs.find((l) => l.analystName)?.analystName || "";
+
   const labRows = labs
     .map(
       (l) => `
@@ -146,11 +200,15 @@ export const getDiagnosticReportTemplate = (
       <td>${l.resultValue || "-"}</td>
       <td>${l.measurementUnit || "-"}</td>
       <td>${l.reportDate ? new Date(l.reportDate).toLocaleDateString("en-IN") : "-"}</td>
-      <td>${l.analystName || "-"}</td>
+      ${l.sampleId !== undefined ? `<td>${l.sampleId || "-"}</td>` : ""}
+     
     </tr>
   `,
     )
     .join("");
+
+  // Check if any lab has sampleId to show the column
+  const hasSampleId = labs.some((l) => l.sampleId !== undefined);
 
   return `
     <html>
@@ -167,7 +225,8 @@ export const getDiagnosticReportTemplate = (
               <th>Result</th>
               <th>Unit</th>
               <th>Date</th>
-              <th>Analyst</th>
+              ${hasSampleId ? "<th>Sample ID</th>" : ""}
+          
             </tr>
           </thead>
           <tbody>${labRows}</tbody>
@@ -175,7 +234,8 @@ export const getDiagnosticReportTemplate = (
       </div>
 
       <div class="footer">
-        <p><strong>Lab In-charge</strong></p>
+        <p><strong>${analystName ? analystName : "Lab In-charge"}</strong></p>
+        <p class="small-text">Analyst / Lab In-charge</p>
         <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
       </div>
     </body>
@@ -197,11 +257,14 @@ export const getDischargeSummaryTemplate = (
         } else if (m.frequency) {
           timingStr = m.frequency;
         }
-        
-        const durStr = m.duration ? `${m.duration} ${m.durationUnit || "days"}` : "-";
-        
+
+        const durStr = m.duration
+          ? `${m.duration} ${m.durationUnit || "days"}`
+          : "-";
+
         let instParts = [];
-        if (m.instructions && m.instructions !== "Other") instParts.push(m.instructions);
+        if (m.instructions && m.instructions !== "Other")
+          instParts.push(m.instructions);
         if (m.customInstructions) instParts.push(m.customInstructions);
         const instStr = instParts.length > 0 ? instParts.join(", ") : "-";
 
@@ -391,6 +454,54 @@ export const getInvoiceTemplate = (
 
       <div class="footer">
         <p><strong>Accountant/Cashier</strong></p>
+        <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+export const getVitalsTemplate = (
+  patient: IPatient,
+  visit: IScanShareVisit,
+  vitals: Record<string, string | number | undefined>,
+) => {
+  const vitalRows = Object.entries(vitals)
+    .filter(([_, v]) => v !== undefined && v !== null && v !== "")
+    .map(([key, rawValue]) => {
+      const display = VITAL_DISPLAY_NAMES[key] || key;
+      const unit = DEFAULT_VITAL_UNITS[key] || "";
+      return `
+    <tr>
+      <td>${display}</td>
+      <td>${rawValue}</td>
+      <td>${unit}</td>
+    </tr>`;
+    })
+    .join("");
+
+  return `
+    <html>
+    <head>${css}</head>
+    <body>
+      ${getPatientHeader(patient, visit)}
+
+      <div class="section">
+        <div class="section-title">Vital Signs</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Vital</th>
+              <th>Value</th>
+              <th>Unit</th>
+            </tr>
+          </thead>
+          <tbody>${vitalRows}</tbody>
+        </table>
+      </div>
+
+      <div class="footer">
+        <p><strong>Dr. ${visit.doctorName || "Doctor"}</strong></p>
         <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
       </div>
     </body>

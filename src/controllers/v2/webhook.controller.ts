@@ -163,7 +163,10 @@ export const healthInformation = async (req: any, res: any) => {
 
     const input = req.body;
     const requestId =
-      req.headers["request-id"] || req.headers["REQUEST-ID"] || generateUID();
+      input.requestId || req.headers["request-id"] || generateUID();
+    console.log(
+      `[HEALTH_INFO] Using requestId=${requestId} (body=${input.requestId}, header=${req.headers["request-id"]})`,
+    );
 
     if (!input?.hiRequest?.consent?.id || !input?.transactionId) {
       console.error(

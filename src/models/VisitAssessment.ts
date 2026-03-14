@@ -1,10 +1,21 @@
 import { Schema, model, Document, Types } from "mongoose";
 
+export interface IImmunizationEntry {
+  date?: Date;
+  manufacturer?: string;
+  lotNumber?: string;
+  doseNumber?: number;
+}
+
 export interface IImmunizationRecord {
   covid19Dose1Date?: Date;
   covid19Dose2Date?: Date;
   tetanusBoosterDate?: Date;
   fluVaccineDate?: Date;
+  covid19Dose1?: IImmunizationEntry;
+  covid19Dose2?: IImmunizationEntry;
+  tetanusBooster?: IImmunizationEntry;
+  fluVaccine?: IImmunizationEntry;
 }
 
 export interface IMedicalHistoryEntry {
@@ -60,12 +71,26 @@ export interface IVisitAssessment extends Document {
   updatedAt?: Date;
 }
 
+const ImmunizationEntrySchema = new Schema<IImmunizationEntry>(
+  {
+    date: { type: Date },
+    manufacturer: { type: String, trim: true },
+    lotNumber: { type: String, trim: true },
+    doseNumber: { type: Number },
+  },
+  { _id: false },
+);
+
 const ImmunizationRecordSchema = new Schema<IImmunizationRecord>(
   {
     covid19Dose1Date: { type: Date },
     covid19Dose2Date: { type: Date },
     tetanusBoosterDate: { type: Date },
     fluVaccineDate: { type: Date },
+    covid19Dose1: { type: ImmunizationEntrySchema },
+    covid19Dose2: { type: ImmunizationEntrySchema },
+    tetanusBooster: { type: ImmunizationEntrySchema },
+    fluVaccine: { type: ImmunizationEntrySchema },
   },
   { _id: false },
 );

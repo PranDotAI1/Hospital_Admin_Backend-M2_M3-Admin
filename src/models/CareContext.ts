@@ -50,6 +50,7 @@ export interface ICareContext extends Document {
   lastLinkAttemptAt?: Date;
 
   notifiedAt?: Date;
+  notifyRequestId?: string;
   notifyError?: any;
 
   consentId?: string;
@@ -138,6 +139,10 @@ const CareContextSchema = new Schema<ICareContext>(
     notifiedAt: {
       type: Date,
     },
+    notifyRequestId: {
+      type: String,
+      trim: true,
+    },
     notifyError: {
       type: Schema.Types.Mixed,
     },
@@ -180,9 +185,29 @@ const CareContextSchema = new Schema<ICareContext>(
   },
 );
 
+// Invariant: one CareContext = one HI type.
+CareContextSchema.pre("validate", function (next) {
+  const doc = this as ICareContext;
+
+  if (doc.hiType) {
+    doc.hiTypes = [doc.hiType];
+    return next();
+  }
+
+  if (Array.isArray(doc.hiTypes) && doc.hiTypes.length > 0) {
+    doc.hiType = doc.hiTypes[0] as HIType;
+    doc.hiTypes = [doc.hiType];
+  } else {
+    doc.hiTypes = [];
+  }
+
+  return next();
+});
+
 CareContextSchema.index({ patientId: 1, visitId: 1, hiType: 1 });
 CareContextSchema.index({ abhaAddress: 1, linkingStatus: 1 });
 CareContextSchema.index({ linkRequestId: 1 }, { sparse: true });
+CareContextSchema.index({ notifyRequestId: 1 }, { sparse: true });
 CareContextSchema.index({ consentId: 1 }, { sparse: true });
 
 export const CareContextModel = model<ICareContext>(

@@ -62,12 +62,23 @@ export const generateCareContextReference = async (
   const dateStr = date.toISOString().slice(0, 10).replace(/-/g, "");
   const prefix = `CC-${uhid}-${dateStr}`;
 
-  // Find existing contexts with same prefix to get next sequence
-  const existingCount = await CareContextModel.countDocuments({
-    careContextReference: { $regex: `^${prefix}` },
-  });
+  // Find the highest existing sequence number for this prefix
+  const latest = await CareContextModel.findOne(
+    { careContextReference: { $regex: `^${prefix}-` } },
+    { careContextReference: 1 },
+    { sort: { careContextReference: -1 } },
+  ).lean();
 
-  const seq = (existingCount + 1).toString().padStart(3, "0");
+  let nextSeq = 1;
+  if (latest?.careContextReference) {
+    const parts = latest.careContextReference.split("-");
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastSeq)) {
+      nextSeq = lastSeq + 1;
+    }
+  }
+
+  const seq = nextSeq.toString().padStart(3, "0");
   return `${prefix}-${seq}`;
 };
 
@@ -288,6 +299,36 @@ export const createCareContextForVisit = async (
     // Generate display text (no confidential data per ABDM spec)
     const display = generateDisplayText("OPD Visit", department, visitDate);
 
+    // Deprecated combined model guard: keep one CareContext = one HI type.
+    // Resolve type from actual visit data + requested types; never trust array order.
+    const requestedTypes = Array.from(new Set(hiTypes || [])) as HIType[];
+    const detectedTypes = await detectHiTypesForVisit(visitId);
+    const matchedTypes = requestedTypes.filter((t) =>
+      detectedTypes.includes(t),
+    );
+
+    const normalizedHiType: HIType =
+      matchedTypes.find((t) => t !== "OPConsultation") ||
+      matchedTypes[0] ||
+      detectedTypes.find((t) => t !== "OPConsultation") ||
+      detectedTypes[0] ||
+      requestedTypes.find((t) => t !== "OPConsultation") ||
+      requestedTypes[0] ||
+      "OPConsultation";
+
+    if (requestedTypes.length > 1 || matchedTypes.length > 1) {
+      console.warn(
+        "CareContext: createCareContextForVisit received multiple hiTypes; resolved single type",
+        {
+          requestedTypes,
+          detectedTypes,
+          matchedTypes,
+          normalizedHiType,
+          visitId: String(visitId),
+        },
+      );
+    }
+
     // Create care context record
     const careContext = await CareContextModel.create({
       patientId,
@@ -296,7 +337,8 @@ export const createCareContextForVisit = async (
       patientReference: patientRef,
       abhaAddress: patient.abhaaddress || "",
       display,
-      hiTypes,
+      hiType: normalizedHiType,
+      hiTypes: [normalizedHiType],
       linkingStatus: CareContextStatus.PENDING,
       linkAttempts: 0,
       facilityId: facilityId,
@@ -381,7 +423,10 @@ export const createCareContextForHiType = async (
   try {
     const patient = await PatientModel.findById(patientId);
     if (!patient) {
-      console.log("[CareContext] createCareContextForHiType: Patient not found", patientId);
+      console.log(
+        "[CareContext] createCareContextForHiType: Patient not found",
+        patientId,
+      );
       return null;
     }
 
@@ -398,6 +443,62 @@ export const createCareContextForHiType = async (
         "hiType",
         hiType,
       );
+
+      if (
+        existingContext.hiType !== hiType ||
+        !Array.isArray(existingContext.hiTypes) ||
+        existingContext.hiTypes.length !== 1 ||
+        existingContext.hiTypes[0] !== hiType
+      ) {
+        existingContext.hiType = hiType;
+        existingContext.hiTypes = [hiType];
+        await existingContext.save();
+      }
+
+      // Existing context may still need sync actions after clinical updates.
+      if (patient.abhaaddress) {
+        if (
+          existingContext.linkingStatus === CareContextStatus.LINKED ||
+          existingContext.linkingStatus === CareContextStatus.NOTIFIED
+        ) {
+          setImmediate(async () => {
+            try {
+              await notifyContext(existingContext);
+            } catch (err) {
+              console.warn(
+                "CareContext: notify retry failed for existing context:",
+                (err as any)?.message || err,
+              );
+            }
+          });
+        } else {
+          if (isLinkTokenValid(patient)) {
+            setImmediate(async () => {
+              try {
+                const abdmToken = await AbdmTokenService.getToken();
+                await linkCareContext(existingContext._id, abdmToken);
+              } catch (err) {
+                console.warn(
+                  "CareContext: link retry failed for existing context:",
+                  (err as any)?.message || err,
+                );
+              }
+            });
+          } else {
+            setImmediate(async () => {
+              try {
+                await requestLinkToken(patient);
+              } catch (err) {
+                console.warn(
+                  "CareContext: token request retry failed for existing context:",
+                  (err as any)?.message || err,
+                );
+              }
+            });
+          }
+        }
+      }
+
       return existingContext;
     }
 
@@ -419,20 +520,63 @@ export const createCareContextForHiType = async (
     const display = generateDisplayText(hiTypeDisplay, department, visitDate);
 
     // Create care context record with single hiType
-    const careContext = await CareContextModel.create({
-      patientId,
-      visitId,
-      careContextReference,
-      patientReference: patientRef,
-      abhaAddress: patient.abhaaddress || "",
-      display,
-      hiType,
-      hiTypes: [hiType],
-      linkingStatus: CareContextStatus.PENDING,
-      linkAttempts: 0,
-      facilityId: facilityId,
-      facilityName: facilityName,
-    });
+    // Retry with new reference if duplicate key error (E11000) occurs
+    let careContext: ICareContext;
+    let retries = 3;
+    while (true) {
+      try {
+        const ref =
+          retries < 3
+            ? await generateCareContextReference(patientRef, visitDate)
+            : careContextReference;
+        careContext = await CareContextModel.create({
+          patientId,
+          visitId,
+          careContextReference: ref,
+          patientReference: patientRef,
+          abhaAddress: patient.abhaaddress || "",
+          display,
+          hiType,
+          hiTypes: [hiType],
+          linkingStatus: CareContextStatus.PENDING,
+          linkAttempts: 0,
+          facilityId: facilityId,
+          facilityName: facilityName,
+        });
+        break;
+      } catch (createErr: any) {
+        if (
+          createErr?.code === 11000 &&
+          (createErr?.keyPattern?.patientId ||
+            createErr?.keyPattern?.visitId ||
+            String(createErr?.message || "").includes("patientId_1_visitId_1"))
+        ) {
+          console.error(
+            "CareContext: Duplicate key on (patientId, visitId) blocked creating per-hiType CareContext. " +
+              "This usually means a legacy unique index still exists in MongoDB (patientId_1_visitId_1). " +
+              "Drop that legacy unique index so one visit can have multiple HI-type contexts.",
+            {
+              patientId: String(patientId),
+              visitId: String(visitId),
+              hiType,
+              keyPattern: createErr?.keyPattern,
+            },
+          );
+          return null;
+        }
+
+        if (createErr.code === 11000 && retries > 1) {
+          retries--;
+          console.warn(
+            "CareContext: Duplicate reference collision, retrying...",
+            retries,
+            "attempts left",
+          );
+          continue;
+        }
+        throw createErr;
+      }
+    }
 
     console.log(
       "CareContext: Created for hiType",
@@ -496,28 +640,27 @@ export const addHiTypesForVisit = async (
   if (!hiTypesToAdd || hiTypesToAdd.length === 0) {
     return { updated: 0, careContext: null };
   }
-  const result = await CareContextModel.findOneAndUpdate(
-    { patientId, visitId },
-    { $addToSet: { hiTypes: { $each: hiTypesToAdd } } },
-    { new: true },
-  );
-  if (result) {
-    console.log(
-      "CareContext: Added hiTypes for visit",
-      visitId,
-      "->",
-      hiTypesToAdd,
-      "now:",
-      result.hiTypes,
-    );
-    return { updated: 1, careContext: result };
+  // Never merge multiple HI types into a single CareContext.
+  // Create/return one separate CareContext per HI type instead.
+  const uniqueTypes = Array.from(new Set(hiTypesToAdd)) as HIType[];
+  let updated = 0;
+  let lastContext: ICareContext | null = null;
+
+  for (const hiType of uniqueTypes) {
+    const ctx = await createCareContextForHiType(patientId, visitId, hiType);
+    if (ctx) {
+      updated++;
+      lastContext = ctx;
+    }
   }
-  return { updated: 0, careContext: null };
+
+  return { updated, careContext: lastContext };
 };
 
 export const linkCareContext = async (
   careContextId: Types.ObjectId | string,
   authToken?: string,
+  force: boolean = false,
 ): Promise<boolean> => {
   try {
     const careContext = await CareContextModel.findById(careContextId);
@@ -527,8 +670,9 @@ export const linkCareContext = async (
     }
 
     if (
-      careContext.linkingStatus === CareContextStatus.LINKED ||
-      careContext.linkingStatus === CareContextStatus.NOTIFIED
+      !force &&
+      (careContext.linkingStatus === CareContextStatus.LINKED ||
+        careContext.linkingStatus === CareContextStatus.NOTIFIED)
     ) {
       console.log("CareContext: Already linked", careContextId);
       return true;
@@ -604,7 +748,8 @@ export const linkCareContext = async (
               display: careContext.display,
             },
           ],
-          hiType: careContext.hiType || careContext.hiTypes[0] || "Prescription",
+          hiType:
+            careContext.hiType || careContext.hiTypes[0] || "Prescription",
           count: 1,
         },
       ],
@@ -762,6 +907,62 @@ export const notifyContext = async (
     const abdmToken = authToken || (await AbdmTokenService.getToken());
     const requestId = generateUID();
 
+    // Resolve the single correct hiType for this CareContext.
+    // For new CareContexts, careContext.hiType is already set correctly.
+    // For legacy CareContexts (no hiType, multi-value hiTypes array),
+    // detect the correct type from actual clinical data and persist it.
+    let resolvedHiType = careContext.hiType || careContext.hiTypes?.[0];
+    if (!resolvedHiType && careContext.visitId) {
+      try {
+        const detectedTypes = await detectHiTypesForVisit(careContext.visitId);
+        // Prefer the most specific type — anything other than the OPConsultation baseline
+        const specific = detectedTypes.find((t) => t !== "OPConsultation");
+        resolvedHiType =
+          specific || detectedTypes[0] || careContext.hiTypes?.[0];
+        if (resolvedHiType) {
+          // Persist so subsequent notifies are immediate (no re-detection).
+          // Also normalize legacy multi-type hiTypes to the resolved single type
+          // to avoid UI/reporting showing stale combos like "Prescription, OPConsultation".
+          await CareContextModel.updateOne(
+            { _id: careContext._id },
+            { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
+          );
+          console.log(
+            `CareContext notifyContext: Resolved hiType for legacy context ${careContext.careContextReference} → ${resolvedHiType}`,
+          );
+        }
+      } catch (detectErr: any) {
+        console.warn(
+          "CareContext notifyContext: hiType detection failed (non-blocking):",
+          detectErr.message,
+        );
+      }
+    }
+    if (!resolvedHiType) {
+      console.error(
+        "CareContext notifyContext: Unable to resolve a single hiType; skipping notify",
+        {
+          careContextId: String(careContext._id),
+          hiType: careContext.hiType,
+          hiTypes: careContext.hiTypes,
+        },
+      );
+      return false;
+    }
+
+    // Keep DB normalized as one CareContext -> one hiType.
+    if (
+      careContext.hiType !== resolvedHiType ||
+      !careContext.hiTypes ||
+      careContext.hiTypes.length !== 1 ||
+      careContext.hiTypes[0] !== resolvedHiType
+    ) {
+      await CareContextModel.updateOne(
+        { _id: careContext._id },
+        { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
+      );
+    }
+
     const payload = {
       notification: {
         patient: {
@@ -771,7 +972,7 @@ export const notifyContext = async (
           patientReference: patient.uhid || patient._id.toString(),
           careContextReference: careContext.careContextReference,
         },
-        hiTypes: careContext.hiType ? [careContext.hiType] : careContext.hiTypes,
+        hiTypes: [resolvedHiType],
         date: new Date().toISOString(),
         hip: {
           id: facilityId,
@@ -792,6 +993,18 @@ export const notifyContext = async (
       headers["X-LINK-TOKEN"] = linkToken;
     }
 
+    // Persist requestId before sending notify to avoid callback race,
+    // where ABDM callback can arrive before axios returns.
+    await CareContextModel.updateOne(
+      { _id: careContext._id },
+      {
+        $set: {
+          notifyRequestId: requestId,
+          notifyError: null,
+        },
+      },
+    );
+
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/hip/v3/link/context/notify`,
       payload,
@@ -801,18 +1014,8 @@ export const notifyContext = async (
     console.log("CareContext: context/notify response", response.status);
 
     if (response.status === 200 || response.status === 202) {
-      await CareContextModel.updateOne(
-        { _id: careContext._id },
-        {
-          $set: {
-            linkingStatus: CareContextStatus.NOTIFIED,
-            notifiedAt: new Date(),
-            notifyError: null,
-          },
-        },
-      );
       console.log(
-        "CareContext: Notified PHR apps for",
+        "CareContext: context/notify accepted (awaiting callback ack) for",
         careContext.careContextReference,
       );
       return true;
@@ -833,6 +1036,72 @@ export const notifyContext = async (
       },
     );
     return false;
+  }
+};
+
+export const handleContextNotifyCallback = async (
+  requestId: string,
+  success: boolean,
+  error?: any,
+): Promise<void> => {
+  const careContext = await CareContextModel.findOne({
+    notifyRequestId: requestId,
+  });
+  if (!careContext) {
+    console.log(
+      "CareContext: No care context found for context-notify requestId:",
+      requestId,
+    );
+    return;
+  }
+
+  if (success) {
+    await CareContextModel.updateOne(
+      { _id: careContext._id },
+      {
+        $set: {
+          linkingStatus: CareContextStatus.NOTIFIED,
+          notifiedAt: new Date(),
+          notifyError: null,
+        },
+      },
+    );
+    console.log(
+      "CareContext: Context-notify ACK success for",
+      careContext.careContextReference,
+    );
+    return;
+  }
+
+  const errMsg = String(error?.message || "");
+  const errCode = String(error?.code || "");
+  const isNotLinkedError =
+    errCode.includes("1006") || /no care context linked/i.test(errMsg);
+
+  await CareContextModel.updateOne(
+    { _id: careContext._id },
+    {
+      $set: {
+        linkingStatus: CareContextStatus.LINKED,
+        notifyError: error || { message: "Context notify callback failed" },
+      },
+    },
+  );
+
+  if (isNotLinkedError) {
+    try {
+      const abdmToken = await AbdmTokenService.getToken();
+      await linkCareContext(careContext._id, abdmToken, true);
+      console.warn(
+        "CareContext: on-context-notify returned ABDM-1006; forced re-link triggered for",
+        careContext.careContextReference,
+      );
+    } catch (relinkErr: any) {
+      console.error(
+        "CareContext: Failed to force re-link after ABDM-1006:",
+        relinkErr?.message || relinkErr,
+      );
+    }
   }
 };
 
@@ -999,8 +1268,31 @@ export const detectHiTypesForVisit = async (
 ): Promise<HIType[]> => {
   const hiTypes: Set<HIType> = new Set();
 
-  // Always include OPConsultation as base (every visit is a consultation)
-  hiTypes.add("OPConsultation");
+  const hasImmunizationEvidence = (imm: any): boolean => {
+    if (!imm || typeof imm !== "object") return false;
+
+    // Legacy flat fields
+    if (
+      imm.covid19Dose1Date ||
+      imm.covid19Dose2Date ||
+      imm.tetanusBoosterDate ||
+      imm.fluVaccineDate
+    ) {
+      return true;
+    }
+
+    // Nested fields
+    if (
+      imm.covid19Dose1?.date ||
+      imm.covid19Dose2?.date ||
+      imm.tetanusBooster?.date ||
+      imm.fluVaccine?.date
+    ) {
+      return true;
+    }
+
+    return false;
+  };
 
   const [prescription, soapNotes, labReport, dischargeSummary, assessment] =
     await Promise.all([
@@ -1015,6 +1307,25 @@ export const detectHiTypesForVisit = async (
     hiTypes.add("Prescription");
   }
 
+  // OPConsultation should be present only when OP consultation clinical data exists.
+  // Do not auto-add it for every visit, otherwise unrelated contexts (e.g. DiagnosticReport)
+  // get mislabeled as "Prescription, OPConsultation" in downstream views.
+  if (
+    (soapNotes &&
+      (soapNotes.subjective ||
+        soapNotes.objective ||
+        soapNotes.assessment ||
+        soapNotes.plan)) ||
+    (assessment &&
+      (assessment.symptomsComplaints ||
+        (assessment.medicalHistory?.length ?? 0) > 0 ||
+        (assessment.surgicalHistory?.length ?? 0) > 0 ||
+        (assessment.personalHistory?.length ?? 0) > 0 ||
+        (assessment.additionalDetails?.length ?? 0) > 0))
+  ) {
+    hiTypes.add("OPConsultation");
+  }
+
   if (labReport && (labReport.reports?.length ?? 0) > 0) {
     hiTypes.add("DiagnosticReport");
   }
@@ -1026,7 +1337,7 @@ export const detectHiTypesForVisit = async (
     hiTypes.add("DischargeSummary");
   }
 
-  if (assessment?.immunization) {
+  if (hasImmunizationEvidence(assessment?.immunization)) {
     hiTypes.add("ImmunizationRecord");
   }
 
@@ -1286,6 +1597,7 @@ export const CareContextService = {
 
   // Callback Handlers
   handleLinkCallback,
+  handleContextNotifyCallback,
 
   // Queries
   getCareContextsByPatient,

@@ -23,6 +23,32 @@ const isValidDate = (dateString: string): boolean => {
   return !isNaN(date.getTime());
 };
 
+const hasImmunizationEvidence = (imm: any): boolean => {
+  if (!imm || typeof imm !== "object") return false;
+
+  // Legacy flat fields
+  if (
+    imm.covid19Dose1Date ||
+    imm.covid19Dose2Date ||
+    imm.tetanusBoosterDate ||
+    imm.fluVaccineDate
+  ) {
+    return true;
+  }
+
+  // Nested v2 fields
+  if (
+    imm.covid19Dose1?.date ||
+    imm.covid19Dose2?.date ||
+    imm.tetanusBooster?.date ||
+    imm.fluVaccine?.date
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
 const resolvePatientAndVisitId = async (
   visitId: string,
   patientIdParam?: string,
@@ -69,18 +95,9 @@ const saveAndCreateCareContext = async (
     hiType,
   );
   if (!careContext) return null;
-  // Trigger context/notify for ABDM
-  CareContextService.notifyContext(careContext as any).then((notified) => {
-    if (notified)
-      console.log(
-        "Visit clinical: context/notify sent after creating CareContext for",
-        hiType,
-      );
-    else
-      console.warn(
-        "Visit clinical: context/notify failed (e.g. no link token).",
-      );
-  });
+
+  // Do not notify here. Notify must happen only after ABDM confirms link success
+  // in handleLinkCallback -> notifyContext, otherwise ABDM returns ABDM-1006.
   return { careContext, created: true };
 };
 
@@ -135,21 +152,24 @@ export const recordPrescription = async (req: Request, res: Response) => {
 
     const result = await saveAndCreateCareContext(resolved, "Prescription");
     if (!result) {
-      return res.status(STATUS_CODE.NOT_FOUND).json({
-        status: "error",
-        message:
-          "No care context found for this visit. Ensure the patient has ABHA and a care context was created.",
-      });
+      console.warn(
+        "Visit clinical: Prescription saved but CareContext creation failed for visit",
+        resolved.visitId,
+        "- will retry on next token/link event.",
+      );
     }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      message:
-        "Prescription saved and linked. ABDM context/notify sent when link token is available.",
-      data: {
-        careContextId: result.careContext?._id,
-        hiTypes: result.careContext?.hiTypes,
-      },
+      message: result
+        ? "Prescription saved and linked. ABDM context/notify sent when link token is available."
+        : "Prescription saved. CareContext will be linked when ABHA link token is available.",
+      data: result
+        ? {
+            careContextId: result.careContext?._id,
+            hiType: result.careContext?.hiType,
+          }
+        : undefined,
     });
   } catch (error: any) {
     console.error("Visit clinical recordPrescription error:", error);
@@ -194,20 +214,26 @@ export const recordSoapNotes = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndCreateCareContext(resolved, "HealthDocumentRecord");
+    const result = await saveAndCreateCareContext(resolved, "OPConsultation");
     if (!result) {
-      return res.status(STATUS_CODE.NOT_FOUND).json({
-        status: "error",
-        message:
-          "No care context found for this visit. Ensure the patient has ABHA and a care context was created.",
-      });
+      console.warn(
+        "Visit clinical: SOAP notes saved but CareContext creation failed for visit",
+        resolved.visitId,
+        "- will retry on next token/link event.",
+      );
     }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      message:
-        "SOAP notes saved and linked. ABDM context/notify sent when link token is available.",
-      // data: { careContextId: result.careContext?._id, hiTypes: result.careContext?.hiTypes },
+      message: result
+        ? "SOAP notes saved and linked. ABDM context/notify sent when link token is available."
+        : "SOAP notes saved. CareContext will be linked when ABHA link token is available.",
+      data: result
+        ? {
+            careContextId: result.careContext?._id,
+            hiType: result.careContext?.hiType,
+          }
+        : undefined,
     });
   } catch (error: any) {
     console.error("Visit clinical recordSoapNotes error:", error);
@@ -270,35 +296,52 @@ export const recordLabResults = async (req: Request, res: Response) => {
         }))
       : [];
 
+    // Step 1: Remove any existing entries for the same testType(s) being submitted,
+    // so re-saving a test updates it rather than duplicating it.
+    const incomingTestTypes = reports
+      .map((r) => r.testType)
+      .filter((t): t is string => Boolean(t));
+
+    if (incomingTestTypes.length > 0) {
+      await VisitLabReportModel.updateOne({ visitId: resolved.visitId }, {
+        $pull: { reports: { testType: { $in: incomingTestTypes } } },
+      } as any);
+    }
+
+    // Step 2: Append the new/updated reports. Using $push+$each so that tests
+    // submitted in separate API calls accumulate (one call per test type is fine).
     await VisitLabReportModel.findOneAndUpdate(
       { visitId: resolved.visitId },
       {
-        $set: {
+        $setOnInsert: {
           visitId: resolved.visitId,
           patientId: resolved.patientId,
-          reports,
         },
+        $push: { reports: { $each: reports } } as any,
       },
       { upsert: true, new: true },
     );
 
     const result = await saveAndCreateCareContext(resolved, "DiagnosticReport");
     if (!result) {
-      return res.status(STATUS_CODE.NOT_FOUND).json({
-        status: "error",
-        message:
-          "No care context found for this visit. Ensure the patient has ABHA and a care context was created.",
-      });
+      console.warn(
+        "Visit clinical: Lab results saved but CareContext creation failed for visit",
+        resolved.visitId,
+        "- will retry on next token/link event.",
+      );
     }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      message:
-        "Lab results saved and linked. ABDM context/notify sent when link token is available.",
-      // data: {
-      //   careContextId: result.careContext?._id,
-      //   hiTypes: result.careContext?.hiTypes,
-      // },
+      message: result
+        ? "Lab results saved and linked. ABDM context/notify sent when link token is available."
+        : "Lab results saved. CareContext will be linked when ABHA link token is available.",
+      data: result
+        ? {
+            careContextId: result.careContext?._id,
+            hiType: result.careContext?.hiType,
+          }
+        : undefined,
     });
   } catch (error: any) {
     console.error("Visit clinical recordLabResults error:", error);
@@ -389,21 +432,24 @@ export const recordDischargeSummary = async (req: Request, res: Response) => {
 
     const result = await saveAndCreateCareContext(resolved, "DischargeSummary");
     if (!result) {
-      return res.status(STATUS_CODE.NOT_FOUND).json({
-        status: "error",
-        message:
-          "No care context found for this visit. Ensure the patient has ABHA and a care context was created.",
-      });
+      console.warn(
+        "Visit clinical: Discharge summary saved but CareContext creation failed for visit",
+        resolved.visitId,
+        "- will retry on next token/link event.",
+      );
     }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      message:
-        "Discharge summary saved and linked. ABDM context/notify sent when link token is available.",
-      data: {
-        careContextId: result.careContext?._id,
-        hiTypes: result.careContext?.hiTypes,
-      },
+      message: result
+        ? "Discharge summary saved and linked. ABDM context/notify sent when link token is available."
+        : "Discharge summary saved. CareContext will be linked when ABHA link token is available.",
+      data: result
+        ? {
+            careContextId: result.careContext?._id,
+            hiType: result.careContext?.hiType,
+          }
+        : undefined,
     });
   } catch (error: any) {
     console.error("Visit clinical recordDischargeSummary error:", error);
@@ -496,6 +542,10 @@ export const recordAssessment = async (req: Request, res: Response) => {
         covid19Dose2Date,
         tetanusBoosterDate,
         fluVaccineDate,
+        covid19Dose1,
+        covid19Dose2,
+        tetanusBooster,
+        fluVaccine,
       } = body.immunization as any;
 
       const toDateOrError = (value: any, field: string): Date | undefined => {
@@ -523,6 +573,49 @@ export const recordAssessment = async (req: Request, res: Response) => {
       immunization.fluVaccineDate = toDateOrError(
         fluVaccineDate,
         "immunization.fluVaccineDate",
+      );
+
+      const normalizeDose = (dose: any, field: string) => {
+        if (!dose || typeof dose !== "object") return undefined;
+        const doseNumber =
+          typeof dose.doseNumber === "number"
+            ? dose.doseNumber
+            : typeof dose.doseNumber === "string" &&
+                dose.doseNumber.trim() !== ""
+              ? Number(dose.doseNumber)
+              : undefined;
+
+        if (doseNumber !== undefined && Number.isNaN(doseNumber)) {
+          validationErrors.push(`${field}.doseNumber must be a valid number.`);
+        }
+
+        return {
+          ...(dose.date
+            ? { date: toDateOrError(dose.date, `${field}.date`) }
+            : {}),
+          ...(dose.manufacturer ? { manufacturer: dose.manufacturer } : {}),
+          ...(dose.lotNumber ? { lotNumber: dose.lotNumber } : {}),
+          ...(doseNumber !== undefined && !Number.isNaN(doseNumber)
+            ? { doseNumber }
+            : {}),
+        };
+      };
+
+      immunization.covid19Dose1 = normalizeDose(
+        covid19Dose1,
+        "immunization.covid19Dose1",
+      );
+      immunization.covid19Dose2 = normalizeDose(
+        covid19Dose2,
+        "immunization.covid19Dose2",
+      );
+      immunization.tetanusBooster = normalizeDose(
+        tetanusBooster,
+        "immunization.tetanusBooster",
+      );
+      immunization.fluVaccine = normalizeDose(
+        fluVaccine,
+        "immunization.fluVaccine",
       );
     }
 
@@ -573,7 +666,10 @@ export const recordAssessment = async (req: Request, res: Response) => {
       hiTypes.push("WellnessRecord");
     }
 
-    if (immunization || body?.immunization) {
+    // Create ImmunizationRecord CareContext when any immunization date exists
+    // (supports both legacy flat fields and nested dose objects).
+    const immData = immunization || (body?.immunization as any);
+    if (hasImmunizationEvidence(immData)) {
       hiTypes.push("ImmunizationRecord");
     }
 
@@ -591,17 +687,22 @@ export const recordAssessment = async (req: Request, res: Response) => {
       hiTypes.push("HealthDocumentRecord");
     }
 
-    let contextData: any = null;
-    if (hiTypes.length > 0) {
+    const uniqueHiTypes = Array.from(new Set(hiTypes)) as HIType[];
+    const createdCareContexts: Array<{ careContextId: any; hiType: HIType }> =
+      [];
+    const failedHiTypes: HIType[] = [];
+
+    if (uniqueHiTypes.length > 0) {
       // Create a separate CareContext for each applicable HI type
-      for (const hiType of hiTypes) {
+      for (const hiType of uniqueHiTypes) {
         const linkResult = await saveAndCreateCareContext(resolved, hiType);
         if (linkResult?.careContext) {
-          contextData = {
+          createdCareContexts.push({
             careContextId: linkResult.careContext._id,
             hiType: linkResult.careContext.hiType,
-          };
+          });
         } else {
+          failedHiTypes.push(hiType);
           console.warn(
             `Visit clinical: Data saved but CareContext creation skipped for ${hiType} (no patient context found).`,
           );
@@ -612,7 +713,10 @@ export const recordAssessment = async (req: Request, res: Response) => {
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: "Assessment saved successfully.",
-      data: contextData,
+      data: {
+        createdCareContexts,
+        failedHiTypes,
+      },
     });
   } catch (error: any) {
     console.error("Visit clinical recordAssessment error:", error);
@@ -641,20 +745,83 @@ export const recordImmunization = async (req: Request, res: Response) => {
       covid19Dose2Date?: string;
       tetanusBoosterDate?: string;
       fluVaccineDate?: string;
+      covid19Dose1?: {
+        date?: string;
+        manufacturer?: string;
+        lotNumber?: string;
+        doseNumber?: number;
+      };
+      covid19Dose2?: {
+        date?: string;
+        manufacturer?: string;
+        lotNumber?: string;
+        doseNumber?: number;
+      };
+      tetanusBooster?: {
+        date?: string;
+        manufacturer?: string;
+        lotNumber?: string;
+        doseNumber?: number;
+      };
+      fluVaccine?: {
+        date?: string;
+        manufacturer?: string;
+        lotNumber?: string;
+        doseNumber?: number;
+      };
     };
+
+    const parseEntry = (entry?: {
+      date?: string;
+      manufacturer?: string;
+      lotNumber?: string;
+      doseNumber?: number;
+    }) => {
+      if (!entry) return undefined;
+      const doseNumber =
+        typeof entry.doseNumber === "number"
+          ? entry.doseNumber
+          : typeof (entry as any).doseNumber === "string" &&
+              String((entry as any).doseNumber).trim() !== ""
+            ? Number((entry as any).doseNumber)
+            : undefined;
+
+      return {
+        date: entry.date ? new Date(entry.date) : undefined,
+        manufacturer: entry.manufacturer?.trim() || undefined,
+        lotNumber: entry.lotNumber?.trim() || undefined,
+        doseNumber:
+          doseNumber !== undefined && !Number.isNaN(doseNumber)
+            ? doseNumber
+            : undefined,
+      };
+    };
+
     const immunization = {
       covid19Dose1Date: body?.covid19Dose1Date
         ? new Date(body.covid19Dose1Date)
-        : undefined,
+        : body?.covid19Dose1?.date
+          ? new Date(body.covid19Dose1.date)
+          : undefined,
       covid19Dose2Date: body?.covid19Dose2Date
         ? new Date(body.covid19Dose2Date)
-        : undefined,
+        : body?.covid19Dose2?.date
+          ? new Date(body.covid19Dose2.date)
+          : undefined,
       tetanusBoosterDate: body?.tetanusBoosterDate
         ? new Date(body.tetanusBoosterDate)
-        : undefined,
+        : body?.tetanusBooster?.date
+          ? new Date(body.tetanusBooster.date)
+          : undefined,
       fluVaccineDate: body?.fluVaccineDate
         ? new Date(body.fluVaccineDate)
-        : undefined,
+        : body?.fluVaccine?.date
+          ? new Date(body.fluVaccine.date)
+          : undefined,
+      covid19Dose1: parseEntry(body?.covid19Dose1),
+      covid19Dose2: parseEntry(body?.covid19Dose2),
+      tetanusBooster: parseEntry(body?.tetanusBooster),
+      fluVaccine: parseEntry(body?.fluVaccine),
     };
 
     await VisitAssessmentModel.findOneAndUpdate(
@@ -669,23 +836,29 @@ export const recordImmunization = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    const result = await saveAndCreateCareContext(resolved, "ImmunizationRecord");
+    const result = await saveAndCreateCareContext(
+      resolved,
+      "ImmunizationRecord",
+    );
     if (!result) {
-      return res.status(STATUS_CODE.NOT_FOUND).json({
-        status: "error",
-        message:
-          "No care context found for this visit. Ensure the patient has ABHA and a care context was created.",
-      });
+      console.warn(
+        "Visit clinical: Immunization saved but CareContext creation failed for visit",
+        resolved.visitId,
+        "- will retry on next token/link event.",
+      );
     }
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      message:
-        "Immunization recorded and linked. ABDM context/notify sent when link token is available.",
-      data: {
-        careContextId: result.careContext?._id,
-        hiTypes: result.careContext?.hiTypes,
-      },
+      message: result
+        ? "Immunization recorded and linked. ABDM context/notify sent when link token is available."
+        : "Immunization recorded. CareContext will be linked when ABHA link token is available.",
+      data: result
+        ? {
+            careContextId: result.careContext?._id,
+            hiType: result.careContext?.hiType,
+          }
+        : undefined,
     });
   } catch (error: any) {
     console.error("Visit clinical recordImmunization error:", error);

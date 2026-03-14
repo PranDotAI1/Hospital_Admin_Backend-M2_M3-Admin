@@ -23,6 +23,7 @@ import {
   FhirBundleService,
   ICombinedBundleOptionalData,
 } from "./fhir.bundle.service";
+
 import {
   buildDataPushPayload,
   ABDMKeyMaterial,
@@ -83,7 +84,10 @@ const acknowledgeHealthInfoRequest = async (
   authToken: string,
 ): Promise<boolean> => {
   try {
+    const outboundRequestId = generateUID();
     const payload = {
+      requestId: outboundRequestId,
+      timestamp: new Date().toISOString(),
       hiRequest: {
         transactionId: request.transactionId,
         sessionStatus: "ACKNOWLEDGED",
@@ -93,24 +97,29 @@ const acknowledgeHealthInfoRequest = async (
       },
     };
 
-    const outboundRequestId = generateUID();
-    const response = await axios.post(
-      `${process.env.ABDM_BASE_URL}/hiecm/data-flow/v3/health-information/hip/on-request`,
-      payload,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "REQUEST-ID": outboundRequestId,
-          TIMESTAMP: new Date().toISOString(),
-          "X-CM-ID": X_CM_ID,
-          "X-HIP-ID": X_HIP_ID || facilityId,
-          Authorization: authToken,
-        },
-      },
+    console.log(
+      `${LOG_PREFIX} Sending on-request ACK: transactionId=${request.transactionId}, response.requestId=${originalRequestId}, outboundRequestId=${outboundRequestId}`,
     );
 
+    const ackUrl = `${process.env.ABDM_BASE_URL}${ENDPOINTS.HEALTH_INFO_HIP_ON_REQUEST}`;
+    console.log(`${LOG_PREFIX} on-request ACK URL: ${ackUrl}`);
     console.log(
-      `${LOG_PREFIX} on-request acknowledged, status: ${response.status}`,
+      `${LOG_PREFIX} on-request ACK payload: ${JSON.stringify(payload)}`,
+    );
+
+    const response = await axios.post(ackUrl, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        "REQUEST-ID": outboundRequestId,
+        TIMESTAMP: new Date().toISOString(),
+        "X-CM-ID": X_CM_ID,
+        "X-HIP-ID": X_HIP_ID || facilityId,
+        Authorization: authToken,
+      },
+    });
+
+    console.log(
+      `${LOG_PREFIX} on-request acknowledged, status: ${response.status}, responseBody: ${JSON.stringify(response.data)}`,
     );
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
@@ -122,7 +131,10 @@ const acknowledgeHealthInfoRequest = async (
     if (status === 403 && authToken) {
       try {
         const sessionToken = await AbdmTokenService.getToken();
+        const retryRequestId = generateUID();
         const retryPayload = {
+          requestId: retryRequestId,
+          timestamp: new Date().toISOString(),
           hiRequest: {
             transactionId: request.transactionId,
             sessionStatus: "ACKNOWLEDGED",
@@ -130,12 +142,12 @@ const acknowledgeHealthInfoRequest = async (
           response: { requestId: originalRequestId },
         };
         const retryResponse = await axios.post(
-          `${process.env.ABDM_BASE_URL}/hiecm/data-flow/v3/health-information/hip/on-request`,
+          `${process.env.ABDM_BASE_URL}${ENDPOINTS.HEALTH_INFO_HIP_ON_REQUEST}`,
           retryPayload,
           {
             headers: {
               "Content-Type": "application/json",
-              "REQUEST-ID": generateUID(),
+              "REQUEST-ID": retryRequestId,
               TIMESTAMP: new Date().toISOString(),
               "X-CM-ID": X_CM_ID,
               "X-HIP-ID": X_HIP_ID || facilityId,
@@ -290,8 +302,15 @@ const getOptionalDataForCareContext = async (
   const visitId = careContext.visitId;
   if (!visitId) return undefined;
 
-  // Helper to check if we should fetch specific data based on consent
+  // For per-type CareContexts (new model), use the careContext's own hiType as the data constraint.
+  // For legacy multi-type CareContexts, fall back to consent-based filtering.
+  const careContextType = careContext.hiType;
   const shouldFetch = (relatedHiTypes: string[]) => {
+    if (careContextType) {
+      // Per-type CareContext: only fetch data relevant to this specific HI type
+      return relatedHiTypes.includes(careContextType);
+    }
+    // Legacy CareContext: use consent-based filtering
     if (!consentedHiTypes || consentedHiTypes.length === 0) return true;
     return relatedHiTypes.some((t) => consentedHiTypes.includes(t));
   };
@@ -364,7 +383,15 @@ const getOptionalDataForCareContext = async (
         (dischargeSummary.dischargeMedications?.length ?? 0) > 0)) ||
     (assessment &&
       ((assessment.vitals && Object.keys(assessment.vitals).length > 0) ||
-        assessment.immunization ||
+        (assessment.immunization &&
+          (assessment.immunization.covid19Dose1Date ||
+            assessment.immunization.covid19Dose2Date ||
+            assessment.immunization.tetanusBoosterDate ||
+            assessment.immunization.fluVaccineDate ||
+            assessment.immunization.covid19Dose1?.date ||
+            assessment.immunization.covid19Dose2?.date ||
+            assessment.immunization.tetanusBooster?.date ||
+            assessment.immunization.fluVaccine?.date)) ||
         assessment.symptomsComplaints ||
         (assessment.documentUploads && assessment.documentUploads.length > 0) ||
         (assessment.medicalHistory?.length ?? 0) > 0 ||
@@ -578,7 +605,7 @@ const pushHealthData = async (
     const effectiveHiType = careContext.hiType; // single type for new per-type CareContexts
     const careContextHiTypes = effectiveHiType
       ? [effectiveHiType]
-      : (careContext.hiTypes || []);
+      : careContext.hiTypes || [];
 
     // Intersect with consented HI types if consent provides them
     const allowedHiTypes =
@@ -586,7 +613,9 @@ const pushHealthData = async (
         ? (careContextHiTypes.filter((t) =>
             consentedHiTypes.includes(t),
           ) as import("../models/CareContext").HIType[])
-        : (effectiveHiType ? [effectiveHiType] as import("../models/CareContext").HIType[] : undefined);
+        : effectiveHiType
+          ? ([effectiveHiType] as import("../models/CareContext").HIType[])
+          : undefined;
 
     // Skip if consent doesn't include any of this CareContext's HI types
     if (allowedHiTypes && allowedHiTypes.length === 0) {
@@ -596,19 +625,42 @@ const pushHealthData = async (
       return false;
     }
 
-    const fhirBundle =
-      await FhirBundleService.generateCombinedBundleForCareContext(
-        patient,
-        visit as any,
-        careContext,
-        optionalData,
-        allowedHiTypes,
-        browser,
-      );
-    const fhirBundleJson = JSON.stringify(fhirBundle);
+    // Both per-HI-type and legacy CareContexts use the proven combined bundle generator.
+    // For per-HI-type: pass [hiType] as allowedHiTypes to filter to just that type.
+    // For legacy: pass consent-derived allowedHiTypes for multi-type filtering.
+    const hiTypeFilter = effectiveHiType ? [effectiveHiType] : allowedHiTypes;
+    let fhirBundle: any;
     console.log(
-      `${LOG_PREFIX} FHIR bundle generated: ${fhirBundleJson.length} chars, ${fhirBundle.entry?.length || 0} entries`,
+      `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} (hiTypeFilter: ${JSON.stringify(hiTypeFilter)})`,
     );
+    fhirBundle = await FhirBundleService.generateCombinedBundleForCareContext(
+      patient,
+      visit as any,
+      careContext,
+      optionalData,
+      hiTypeFilter,
+      browser,
+    );
+    const fhirBundleJson = JSON.stringify(fhirBundle);
+    const entryCount = fhirBundle.entry?.length || 0;
+    console.log(
+      `${LOG_PREFIX} FHIR bundle generated: ${fhirBundleJson.length} chars, ${entryCount} entries`,
+    );
+
+    // Guard: ImmunizationRecord bundles need at least one Immunization resource
+    // (base bundle has 5 entries: Composition + Patient + Org + Practitioner + Encounter)
+    if (
+      effectiveHiType === "ImmunizationRecord" &&
+      entryCount <= 5 &&
+      !fhirBundle.entry?.some(
+        (e: any) => e.resource?.resourceType === "Immunization",
+      )
+    ) {
+      console.warn(
+        `${LOG_PREFIX} Skipping push for ${careContext.careContextReference}: ImmunizationRecord bundle has no Immunization resources`,
+      );
+      return false;
+    }
 
     // Build encrypted payload (can throw if keyMaterial is invalid)
     let payload: any;
@@ -639,7 +691,6 @@ const pushHealthData = async (
       `${LOG_PREFIX} TransactionId: ${transactionId}, CareContext: ${careContext.careContextReference}`,
     );
 
-    // Push to HIU dataPushUrl (via ABDM gateway)
     const response = await axios.post(dataPushUrl, payload, {
       headers: {
         "Content-Type": "application/json",
@@ -671,15 +722,11 @@ const pushHealthData = async (
 
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
-    // Detailed error logging for debugging
+    // Outer catch for non-push errors (patient lookup, FHIR generation, encryption)
     console.error(
       `${LOG_PREFIX} Data push failed for ${careContext.careContextReference}:<>`,
       error.response?.status,
-      error.response?.statusText,
-    );
-    console.error(
-      `${LOG_PREFIX} Error response body:`,
-      JSON.stringify(error.response?.data || error.message),
+      error.response?.statusText || error.message,
     );
     if (!error.response) {
       console.error(`${LOG_PREFIX} Error stack:`, error.stack);
@@ -887,7 +934,7 @@ const processHealthInfoRequest = async (
     }
 
     // Step 2: Find care contexts for this consent
-    const careContexts = await findCareContextsForConsent(consentId, dateRange);
+    careContexts = await findCareContextsForConsent(consentId, dateRange);
 
     if (careContexts.length === 0) {
       console.warn(
