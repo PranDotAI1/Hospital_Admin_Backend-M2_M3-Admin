@@ -18,6 +18,8 @@ export interface IConsentRequest extends Document {
   patientName?: string;
   abhaAddress?: string;
   abhaNumber?: string;
+  mobile?: string;
+  authMethods?: string[];
   gender?: string;
   dob?: string | Date;
   facilityName?: string;
@@ -102,6 +104,8 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
     patientName: { type: String },
     abhaAddress: { type: String },
     abhaNumber: { type: String },
+    mobile: { type: String },
+    authMethods: [{ type: String }],
     gender: { type: String },
     dob: { type: Schema.Types.Mixed },
     facilityName: { type: String },

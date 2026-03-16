@@ -60,6 +60,7 @@ export const consentInitRequest = async (req: Request, res: Response) => {
       purposeCode: body.purposeCode,
       purposeText: body.purposeText,
       requestPurpose: body.requestPurpose,
+      patientData: body.patientData,
     });
 
     console.log(

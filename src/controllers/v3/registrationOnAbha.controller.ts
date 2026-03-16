@@ -217,6 +217,7 @@ export const consentRequestInitiate = async (req: any, res: any, token?: any) =>
             requesterName: input.requesterName,
             purposeCode: input.purposeCode,
             purposeText: input.purposeText,
+            patientData: input.patientData,
         });
 
         console.log("[CONSENT_M3] Consent request initiated:", result.requestId);

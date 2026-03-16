@@ -1205,6 +1205,8 @@ export interface ConsentInitParams {
   purposeText?: string;
   /** HIMS = for our hospital to fetch and hold in external records; PHR = for patient's PHR (pull records). Default HIMS. */
   requestPurpose?: "HIMS" | "PHR";
+  /** Complete patient data payload from ABHA profile search API */
+  patientData?: any;
 }
 
 /**
@@ -1263,6 +1265,58 @@ export const initiateConsentRequest = async (
     `${LOG_PREFIX} Initiating consent request for patient ${params.abhaId}`,
   );
 
+  // Sync Patient Profile Data
+  if (params.patientData) {
+    try {
+      const data = params.patientData;
+      const cleanAbhaNumber = data.healthIdNumber ? data.healthIdNumber.replace(/-/g, "") : undefined;
+      const formattedAbhaNumber = cleanAbhaNumber && cleanAbhaNumber.length === 14
+        ? `${cleanAbhaNumber.slice(0, 2)}-${cleanAbhaNumber.slice(2, 6)}-${cleanAbhaNumber.slice(6, 10)}-${cleanAbhaNumber.slice(10, 14)}`
+        : undefined;
+
+      const filter = [];
+      if (formattedAbhaNumber) filter.push({ ABHANumber: formattedAbhaNumber });
+      if (cleanAbhaNumber) filter.push({ ABHANumber: cleanAbhaNumber });
+      if (data.abhaAddress) filter.push({ abhaaddress: data.abhaAddress });
+      if (params.abhaId) filter.push({ abhaaddress: params.abhaId }, { uhid: params.abhaId });
+
+      let patientName = data.fullName;
+      let f_name = patientName;
+      let l_name = "";
+      if (patientName && patientName.includes(" ")) {
+        const parts = patientName.split(" ");
+        l_name = parts.pop() || "";
+        f_name = parts.join(" ");
+      }
+
+      if (filter.length > 0) {
+        let existingPatient = await PatientModel.findOne({ $or: filter });
+        
+        let updatePayload: any = {};
+        if (data.fullName) updatePayload.name = data.fullName;
+        if (f_name) updatePayload.f_name = f_name;
+        if (l_name) updatePayload.l_name = l_name;
+        if (data.mobile) updatePayload.mobile = data.mobile;
+        if (formattedAbhaNumber) updatePayload.ABHANumber = formattedAbhaNumber;
+        if (data.abhaAddress) updatePayload.abhaaddress = data.abhaAddress;
+        if (data.status) updatePayload.status = data.status;
+
+        if (existingPatient) {
+          await PatientModel.updateOne({ _id: existingPatient._id }, { $set: updatePayload });
+          console.log(`${LOG_PREFIX} Updated existing patient profile for ABHA ID: ${params.abhaId}`);
+        } else {
+          await PatientModel.create({
+            ...updatePayload,
+            gender: "Unknown", // Default as ABDM profile may not provide this in this step
+          });
+          console.log(`${LOG_PREFIX} Created new patient profile for ABHA ID: ${params.abhaId}`);
+        }
+      }
+    } catch (err: any) {
+      console.error(`${LOG_PREFIX} Error syncing patient data:`, err.message);
+    }
+  }
+
   const response = await axios.post(
     `${process.env.ABDM_BASE_URL}${ENDPOINTS.REQ_INIT}`,
     payload,
@@ -1283,6 +1337,18 @@ export const initiateConsentRequest = async (
   // Save the consent request to DB
   const patientDetails = await lookupPatientDetails(params.abhaId);
 
+  // Merge provided patientData with lookup Details for ConsentRequest
+  let finalPatientDetails: Record<string, any> = { ...patientDetails };
+  let authMethods: string[] | undefined = undefined;
+  
+  if (params.patientData) {
+     if (params.patientData.fullName) finalPatientDetails.patientName = params.patientData.fullName;
+     if (params.patientData.healthIdNumber) finalPatientDetails.abhaNumber = params.patientData.healthIdNumber;
+     if (params.patientData.abhaAddress) finalPatientDetails.abhaAddress = params.patientData.abhaAddress;
+     if (params.patientData.mobile) finalPatientDetails.mobile = params.patientData.mobile;
+     if (params.patientData.authMethods) authMethods = params.patientData.authMethods;
+  }
+
   // --- Validate & Clamp dataEraseAt ---
   const MAX_EXPIRY_YEARS = 5;
   const maxDate = new Date();
@@ -1301,7 +1367,8 @@ export const initiateConsentRequest = async (
     consentRequestId: requestId,
     status: "INITIATED",
     patientAbhaId: params.abhaId,
-    ...patientDetails,
+    ...finalPatientDetails,
+    authMethods,
     facilityName,
     hiuId: params.hiuId,
     requestPurpose: params.requestPurpose,
