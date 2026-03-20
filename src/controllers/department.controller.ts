@@ -5,7 +5,7 @@ import { DepartmentModel } from "../models/Department";
 
 export const departmentList = async (req: any, res: any) => {
     try {
-        let { page, limit = 2 } = req.query;
+        let { page, limit = 30 } = req.query;
 
         let offset = page > 0 ? (page - 1) * limit : 0;
         let departments = await DepartmentModel.aggregate([

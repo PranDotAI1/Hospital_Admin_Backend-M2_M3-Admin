@@ -43,12 +43,16 @@ export interface IScanShareVisit extends Document {
   longitude?: string;
 
   department?: string;
+  departmentId?: Types.ObjectId;
   doctorName?: string;
+  doctorId?: Types.ObjectId;
   consultationFee?: number;
   complaint?: string;
   isEmergency?: boolean;
   payment?: IScanShareVisitPayment;
   insurance?: IScanShareVisitInsurance;
+  visitType?: string;
+  description?: string;
 
   patientId?: Types.ObjectId;
 }
@@ -116,12 +120,16 @@ const ScanShareVisitSchema = new Schema<IScanShareVisit>(
     longitude: { type: String, required: false, trim: true },
 
     department: { type: String, required: false, trim: true },
+    departmentId: { type: Schema.Types.ObjectId, ref: "Department", required: false },
     doctorName: { type: String, required: false, trim: true },
+    doctorId: { type: Schema.Types.ObjectId, ref: "Doctor", required: false },
     consultationFee: { type: Number, required: false, min: 0 },
     complaint: { type: String, required: false, trim: true },
     isEmergency: { type: Boolean, required: false, default: false },
     payment: { type: PaymentSchema, required: false },
     insurance: { type: InsuranceSchema, required: false },
+    visitType: { type: String, required: false, trim: true },
+    description: { type: String, required: false, trim: true },
 
     patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: false },
   },

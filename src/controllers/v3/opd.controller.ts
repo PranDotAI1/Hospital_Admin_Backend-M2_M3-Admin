@@ -16,7 +16,8 @@ import {
 } from "../../utils/constant";
 import { ENDPOINTS } from "../../utils/endpoints";
 import { STATUS_CODE } from "../../utils/constant";
-import { CareContextService } from "../../services/carecontext.service";
+import { DepartmentModel } from "../../models/Department";
+import { DoctorModel } from "../../models/Doctor";
 
 const getTodayDateString = (): string => {
   const today = new Date();
@@ -490,18 +491,52 @@ export const completeRegistration = async (req: Request, res: Response) => {
           : ScanShareVisitStatus.REGISTERED,
     };
 
-    const department = sanitizeString(manualFields.department, 100);
-    if (department) updateData.department = department;
+    let departmentId: Types.ObjectId | undefined;
+    let departmentName: string | undefined;
+    let doctorId: Types.ObjectId | undefined;
+    let doctorName: string | undefined;
 
-    const doctorName = sanitizeString(manualFields.doctorName, 100);
+    // 1. Resolve Department
+    const rawDept = manualFields.departmentId || manualFields.department;
+    if (rawDept) {
+      if (Types.ObjectId.isValid(rawDept)) {
+        departmentId = new Types.ObjectId(rawDept);
+        const deptDoc = await DepartmentModel.findById(departmentId).lean();
+        departmentName = deptDoc?.name;
+      } else {
+        departmentName = sanitizeString(rawDept, 100);
+      }
+    }
+
+    // 2. Resolve Doctor
+    const rawDoc = manualFields.doctorId || manualFields.doctorName || manualFields.consultingDoctorId || manualFields.consultingDoctor;
+    if (rawDoc) {
+      if (Types.ObjectId.isValid(rawDoc)) {
+        doctorId = new Types.ObjectId(rawDoc);
+        const doc = await DoctorModel.findById(doctorId).lean();
+        doctorName = doc ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim() : undefined;
+      } else {
+        doctorName = sanitizeString(rawDoc, 100);
+      }
+    }
+
+    if (departmentName) updateData.department = departmentName;
+    if (departmentId) updateData.departmentId = departmentId;
     if (doctorName) updateData.doctorName = doctorName;
+    if (doctorId) updateData.doctorId = doctorId;
 
     if (consultationFee !== undefined) {
       updateData.consultationFee = consultationFee;
     }
 
-    const complaint = sanitizeString(manualFields.complaint, 1000);
-    if (complaint) updateData.complaint = complaint;
+    const visitType = sanitizeString(manualFields.visitType, 100);
+    if (visitType) updateData.visitType = visitType;
+
+    const description = sanitizeString(manualFields.description || manualFields.complaint, 1000);
+    if (description) {
+      updateData.description = description;
+      updateData.complaint = description; // Sync with complaint for backward compatibility
+    }
 
     const isEmergency = safeBoolean(manualFields.isEmergency);
     if (isEmergency !== undefined) updateData.isEmergency = isEmergency;
@@ -590,7 +625,11 @@ export const completeRegistration = async (req: Request, res: Response) => {
           visitDate: updatedVisit.visitDate,
           visitStatus: updatedVisit.visitStatus,
           department: updatedVisit.department,
+          departmentId: updatedVisit.departmentId,
           doctorName: updatedVisit.doctorName,
+          doctorId: updatedVisit.doctorId,
+          visitType: updatedVisit.visitType,
+          description: updatedVisit.description,
         };
 
         const fullName = updatedVisit.name || scanShareVisit.name || "";

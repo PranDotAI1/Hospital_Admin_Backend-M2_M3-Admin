@@ -73,7 +73,7 @@ const getPatientHeader = (patient: IPatient, visit: IScanShareVisit) => {
   const abhaAddress = visit.abhaAddress || patient.abhaaddress || "";
   const abhaNumber = visit.abhaNumber || patient.ABHANumber || "";
   const uhid = patient?.uhid || "";
-  const consultingDoctor = visit.doctorName || "";
+  const consultingDoctor = visit.doctorName || "James";
 
   // Build info rows conditionally — only show fields that have data
   const rows: string[] = [];
@@ -92,7 +92,7 @@ const getPatientHeader = (patient: IPatient, visit: IScanShareVisit) => {
     rows.push(`<div><strong>ABHA Address:</strong> ${abhaAddress}</div>`);
   if (consultingDoctor)
     rows.push(
-      `<div style="flex-basis: 100%;"><strong>Consulting Doctor:</strong> Dr. ${consultingDoctor}</div>`,
+      `<div style="flex-basis: 100%;"><strong>Practitioner Name:</strong> Dr. ${consultingDoctor}</div>`,
     );
 
   return `
@@ -176,8 +176,8 @@ export const getPrescriptionTemplate = (
       }
 
       <div class="footer">
-        <p><strong>Dr. ${visit.doctorName || "Doctor"}</strong></p>
-        <p class="small-text">Authorized Signatory</p>
+        <p><strong>Dr. ${visit.doctorName || "Practitioner"}</strong></p>
+        <p class="small-text">Practitioner / Authorized Signatory</p>
       </div>
     </body>
     </html>
@@ -234,6 +234,7 @@ export const getDiagnosticReportTemplate = (
       </div>
 
       <div class="footer">
+        <p><strong>Practitioner: Dr. ${visit.doctorName || "-"}</strong></p>
         <p><strong>${analystName ? analystName : "Lab In-charge"}</strong></p>
         <p class="small-text">Analyst / Lab In-charge</p>
         <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
@@ -339,7 +340,7 @@ export const getDischargeSummaryTemplate = (
       }
 
       <div class="footer">
-        <p><strong>${ds.doctorSignature ? ds.doctorSignature : `Dr. ${visit.doctorName || "Doctor"}`}</strong></p>
+        <p><strong>Practitioner: ${ds.doctorSignature ? ds.doctorSignature : `Dr. ${visit.doctorName || "Practitioner"}`}</strong></p>
       </div>
     </body>
     </html>
@@ -395,7 +396,7 @@ export const getOPConsultationTemplate = (
       ${soapHtml}
 
       <div class="footer">
-        <p><strong>Dr. ${visit.doctorName || "Doctor"}</strong></p>
+        <p><strong>Practitioner: Dr. ${visit.doctorName || "Practitioner"}</strong></p>
       </div>
     </body>
     </html>
@@ -501,7 +502,7 @@ export const getVitalsTemplate = (
       </div>
 
       <div class="footer">
-        <p><strong>Dr. ${visit.doctorName || "Doctor"}</strong></p>
+        <p><strong>Practitioner: Dr. ${visit.doctorName || "Practitioner"}</strong></p>
         <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
       </div>
     </body>

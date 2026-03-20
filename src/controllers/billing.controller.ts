@@ -234,4 +234,30 @@ export const DayCareBillingController = {
       });
     }
   },
+
+  // Get billing by Visit ID
+  getBillingByVisitId: async (req: Request, res: Response) => {
+    try {
+      const { visitId } = req.params;
+
+      if (!visitId || typeof visitId !== "string" || !Types.ObjectId.isValid(visitId)) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid Visit ID format" });
+      }
+
+      const billing = await VisitDayCareBilling.findOne({
+        visitId: new Types.ObjectId(visitId),
+      }).populate("patient");
+
+      return res.status(200).json({ success: true, data: billing || null });
+    } catch (error: any) {
+      console.error("Error fetching billing by visit ID:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch billing",
+        error: error.message,
+      });
+    }
+  },
 };

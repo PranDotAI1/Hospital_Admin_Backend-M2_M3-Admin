@@ -10,6 +10,8 @@ export interface IPatientVisitRef {
   doctorName?: string;
   doctorId?: Types.ObjectId;
   consultationFee?: number;
+  visitType?: string;
+  description?: string;
 }
 
 export interface IPatientInsurance {
@@ -79,6 +81,8 @@ const PatientVisitRefSchema = new Schema<IPatientVisitRef>(
     doctorName: { type: String },
     doctorId: { type: Schema.Types.ObjectId, required: false, ref: "Doctor" },
     consultationFee: { type: Number, min: 0 },
+    visitType: { type: String },
+    description: { type: String },
   },
   { _id: false },
 );

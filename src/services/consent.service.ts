@@ -492,6 +492,30 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
           continue;
         }
 
+        if (artefact.status !== ConsentArtefactStatus.GRANTED) {
+          console.log(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Status is ${artefact.status} (not GRANTED)`,
+          );
+          continue;
+        }
+
+        const now = new Date();
+        const expiryDate =
+          artefact.expiryDate || artefact.permission?.dataEraseAt;
+        if (expiryDate && new Date(expiryDate) < now) {
+          console.log(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Consent has expired (expiry: ${new Date(expiryDate).toISOString()})`,
+          );
+          // Update status to EXPIRED if we just found out
+          if (artefact.status === ConsentArtefactStatus.GRANTED) {
+            await ConsentArtefactModel.updateOne(
+              { artefactId },
+              { $set: { status: ConsentArtefactStatus.EXPIRED } },
+            );
+          }
+          continue;
+        }
+
         const purposeCode = artefact.rawConsentDetail?.purpose?.code;
         const isPHRPull = purposeCode === "PATRQT";
 

@@ -1,7 +1,8 @@
 import { Request, Response } from "express";
 import mongoose, { Types } from "mongoose";
-import { PatientModel } from "../../models/Patient";
+import { PatientModel, IPatientVisitRef } from "../../models/Patient";
 import { ScanShareVisitModel } from "../../models/ScanShareVisit";
+
 import { STATUS_CODE } from "../../utils/constant";
 import { CareContextService } from "../../services/carecontext.service";
 import { CareContextModel, CareContextStatus } from "../../models/CareContext";
@@ -11,6 +12,9 @@ import { VisitLabReportModel } from "../../models/VisitLabReport";
 import { VisitDischargeSummaryModel } from "../../models/VisitDischargeSummary";
 import { VisitAssessmentModel } from "../../models/VisitAssessment";
 import { UHIDCounterModel } from "../../models/UHIDCounter";
+
+import { DepartmentModel } from "../../models/Department";
+import { DoctorModel } from "../../models/Doctor";
 
 const generateUHID = async (): Promise<string> => {
   const today = new Date();
@@ -61,6 +65,14 @@ const formatAbhaForStorage = (
 const normalizeNameForMatch = (name: string | undefined): string => {
   if (!name || typeof name !== "string") return "";
   return name.trim().toLowerCase().replace(/\s+/g, " ");
+};
+
+const getTodayDateString = (): string => {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
 export const registerPatient = async (req: Request, res: Response) => {
@@ -122,35 +134,32 @@ export const registerPatient = async (req: Request, res: Response) => {
     const state = sanitizeString(body.state, 50);
     const district = sanitizeString(body.district, 50);
 
-    const hasAbha = !!(abhaNumber || abhaAddress);
-
-    const abhaMatchConditions: any[] = [];
-    if (abhaNumber) {
-      const requestAbhaNorm = normalizeAbha(abhaNumber);
-      abhaMatchConditions.push(
-        { ABHANumber: abhaNumber },
-        { ABHANumber: requestAbhaNorm },
-      );
-      if (abhaNumberFormatted && abhaNumberFormatted !== abhaNumber) {
-        abhaMatchConditions.push({ ABHANumber: abhaNumberFormatted });
-      }
-    }
+    // 2) If ABHA address matches an existing patient, add a visit to that patient
+    //    (only match on abhaAddress, NOT abhaNumber — one person can have multiple ABHA addresses)
+    let existingWithAbhaAddress: any = null;
     if (abhaAddress) {
-      abhaMatchConditions.push({ abhaaddress: abhaAddress });
-    }
-
-    let existingWithAbha: any = null;
-    if (abhaMatchConditions.length > 0) {
-      existingWithAbha = await PatientModel.findOne({
-        $or: abhaMatchConditions,
+      existingWithAbhaAddress = await PatientModel.findOne({
+        abhaaddress: abhaAddress,
         isMerged: { $ne: true },
         status: { $ne: "merged" },
       });
     }
 
-    // 2) If ABHA already belongs to a patient, just add a new visit there
-    //    (do NOT create a duplicate, do NOT block with an error).
-    if (hasAbha && existingWithAbha) {
+    // Safety: if we found a match by ABHA address, also verify the ABHA numbers match
+    //         (compare normalized forms: XX-XXXX-XXXX-XXXX ↔ XXXXXXXXXXXXXX)
+    if (existingWithAbhaAddress && abhaNumber && existingWithAbhaAddress.ABHANumber) {
+      const payloadAbhaNorm = normalizeAbha(abhaNumber);
+      const existingAbhaNorm = normalizeAbha(existingWithAbhaAddress.ABHANumber);
+      if (payloadAbhaNorm && existingAbhaNorm && payloadAbhaNorm !== existingAbhaNorm) {
+        console.warn(
+          `registerPatient: ABHA address match but ABHA number mismatch! ` +
+          `Payload=${abhaNumber} vs Existing=${existingWithAbhaAddress.ABHANumber}. Skipping merge.`,
+        );
+        existingWithAbhaAddress = null; // Don't merge — create new patient instead
+      }
+    }
+
+    if (abhaAddress && existingWithAbhaAddress) {
       const consultingDoctor = sanitizeString(body.consultingDoctor, 100);
       const dept = sanitizeString(body.department, 100);
       const visitDate = new Date();
@@ -168,10 +177,20 @@ export const registerPatient = async (req: Request, res: Response) => {
         body.consultingDoctorId &&
         Types.ObjectId.isValid(body.consultingDoctorId)
       ) {
-        visitInfo.doctorId = new Types.ObjectId(body.consultingDoctorId);
+        const docId = new Types.ObjectId(body.consultingDoctorId);
+        const doc = await DoctorModel.findById(docId).lean();
+        if (doc) {
+          visitInfo.doctorId = docId;
+          visitInfo.doctorName = `${doc.firstName || ""} ${doc.lastName || ""}`.trim();
+        }
       }
       if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
-        visitInfo.departmentId = new Types.ObjectId(body.departmentId);
+        const deptId = new Types.ObjectId(body.departmentId);
+        const deptDoc = await DepartmentModel.findById(deptId).lean();
+        if (deptDoc) {
+          visitInfo.departmentId = deptId;
+          visitInfo.department = deptDoc.name;
+        }
       }
 
       const updatePayload: any = {
@@ -189,7 +208,7 @@ export const registerPatient = async (req: Request, res: Response) => {
       }
 
       const updatedPatient = await PatientModel.findByIdAndUpdate(
-        existingWithAbha._id,
+        existingWithAbhaAddress._id,
         updatePayload,
         { new: true },
       );
@@ -200,7 +219,7 @@ export const registerPatient = async (req: Request, res: Response) => {
 
       return res.status(STATUS_CODE.CREATED).json({
         status: "success",
-        message: "Existing patient found by ABHA; visit added",
+        message: "Existing patient found by ABHA address; visit added",
         data: {
           uhid: updatedPatient.uhid,
           _id: updatedPatient._id,
@@ -214,86 +233,8 @@ export const registerPatient = async (req: Request, res: Response) => {
       });
     }
 
-    // 3) Payload with NO ABHA: check mobile + name. If matches existing record,
-    //    add new visit to that record (merge). Else create new.
-    if (!hasAbha && mobile) {
-      const candidatesSameMobile = await PatientModel.find({
-        mobile,
-        isMerged: { $ne: true },
-        status: { $ne: "merged" },
-      }).lean();
-      const payloadNameNorm = normalizeNameForMatch(fullName);
-      const existingByMobileAndName = candidatesSameMobile.find((p: any) => {
-        const dbNameNorm = normalizeNameForMatch(
-          p.name || [p.f_name, p.m_name, p.l_name].filter(Boolean).join(" "),
-        );
-        return dbNameNorm && payloadNameNorm && dbNameNorm === payloadNameNorm;
-      });
-
-      if (existingByMobileAndName) {
-        const consultingDoctor = sanitizeString(body.consultingDoctor, 100);
-        const dept = sanitizeString(body.department, 100);
-        const visitDate = new Date();
-        const visitId = new Types.ObjectId();
-
-        const visitInfo: any = {
-          visitId,
-          visitDate,
-          visitStatus: "REGISTERED",
-          department: dept,
-          doctorName: consultingDoctor,
-        };
-
-        if (
-          body.consultingDoctorId &&
-          Types.ObjectId.isValid(body.consultingDoctorId)
-        ) {
-          visitInfo.doctorId = new Types.ObjectId(body.consultingDoctorId);
-        }
-        if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
-          visitInfo.departmentId = new Types.ObjectId(body.departmentId);
-        }
-
-        const updatePayload: any = {
-          $push: {
-            visits: { $each: [visitInfo], $sort: { visitDate: -1 } },
-          },
-          $inc: { totalVisits: 1 },
-          $set: { lastVisitDate: visitDate },
-        };
-
-        if (consultingDoctor) {
-          updatePayload.$set.lastVisitedDoctor = consultingDoctor;
-        }
-
-        const updatedPatient = await PatientModel.findByIdAndUpdate(
-          existingByMobileAndName._id,
-          updatePayload,
-          { new: true },
-        );
-
-        if (!updatedPatient) {
-          throw new Error("Failed to add visit to existing patient");
-        }
-
-        return res.status(STATUS_CODE.CREATED).json({
-          status: "success",
-          message: "Existing patient found by mobile and name; visit added",
-          data: {
-            uhid: updatedPatient.uhid,
-            _id: updatedPatient._id,
-            name: updatedPatient.name,
-            mobile: updatedPatient.mobile,
-            abhaLinked: !!(
-              updatedPatient.ABHANumber || updatedPatient.abhaaddress
-            ),
-            visit: visitInfo,
-          },
-        });
-      }
-    }
-
-    // 4) No suitable existing patient – create a new one
+    // 3) No ABHA address match — always create a new patient
+    //    (mobile+name auto-merge has been removed; frontend uses check-existing API instead)
     const uhid = await generateUHID();
 
     const consultingDoctor = sanitizeString(body.consultingDoctor, 100);
@@ -313,10 +254,20 @@ export const registerPatient = async (req: Request, res: Response) => {
       body.consultingDoctorId &&
       Types.ObjectId.isValid(body.consultingDoctorId)
     ) {
-      visitInfo.doctorId = new Types.ObjectId(body.consultingDoctorId);
+      const docId = new Types.ObjectId(body.consultingDoctorId);
+      const doc = await DoctorModel.findById(docId).lean();
+      if (doc) {
+        visitInfo.doctorId = docId;
+        visitInfo.doctorName = `${doc.firstName || ""} ${doc.lastName || ""}`.trim();
+      }
     }
     if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
-      visitInfo.departmentId = new Types.ObjectId(body.departmentId);
+      const deptId = new Types.ObjectId(body.departmentId);
+      const deptDoc = await DepartmentModel.findById(deptId).lean();
+      if (deptDoc) {
+        visitInfo.departmentId = deptId;
+        visitInfo.department = deptDoc.name;
+      }
     }
 
     const patientRecord = await PatientModel.create({
@@ -727,6 +678,66 @@ export const listPatients = async (req: Request, res: Response) => {
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",
       message: error.message || "Failed to fetch patients",
+    });
+  }
+};
+
+export const searchPatients = async (req: Request, res: Response) => {
+  try {
+    const { query, page = 1, limit = 20 } = req.query;
+
+    const filter: any = {
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    };
+
+    if (query && String(query).trim() !== "") {
+      const searchVal = String(query).trim();
+      const orConditions: any[] = [
+        { name: { $regex: searchVal, $options: "i" } },
+        { f_name: { $regex: searchVal, $options: "i" } },
+        { l_name: { $regex: searchVal, $options: "i" } },
+        { mobile: { $regex: searchVal, $options: "i" } },
+        { uhid: { $regex: searchVal, $options: "i" } },
+        { ABHANumber: { $regex: searchVal, $options: "i" } },
+        { abhaaddress: { $regex: searchVal, $options: "i" } },
+      ];
+
+      if (mongoose.Types.ObjectId.isValid(searchVal)) {
+        orConditions.push({ _id: new mongoose.Types.ObjectId(searchVal) });
+      }
+
+      filter.$or = orConditions;
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [patients, total] = await Promise.all([
+      PatientModel.find(filter)
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .lean(),
+      PatientModel.countDocuments(filter),
+    ]);
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      success: true,
+      data: { patients, total },
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        total,
+        totalPages: Math.ceil(total / Number(limit)),
+      },
+      message: `${total} patients found`,
+    });
+  } catch (error: any) {
+    console.error("Search Patients error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to search patients",
     });
   }
 };
@@ -1182,7 +1193,7 @@ export const addVisit = async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const body = req.body;
 
-    let patient = await PatientModel.findOne({ uhid: id }).lean();
+    let patient: any = await PatientModel.findOne({ uhid: id }).lean();
     if (!patient) {
       if (Types.ObjectId.isValid(id)) {
         patient = await PatientModel.findById(id).lean();
@@ -1196,35 +1207,60 @@ export const addVisit = async (req: Request, res: Response) => {
       });
     }
 
-    if (patient && ((patient as any).isMerged || patient.status === "merged")) {
+    if (patient.isMerged || patient.status === "merged") {
       return res.status(STATUS_CODE.ERROR).json({
         status: "error",
         message: "Cannot add visit to a merged patient record",
       });
     }
 
-    const consultingDoctor = sanitizeString(body.consultingDoctor, 100);
-    const dept = sanitizeString(body.department, 100);
+
+    const visitType = sanitizeString(body.visitType, 100);
+    const description = sanitizeString(body.description, 1000);
+    
+    let departmentId: Types.ObjectId | undefined;
+    let departmentName: string | undefined;
+    let doctorId: Types.ObjectId | undefined;
+    let doctorName: string | undefined;
+
+    // 1. Resolve Department
+    const rawDept = body.departmentId || body.department;
+    if (rawDept) {
+      if (Types.ObjectId.isValid(rawDept)) {
+        departmentId = new Types.ObjectId(rawDept);
+        const deptDoc = await DepartmentModel.findById(departmentId).lean();
+        departmentName = deptDoc?.name;
+      } else {
+        departmentName = sanitizeString(rawDept, 100);
+      }
+    }
+
+    // 2. Resolve Doctor
+    const rawDoc = body.doctorId || body.doctorName || body.consultingDoctorId || body.consultingDoctor;
+    if (rawDoc) {
+      if (Types.ObjectId.isValid(rawDoc)) {
+        doctorId = new Types.ObjectId(rawDoc);
+        const doc = await DoctorModel.findById(doctorId).lean();
+        doctorName = doc ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim() : undefined;
+      } else {
+        doctorName = sanitizeString(rawDoc, 100);
+      }
+    }
+
     const visitDate = new Date();
     const visitId = new Types.ObjectId();
-
-    const visitInfo: any = {
+    
+    const visitInfo: IPatientVisitRef = {
       visitId,
       visitDate,
       visitStatus: "REGISTERED",
-      department: dept,
-      doctorName: consultingDoctor,
+      department: departmentName,
+      departmentId: departmentId,
+      doctorName: doctorName,
+      doctorId: doctorId,
+      visitType,
+      description,
     };
-
-    if (
-      body.consultingDoctorId &&
-      Types.ObjectId.isValid(body.consultingDoctorId)
-    ) {
-      visitInfo.doctorId = new Types.ObjectId(body.consultingDoctorId);
-    }
-    if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
-      visitInfo.departmentId = new Types.ObjectId(body.departmentId);
-    }
 
     const updatePayload: any = {
       $push: {
@@ -1236,14 +1272,14 @@ export const addVisit = async (req: Request, res: Response) => {
       },
     };
 
-    if (consultingDoctor) {
-      updatePayload.$set.lastVisitedDoctor = consultingDoctor;
+    if (doctorName) {
+      updatePayload.$set.lastVisitedDoctor = doctorName;
     }
 
     const updatedPatient = await PatientModel.findByIdAndUpdate(
       patient._id,
       updatePayload,
-      { new: true },
+      { new: true }
     );
 
     if (!updatedPatient) {
@@ -1271,4 +1307,277 @@ export const addVisit = async (req: Request, res: Response) => {
   }
 };
 
+export const checkExistingPatients = async (req: Request, res: Response) => {
+  try {
+    const body = req.body;
+    const mobile = sanitizeString(body.mobile, 15);
+    const abhaNumber = sanitizeString(
+      body.abhaNumber || body.ABHANumber || body.abha_number,
+      20,
+    );
+    const abhaAddress = sanitizeString(
+      body.abhaAddress ||
+        body.abhaaddress ||
+        body.abha_id ||
+        body.abhaId ||
+        body.abha_address,
+      100,
+    );
 
+    if (!mobile && !abhaNumber && !abhaAddress) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message:
+          "At least one of mobile, abhaNumber, or abhaAddress is required",
+      });
+    }
+
+    const orConditions: any[] = [];
+
+    if (mobile) {
+      orConditions.push({ mobile });
+    }
+
+    if (abhaNumber) {
+      const rawNorm = normalizeAbha(abhaNumber);
+      const formatted = formatAbhaForStorage(abhaNumber);
+      orConditions.push({ ABHANumber: abhaNumber });
+      if (rawNorm && rawNorm !== abhaNumber) {
+        orConditions.push({ ABHANumber: rawNorm });
+      }
+      if (formatted && formatted !== abhaNumber && formatted !== rawNorm) {
+        orConditions.push({ ABHANumber: formatted });
+      }
+    }
+
+    if (abhaAddress) {
+      orConditions.push({ abhaaddress: abhaAddress });
+    }
+
+    const existingPatients = await PatientModel.find({
+      $or: orConditions,
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    })
+      .select(
+        "_id uhid f_name m_name l_name name mobile ABHANumber abhaaddress gender dob age address pincode totalVisits lastVisitDate createdAt allergies existingMedicalConditions ongoingMedications email bloodGroup emergencyContact aadhaarNumber insurance",
+      )
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      message: `${existingPatients.length} existing patient(s) found`,
+      data: existingPatients,
+    });
+  } catch (error: any) {
+    console.error("Check Existing Patients error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to check existing patients",
+    });
+  }
+};
+
+export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const body = req.body;
+
+    let patient: any = await PatientModel.findOne({ uhid: id });
+    if (!patient) {
+      if (Types.ObjectId.isValid(id)) {
+        patient = await PatientModel.findById(id);
+      }
+    }
+
+    if (!patient) {
+      return res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Patient not found",
+      });
+    }
+
+    if (patient.isMerged || patient.status === "merged") {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Cannot update a merged patient record",
+      });
+    }
+
+    // --- Build $set for patient profile updates ---
+    const setFields: any = {};
+
+    const f_name = sanitizeString(body.f_name || body.firstName, 100);
+    const m_name = sanitizeString(body.m_name || body.middleName, 100);
+    const l_name = sanitizeString(body.l_name || body.lastName, 100);
+    if (f_name) setFields.f_name = f_name;
+    if (m_name !== undefined) setFields.m_name = m_name;
+    if (l_name !== undefined) setFields.l_name = l_name;
+
+    // Recompute full name if any name part is provided
+    if (f_name || m_name || l_name) {
+      const newFName = f_name || patient.f_name;
+      const newMName = m_name !== undefined ? m_name : patient.m_name;
+      const newLName = l_name !== undefined ? l_name : patient.l_name;
+      setFields.name = [newFName, newMName, newLName].filter(Boolean).join(" ");
+    }
+
+    const mobile = sanitizeString(body.mobile, 15);
+    if (mobile) setFields.mobile = mobile;
+
+    const dob = sanitizeString(body.dob, 20);
+    if (dob) setFields.dob = dob;
+
+    const age = sanitizeString(body.age, 3);
+    if (age) setFields.age = age;
+
+    const gender = sanitizeString(body.gender, 10);
+    if (gender) setFields.gender = gender;
+
+    const address = sanitizeString(body.address, 500);
+    if (address) setFields.address = address;
+
+    const pincode = sanitizeString(body.pincode, 10);
+    if (pincode) setFields.pincode = pincode;
+
+    const email = sanitizeString(body.email, 100);
+    if (email) setFields.email = email;
+
+    const bloodGroup = sanitizeString(body.bloodGroup, 5);
+    if (bloodGroup) setFields.bloodGroup = bloodGroup;
+
+    const emergencyContact = sanitizeString(body.emergencyContact, 15);
+    if (emergencyContact) setFields.emergencyContact = emergencyContact;
+
+    const aadhaarNumber = sanitizeString(body.aadhaarNumber, 12);
+    if (aadhaarNumber) setFields.aadhaarNumber = aadhaarNumber;
+
+    const allergies = sanitizeString(body.allergies, 500);
+    if (allergies) setFields.allergies = allergies;
+
+    const existingMedicalConditions = sanitizeString(
+      body.existingMedicalConditions,
+      500,
+    );
+    if (existingMedicalConditions)
+      setFields.existingMedicalConditions = existingMedicalConditions;
+
+    const ongoingMedications = sanitizeString(body.ongoingMedications, 500);
+    if (ongoingMedications) setFields.ongoingMedications = ongoingMedications;
+
+    // --- Resolve department & doctor for the new visit ---
+    let departmentId: Types.ObjectId | undefined;
+    let departmentName: string | undefined;
+    let doctorId: Types.ObjectId | undefined;
+    let doctorName: string | undefined;
+
+    const rawDept = body.departmentId || body.department;
+    if (rawDept) {
+      if (Types.ObjectId.isValid(rawDept)) {
+        departmentId = new Types.ObjectId(rawDept);
+        const deptDoc = await DepartmentModel.findById(departmentId).lean();
+        departmentName = deptDoc?.name;
+      } else {
+        departmentName = sanitizeString(rawDept, 100);
+      }
+    }
+
+    const rawDoc =
+      body.doctorId ||
+      body.doctorName ||
+      body.consultingDoctorId ||
+      body.consultingDoctor;
+    if (rawDoc) {
+      if (Types.ObjectId.isValid(rawDoc)) {
+        doctorId = new Types.ObjectId(rawDoc);
+        const doc = await DoctorModel.findById(doctorId).lean();
+        doctorName = doc
+          ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim()
+          : undefined;
+      } else {
+        doctorName = sanitizeString(rawDoc, 100);
+      }
+    }
+
+    const consultationFee = body.consultationFee
+      ? Number(body.consultationFee)
+      : undefined;
+
+    const visitDate = new Date();
+    const visitId = new Types.ObjectId();
+
+    const visitInfo: IPatientVisitRef = {
+      visitId,
+      visitDate,
+      visitStatus: "REGISTERED",
+      department: departmentName,
+      departmentId,
+      doctorName,
+      doctorId,
+      consultationFee:
+        consultationFee !== undefined && !isNaN(consultationFee)
+          ? consultationFee
+          : undefined,
+      visitType: sanitizeString(body.visitType, 100),
+      description: sanitizeString(body.description, 1000),
+    };
+
+    // Set visit-related fields
+    setFields.lastVisitDate = visitDate;
+    if (doctorName) setFields.lastVisitedDoctor = doctorName;
+
+    const updatePayload: any = {
+      $set: setFields,
+      $push: {
+        visits: { $each: [visitInfo], $sort: { visitDate: -1 } },
+      },
+      $inc: { totalVisits: 1 },
+    };
+
+    // Handle insurance update if provided
+    if (body.insurance && typeof body.insurance === "object") {
+      const provider = sanitizeString(body.insurance.provider, 100);
+      const policyNumber = sanitizeString(body.insurance.policyNumber, 50);
+      if (provider || policyNumber) {
+        updatePayload.$push.insurance = {
+          provider: provider || "",
+          policyNumber: policyNumber || "",
+          addedOn: new Date(),
+        };
+      }
+    }
+
+    const updatedPatient = await PatientModel.findByIdAndUpdate(
+      patient._id,
+      updatePayload,
+      { new: true },
+    );
+
+    if (!updatedPatient) {
+      throw new Error("Failed to update patient and add visit");
+    }
+
+    return res.status(STATUS_CODE.CREATED).json({
+      status: "success",
+      message: "Patient updated and new visit created",
+      data: {
+        uhid: updatedPatient.uhid,
+        _id: updatedPatient._id,
+        name: updatedPatient.name,
+        mobile: updatedPatient.mobile,
+        abhaLinked: !!(
+          updatedPatient.ABHANumber || updatedPatient.abhaaddress
+        ),
+        visit: visitInfo,
+        patientData: updatedPatient,
+      },
+    });
+  } catch (error: any) {
+    console.error("Update Patient and Add Visit error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to update patient and add visit",
+    });
+  }
+};

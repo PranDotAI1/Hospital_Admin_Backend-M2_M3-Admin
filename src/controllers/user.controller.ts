@@ -1,6 +1,7 @@
 import { HealthRecordModel } from "../models/HealthRecord";
 import { NotifiyResponseModel } from "../models/NotifiyResponse";
 import { UserModel } from "../models/User";
+import { DoctorModel } from "../models/Doctor";
 import {
   apiResponse,
   comparePassword,
@@ -13,12 +14,11 @@ import { Types } from "mongoose";
 export const userListing = async (req: any, res: any) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.max(1, parseInt(req.query.limit) || 2);
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
     const department_id = req.query.department_id;
     const hospital_id = req.query.hospital_id;
     const search = req.query.search;
 
-    // Ensure role_id has the correct type (number) and fall back to default
     let role_id =
       req.query.role_id !== undefined ? Number(req.query.role_id) : ROLE.STAFF;
     if (isNaN(role_id)) role_id = ROLE.STAFF;
@@ -81,12 +81,13 @@ export const userListing = async (req: any, res: any) => {
     return apiResponse(
       res,
       {
-        data: userList,
+        users: userList,
         total,
         page,
         limit,
       },
       STATUS_CODE.SUCCESS,
+      "Users retrieved successfully",
     );
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -370,5 +371,56 @@ export const updateStatus = async (req: any, res: any) => {
     } else {
       res.status(500).json({ error: error.message });
     }
+  }
+};
+
+export const doctorListing = async (req: any, res: any) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit as string) || 100);
+    const offset = (page - 1) * limit;
+
+    const match: any = { isActive: true };
+    const deptId = req.query.department_id;
+    const search = req.query.search;
+
+    if (deptId) {
+      if (Types.ObjectId.isValid(deptId as string)) {
+        match.department = new Types.ObjectId(deptId as string);
+      } else {
+        match.department = deptId;
+      }
+    }
+
+    if (search) {
+      match.$or = [
+        { firstName: { $regex: search, $options: "i" } },
+        { lastName: { $regex: search, $options: "i" } },
+        { specialization: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const doctors = await DoctorModel.find(match)
+      .populate("department")
+      .sort({ firstName: 1 })
+      .skip(offset)
+      .limit(limit)
+      .lean();
+
+    const total = await DoctorModel.countDocuments(match);
+
+    return apiResponse(
+      res,
+      {
+        doctors: doctors,
+        total,
+        page,
+        limit,
+      },
+      STATUS_CODE.SUCCESS,
+      "Doctors retrieved successfully from independent collection",
+    );
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 };
