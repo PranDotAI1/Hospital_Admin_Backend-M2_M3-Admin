@@ -171,9 +171,9 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     const patientId = patient._id?.toString();
     if (!patientId) return false;
 
-    const fresh = await PatientModel.findById(patientId)
-      .select("abdmLinkTokenRequestedAt")
-      .lean();
+    const fresh = await PatientModel.findById(patientId).lean();
+    if (!fresh) return false;
+
     const requestedAt = fresh?.abdmLinkTokenRequestedAt;
     if (requestedAt) {
       const hoursSince =
@@ -190,43 +190,52 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       }
     }
 
-    await PatientModel.updateOne(
-      { _id: patientId },
-      { $set: { abdmLinkTokenRequestedAt: new Date() } },
-    );
+    // Use refreshed patient data (abhaaddress/ABHANumber may have just been saved)
+    const latestPatient = fresh as unknown as IPatient;
+    if (!latestPatient.abhaaddress?.trim()) {
+      console.log(
+        "CareContext: Skipping link token request — patient has no abhaAddress stored.",
+      );
+      return false;
+    }
 
     const authToken = await AbdmTokenService.getToken();
     const requestId = generateUID();
 
     // Extract year of birth from dob or age
     let yearOfBirth: string | undefined;
-    if (patient.dob) {
+    if (latestPatient.dob) {
       // dob could be in various formats; try to extract year
-      const dobDate = new Date(patient.dob);
+      const dobDate = new Date(latestPatient.dob);
       if (!isNaN(dobDate.getTime())) {
         yearOfBirth = dobDate.getFullYear().toString();
       } else {
         // Try extracting 4-digit year from string
-        const yearMatch = patient.dob.match(/\d{4}/);
+        const yearMatch = latestPatient.dob.match(/\d{4}/);
         if (yearMatch) yearOfBirth = yearMatch[0];
       }
     }
-    if (!yearOfBirth && patient.age) {
+    if (!yearOfBirth && latestPatient.age) {
       yearOfBirth = (
-        new Date().getFullYear() - parseInt(patient.age)
+        new Date().getFullYear() - parseInt(latestPatient.age)
       ).toString();
     }
 
-    const abhaNumber14 = to14DigitAbha(patient.ABHANumber);
+    const abhaNumber14 = to14DigitAbha(latestPatient.ABHANumber);
     const payload: Record<string, string> = {
-      abhaAddress: normalizeAbhaAddress(patient.abhaaddress) ?? "",
-      name: patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim(),
-      gender: normalizeGenderForAbdm(patient.gender),
+      abhaAddress: normalizeAbhaAddress(latestPatient.abhaaddress) ?? "",
+      name: latestPatient.name || `${latestPatient.f_name} ${latestPatient.l_name || ""}`.trim(),
+      gender: normalizeGenderForAbdm(latestPatient.gender),
       yearOfBirth: yearOfBirth || "",
     };
     if (abhaNumber14.length === 14) {
       payload.abhaNumber = abhaNumber14 ?? "";
     }
+
+    console.log(
+      "CareContext: Requesting link token with payload:",
+      JSON.stringify(payload),
+    );
 
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/v3/token/generate-token`,
@@ -243,18 +252,44 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       },
     );
 
+    // Only set abdmLinkTokenRequestedAt AFTER successful API call
+    // so that failures don't block retries via the cooldown
+    const isSuccess = response.status === 200 || response.status === 202;
+    if (isSuccess) {
+      await PatientModel.updateOne(
+        { _id: patientId },
+        { $set: { abdmLinkTokenRequestedAt: new Date() } },
+      );
+    }
+
     console.log(
       "CareContext: Link token requested, status:",
       response.status,
       "| ABDM will call your callback with the token. Ensure callback URL is reachable:",
       "POST /api/v3/hip/token/on-generate-token",
     );
-    return response.status === 200 || response.status === 202;
+    return isSuccess;
   } catch (error: any) {
     console.error(
       "CareContext: Error requesting link token",
       error.response?.data || error.message,
     );
+    // Clear abdmLinkTokenRequestedAt on failure so retries are not blocked
+    try {
+      const patientId = patient._id?.toString();
+      if (patientId) {
+        await PatientModel.updateOne(
+          { _id: patientId },
+          { $unset: { abdmLinkTokenRequestedAt: 1 } },
+        );
+        console.log(
+          "CareContext: Cleared abdmLinkTokenRequestedAt after failed token request for patient",
+          patientId,
+        );
+      }
+    } catch (clearErr) {
+      console.warn("CareContext: Failed to clear abdmLinkTokenRequestedAt:", clearErr);
+    }
     return false;
   }
 };

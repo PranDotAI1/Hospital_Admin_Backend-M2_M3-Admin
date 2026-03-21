@@ -302,3 +302,17 @@ export const generateUniqueAlphaNumericId = () => {
 
   return alpha + numeric;
 };
+
+export const normalizeAbha = (value: string | undefined): string => {
+  if (!value || typeof value !== "string") return "";
+  return value.replace(/-/g, "").trim();
+};
+
+export const formatAbhaForStorage = (
+  value: string | undefined,
+): string | undefined => {
+  if (!value || typeof value !== "string") return undefined;
+  const digits = value.replace(/\D/g, "").trim();
+  if (digits.length !== 14) return value.trim();
+  return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6, 10)}-${digits.slice(10, 14)}`;
+};

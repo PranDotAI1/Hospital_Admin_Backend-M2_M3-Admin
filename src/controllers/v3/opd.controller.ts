@@ -14,6 +14,7 @@ import {
   X_HIP_ID,
   ABDM_PHR_WEB_BASE_URL,
 } from "../../utils/constant";
+import { formatAbhaForStorage } from "../../utils/common";
 import { ENDPOINTS } from "../../utils/endpoints";
 import { STATUS_CODE } from "../../utils/constant";
 import { DepartmentModel } from "../../models/Department";
@@ -244,7 +245,7 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
       visitDate: new Date(),
       counterId: context,
       abhaAddress: abhaAddress,
-      abhaNumber: patient?.abhaNumber || profile?.abhaNumber,
+      abhaNumber: formatAbhaForStorage(patient?.abhaNumber || profile?.abhaNumber),
       name:
         patient?.name ||
         `${patient?.firstName || ""} ${patient?.lastName || ""}`.trim(),

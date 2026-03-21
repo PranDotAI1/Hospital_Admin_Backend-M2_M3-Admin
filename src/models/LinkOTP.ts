@@ -6,6 +6,8 @@ export interface ILinkOTP extends Document {
   patientId: string;
   mobile: string;
   careContextRefs: string[];
+  abhaAddress?: string;
+  abhaNumber?: string;
   createdAt: Date;
   expiresAt: Date;
 }
@@ -17,6 +19,8 @@ const LinkOTPSchema: Schema = new Schema(
     patientId: { type: String, required: true },
     mobile: { type: String, required: true },
     careContextRefs: [{ type: String }],
+    abhaAddress: { type: String, trim: true },
+    abhaNumber: { type: String, trim: true },
     createdAt: { type: Date, default: Date.now },
     expiresAt: { type: Date, required: true, expires: 60 * 10 }, // TTL index
   },

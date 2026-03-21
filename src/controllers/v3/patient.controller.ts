@@ -15,6 +15,7 @@ import { UHIDCounterModel } from "../../models/UHIDCounter";
 
 import { DepartmentModel } from "../../models/Department";
 import { DoctorModel } from "../../models/Doctor";
+import { normalizeAbha, formatAbhaForStorage } from "../../utils/common";
 
 const generateUHID = async (): Promise<string> => {
   const today = new Date();
@@ -46,20 +47,6 @@ const sanitizeString = (
   if (value === null || value === undefined) return undefined;
   const str = typeof value === "string" ? value : String(value);
   return str.trim().slice(0, maxLength);
-};
-
-const normalizeAbha = (value: string | undefined): string => {
-  if (!value || typeof value !== "string") return "";
-  return value.replace(/-/g, "").trim();
-};
-
-const formatAbhaForStorage = (
-  value: string | undefined,
-): string | undefined => {
-  if (!value || typeof value !== "string") return undefined;
-  const digits = value.replace(/\D/g, "").trim();
-  if (digits.length !== 14) return value.trim();
-  return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6, 10)}-${digits.slice(10, 14)}`;
 };
 
 const normalizeNameForMatch = (name: string | undefined): string => {

@@ -213,7 +213,7 @@ const PatientSchema = new Schema<IPatient>(
       token: { type: String, trim: true },
       issuedAt: { type: Date },
       expiresAt: { type: Date },
-      status: { type: String, enum: ["ACTIVE", "EXPIRED"], default: "ACTIVE" },
+      status: { type: String, enum: ["ACTIVE", "EXPIRED"] },
     },
     abdmLinkTokenRequestedAt: { type: Date },
     isMerged: { type: Boolean, default: false },

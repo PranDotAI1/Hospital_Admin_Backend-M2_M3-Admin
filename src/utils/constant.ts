@@ -100,4 +100,7 @@ export const LINK_TOKEN_VALIDITY_MONTHS = 5;
 /** Cooldown between link token requests per patient (ABDM can block for 24h if hit too often) */
 export const LINK_TOKEN_REQUEST_COOLDOWN_HOURS = 24;
 
+/** Whether to update patient name from ABDM discovery flow data (set true to enable) */
+export const DISCOVERY_UPDATE_PATIENT_NAME = true;
+
 export { ENDPOINTS } from "./endpoints";
