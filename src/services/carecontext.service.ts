@@ -1367,8 +1367,9 @@ export const detectHiTypesForVisit = async (
       (assessment.symptomsComplaints ||
         (assessment.medicalHistory?.length ?? 0) > 0 ||
         (assessment.surgicalHistory?.length ?? 0) > 0 ||
-        (assessment.personalHistory?.length ?? 0) > 0 ||
-        (assessment.additionalDetails?.length ?? 0) > 0))
+        assessment.physicalActivity ||
+        assessment.lifestyle ||
+        assessment.womenHealth))
   ) {
     hiTypes.add("OPConsultation");
   }

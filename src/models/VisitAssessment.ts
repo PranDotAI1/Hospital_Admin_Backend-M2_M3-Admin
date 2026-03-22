@@ -31,20 +31,21 @@ export interface ISurgicalHistoryEntry {
   hospital?: string;
 }
 
-export interface IAdditionalDetailsEntry {
-  type?: string;
-  duration?: string;
-  units?: string;
-  frequency?: string;
-  action?: string;
+export interface IPhysicalActivity {
+  stepsPerDay?: number;
+  caloriesBurned?: number;
+  sleepDuration?: number;
 }
 
-export interface IPersonalHistoryEntry {
-  diet?: string;
-  appetite?: string;
-  sleep?: string;
-  blader?: string;
-  bowel?: string;
+export interface ILifestyle {
+  dietType?: string;
+  smokingBehavior?: string;
+  alcoholBehavior?: string;
+}
+
+export interface IWomenHealth {
+  ageAtMenarche?: number;
+  lastMenstrualPeriod?: Date;
 }
 
 export interface IDocumentUpload {
@@ -63,8 +64,9 @@ export interface IVisitAssessment extends Document {
   symptomsComplaints?: string;
   medicalHistory: IMedicalHistoryEntry[];
   surgicalHistory: ISurgicalHistoryEntry[];
-  additionalDetails: IAdditionalDetailsEntry[];
-  personalHistory: IPersonalHistoryEntry[];
+  physicalActivity?: IPhysicalActivity;
+  lifestyle?: ILifestyle;
+  womenHealth?: IWomenHealth;
   documentUploads?: IDocumentUpload[];
   dataSharingConsent?: boolean;
   createdAt?: Date;
@@ -114,24 +116,28 @@ const SurgicalHistoryEntrySchema = new Schema<ISurgicalHistoryEntry>(
   { _id: false },
 );
 
-const AdditionalDetailsEntrySchema = new Schema<IAdditionalDetailsEntry>(
+const PhysicalActivitySchema = new Schema<IPhysicalActivity>(
   {
-    type: { type: String, trim: true },
-    duration: { type: String, trim: true },
-    units: { type: String, trim: true },
-    frequency: { type: String, trim: true },
-    action: { type: String, trim: true },
+    stepsPerDay: { type: Number },
+    caloriesBurned: { type: Number },
+    sleepDuration: { type: Number },
   },
   { _id: false },
 );
 
-const PersonalHistoryEntrySchema = new Schema<IPersonalHistoryEntry>(
+const LifestyleSchema = new Schema<ILifestyle>(
   {
-    diet: { type: String, trim: true },
-    appetite: { type: String, trim: true },
-    sleep: { type: String, trim: true },
-    blader: { type: String, trim: true },
-    bowel: { type: String, trim: true },
+    dietType: { type: String, trim: true },
+    smokingBehavior: { type: String, trim: true },
+    alcoholBehavior: { type: String, trim: true },
+  },
+  { _id: false },
+);
+
+const WomenHealthSchema = new Schema<IWomenHealth>(
+  {
+    ageAtMenarche: { type: Number },
+    lastMenstrualPeriod: { type: Date },
   },
   { _id: false },
 );
@@ -160,8 +166,9 @@ const VisitAssessmentSchema = new Schema<IVisitAssessment>(
     symptomsComplaints: { type: String, trim: true },
     medicalHistory: { type: [MedicalHistoryEntrySchema], default: [] },
     surgicalHistory: { type: [SurgicalHistoryEntrySchema], default: [] },
-    additionalDetails: { type: [AdditionalDetailsEntrySchema], default: [] },
-    personalHistory: { type: [PersonalHistoryEntrySchema], default: [] },
+    physicalActivity: { type: PhysicalActivitySchema },
+    lifestyle: { type: LifestyleSchema },
+    womenHealth: { type: WomenHealthSchema },
     documentUploads: { type: [DocumentUploadSchema], default: [] },
     dataSharingConsent: { type: Boolean },
   },

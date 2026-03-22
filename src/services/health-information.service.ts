@@ -435,8 +435,9 @@ const getOptionalDataForCareContext = async (
           symptomsComplaints: assessment.symptomsComplaints,
           medicalHistory: assessment.medicalHistory ?? [],
           surgicalHistory: assessment.surgicalHistory ?? [],
-          personalHistory: assessment.personalHistory ?? [],
-          additionalDetails: assessment.additionalDetails ?? [],
+          physicalActivity: assessment.physicalActivity,
+          lifestyle: assessment.lifestyle,
+          womenHealth: assessment.womenHealth,
           documentUploads: assessment.documentUploads ?? [],
         }
       : undefined,

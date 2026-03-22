@@ -391,66 +391,7 @@ const buildOPConsultationBundle = async (
     });
   }
 
-  // Personal / Social History from assessment
-  const personalHistory = assessment?.personalHistory;
-  const additionalDetails = assessment?.additionalDetails;
-  const socialParts: string[] = [];
 
-  if (personalHistory && personalHistory.length > 0) {
-    const ph = personalHistory[0];
-    if (ph.diet)
-      socialParts.push(`<p><strong>Diet:</strong> ${escapeHtml(ph.diet)}</p>`);
-    if (ph.appetite)
-      socialParts.push(
-        `<p><strong>Appetite:</strong> ${escapeHtml(ph.appetite)}</p>`,
-      );
-    if (ph.sleep)
-      socialParts.push(
-        `<p><strong>Sleep:</strong> ${escapeHtml(ph.sleep)}</p>`,
-      );
-    if (ph.blader)
-      socialParts.push(
-        `<p><strong>Bladder:</strong> ${escapeHtml(ph.blader)}</p>`,
-      );
-    if (ph.bowel)
-      socialParts.push(
-        `<p><strong>Bowel:</strong> ${escapeHtml(ph.bowel)}</p>`,
-      );
-  }
-
-  if (additionalDetails && additionalDetails.length > 0) {
-    const rows = additionalDetails
-      .filter((d) => d.type)
-      .map(
-        (d) =>
-          `<tr><td>${escapeHtml(d.type || "-")}</td><td>${escapeHtml(d.duration || "-")} ${escapeHtml(d.units || "")}</td><td>${escapeHtml(d.frequency || "-")}</td><td>${escapeHtml(d.action || "-")}</td></tr>`,
-      )
-      .join("");
-    if (rows) {
-      socialParts.push(
-        `<p><strong>Habits/Lifestyle:</strong></p><table border="1" cellpadding="4"><thead><tr><th>Type</th><th>Duration</th><th>Frequency</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>`,
-      );
-    }
-  }
-
-  if (socialParts.length > 0) {
-    sections.push({
-      title: "Social History",
-      code: {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: "229070002",
-            display: "Social history",
-          },
-        ],
-      },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml">${socialParts.join("")}</div>`,
-      },
-    });
-  }
 
   // Batch PDF generation (mirrors fhir.bundle.service.ts pattern)
   if (browser) {
@@ -1063,101 +1004,416 @@ const buildDischargeSummaryRecordBundle = async (
   const patientName =
     patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
   const visitDateStr = toSafeLocaleDateString(visit.visitDate);
-  const doctor = visit.doctorName || "Doctor";
+  const ds = optionalData?.dischargeSummary;
+  const doctor = ds?.doctorSignature || visit.doctorName || "Doctor";
 
   const bundleEntries: any[] = [];
   bundleEntries.push(buildPatientResource(patient, patientUUID));
   bundleEntries.push(buildOrganizationResource(orgUUID));
   bundleEntries.push(buildPractitionerResource(doctor, practitionerUUID));
-  bundleEntries.push(buildEncounterResource(visit, encounterUUID, patientUUID));
+  
+  const encounter = buildEncounterResource(visit, encounterUUID, patientUUID);
+  (encounter.resource as any).participant = [
+    {
+      individual: {
+        reference: `urn:uuid:${practitionerUUID}`,
+        display: doctor,
+      },
+    },
+  ];
+  bundleEntries.push(encounter);
 
   const sections: any[] = [];
-  const ds = optionalData?.dischargeSummary;
+  const assessment = optionalData?.assessment;
 
-  if (
-    ds &&
-    (ds.diagnosis ||
-      ds.clinicalSummary ||
-      ds.treatmentGiven ||
-      (ds.dischargeMedications && ds.dischargeMedications.length > 0))
-  ) {
-    const parts: string[] = [];
-    if (ds.diagnosis)
-      parts.push(
-        `<p><strong>Diagnosis:</strong> ${escapeHtml(ds.diagnosis)}</p>`,
-      );
-    if (ds.clinicalSummary)
-      parts.push(
-        `<p><strong>Clinical Summary:</strong> ${escapeHtml(ds.clinicalSummary)}</p>`,
-      );
-    if (ds.treatmentGiven)
-      parts.push(
-        `<p><strong>Treatment Given:</strong> ${escapeHtml(ds.treatmentGiven)}</p>`,
-      );
-    if (ds.dischargeMedications && ds.dischargeMedications.length > 0) {
-      const medRows = ds.dischargeMedications
-        .map(
-          (m) =>
-            `<tr><td>${escapeHtml(m.medicine)}</td><td>${escapeHtml(m.dosage)}</td><td>${m.frequency ?? "-"}</td><td>${m.duration ?? "-"}</td><td>${m.instructions ?? "-"}</td></tr>`,
-        )
-        .join("");
-      parts.push(
-        `<p><strong>Discharge Medications:</strong></p><table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th><th>Instructions</th></tr></thead><tbody>${medRows}</tbody></table>`,
-      );
+  // ── Section 1: Chief Complaints (SNOMED 422843007) ──
+  const chiefComplaintText =
+    ds?.chiefComplaints || ds?.diagnosis || assessment?.symptomsComplaints || "";
+  const chiefComplaintEntries: any[] = [];
+  let conditionIdForMeds: string | undefined;
+  if (chiefComplaintText) {
+    conditionIdForMeds = generateUUID();
+    bundleEntries.push(
+      buildConditionResource(
+        chiefComplaintText,
+        conditionIdForMeds,
+        patientUUID,
+        toSafeISOString(visit.visitDate),
+        practitionerUUID,
+      ),
+    );
+    chiefComplaintEntries.push({ reference: `urn:uuid:${conditionIdForMeds}` });
+  }
+  sections.push({
+    title: "Chief Complaints",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "422843007",
+          display: "Chief complaint section",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: chiefComplaintText
+        ? `<div xmlns="http://www.w3.org/1999/xhtml"><p>${escapeHtml(chiefComplaintText)}</p></div>`
+        : `<div xmlns="http://www.w3.org/1999/xhtml"><p>No chief complaints recorded.</p></div>`,
+    },
+    ...(chiefComplaintEntries.length > 0 && { entry: chiefComplaintEntries }),
+  });
 
-      // Also create MedicationRequest entries for discharge meds
-      ds.dischargeMedications.forEach((m) => {
-        const medId = generateUUID();
-        bundleEntries.push(
-          buildMedicationRequest(
-            m,
-            patientUUID,
-            orgUUID,
-            practitionerUUID,
-            doctor,
-            toSafeISOString(visit.visitDate),
-            medId,
-          ),
-        );
+  // ── Section 2: Medical History (SNOMED 371529009) ──
+  const medHistoryParts: string[] = [];
+  if (ds?.admissionDate)
+    medHistoryParts.push(
+      `<p><strong>Admission Date:</strong> ${toSafeLocaleDateString(ds.admissionDate)}</p>`,
+    );
+  if (ds?.dischargeDate)
+    medHistoryParts.push(
+      `<p><strong>Discharge Date:</strong> ${toSafeLocaleDateString(ds.dischargeDate)}</p>`,
+    );
+  if (ds?.ward)
+    medHistoryParts.push(
+      `<p><strong>Ward:</strong> ${escapeHtml(ds.ward)}</p>`,
+    );
+  if (ds?.bed)
+    medHistoryParts.push(
+      `<p><strong>Bed:</strong> ${escapeHtml(ds.bed)}</p>`,
+    );
+  if (ds?.clinicalSummary)
+    medHistoryParts.push(
+      `<p><strong>Clinical Summary:</strong> ${escapeHtml(ds.clinicalSummary)}</p>`,
+    );
+  if (ds?.admissionNotes)
+    medHistoryParts.push(
+      `<p><strong>Admission Notes:</strong> ${escapeHtml(ds.admissionNotes)}</p>`,
+    );
+  const medHistoryEntries: any[] = [];
+  if (assessment?.medicalHistory && assessment.medicalHistory.length > 0) {
+    const histRows = assessment.medicalHistory
+      .map((h: any) => {
+        if (h.disease) {
+           const condUUID = generateUUID();
+           const cond = buildConditionResource(
+             h.disease,
+             condUUID,
+             patientUUID,
+             toSafeISOString(visit.visitDate),
+             practitionerUUID,
+             false
+           );
+           bundleEntries.push(cond);
+           medHistoryEntries.push({ reference: `urn:uuid:${condUUID}` });
+        }
+        return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
+      })
+      .join("");
+    medHistoryParts.push(
+      `<p><strong>Past Medical History:</strong></p><table border="1" cellpadding="4"><thead><tr><th>Disease</th><th>Duration</th><th>Medications</th></tr></thead><tbody>${histRows}</tbody></table>`,
+    );
+  }
+
+  if (medHistoryEntries.length === 0 && medHistoryParts.length > 0) {
+     const condUUID = generateUUID();
+     const cond = buildConditionResource(
+       "Past Medical History Details",
+       condUUID,
+       patientUUID,
+       toSafeISOString(visit.visitDate),
+       practitionerUUID,
+       false
+     );
+     bundleEntries.push(cond);
+     medHistoryEntries.push({ reference: `urn:uuid:${condUUID}` });
+  }
+
+  sections.push({
+    title: "Medical History",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "1003642006",
+          display: "Past medical history section",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div:
+        medHistoryParts.length > 0
+          ? `<div xmlns="http://www.w3.org/1999/xhtml">${medHistoryParts.join("")}</div>`
+          : `<div xmlns="http://www.w3.org/1999/xhtml"><p>No medical history recorded.</p></div>`,
+    },
+    ...(medHistoryEntries.length > 0 && { entry: medHistoryEntries }),
+  });
+
+  // ── Section 3: Investigations (SNOMED 721981007) ──
+  const investigationParts: string[] = [];
+  const investigationEntries: any[] = [];
+  if (ds?.investigationsResults)
+    investigationParts.push(
+      `<p>${escapeHtml(ds.investigationsResults)}</p>`,
+    );
+  if (optionalData?.labReports && optionalData.labReports.length > 0) {
+    const labRows = optionalData.labReports
+      .map(
+        (lab: any) =>
+          `<tr><td>${escapeHtml(lab.testType || "-")}</td><td>${escapeHtml(lab.resultValue || "-")}</td><td>${escapeHtml(lab.measurementUnit || "-")}</td><td>${lab.reportDate ? toSafeLocaleDateString(lab.reportDate) : "-"}</td></tr>`,
+      )
+      .join("");
+    investigationParts.push(
+      `<table border="1" cellpadding="4"><thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Date</th></tr></thead><tbody>${labRows}</tbody></table>`,
+    );
+  }
+
+  if (investigationParts.length > 0) {
+      const obsUUID = generateUUID();
+      bundleEntries.push({
+        fullUrl: `urn:uuid:${obsUUID}`,
+        resource: {
+          resourceType: "Observation",
+          id: obsUUID,
+          status: "final",
+          code: {
+            text: "Investigations Narrative",
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "721981007",
+                display: "Diagnostic studies report",
+              },
+            ],
+          },
+          subject: { reference: `urn:uuid:${patientUUID}` },
+        },
       });
-    }
+      investigationEntries.push({ reference: `urn:uuid:${obsUUID}` });
+  }
 
-    // Wire PDF reference into section entries BEFORE pushing
-    sections.push({
-      title: "Discharge Summary",
-      code: {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: "373942005",
-            display: "Discharge summary",
-          },
-        ],
+  sections.push({
+    title: "Investigations",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "721981007",
+          display: "Diagnostic studies report",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div:
+        investigationParts.length > 0
+          ? `<div xmlns="http://www.w3.org/1999/xhtml">${investigationParts.join("")}</div>`
+          : `<div xmlns="http://www.w3.org/1999/xhtml"><p>No investigation results recorded.</p></div>`,
+    },
+    ...(investigationEntries.length > 0 && { entry: investigationEntries }),
+  });
+
+  // ── Section 4: Procedures (SNOMED 371525003) ──
+  const procedureParts: string[] = [];
+  const procedureEntries: any[] = [];
+  if (ds?.treatmentGiven)
+    procedureParts.push(
+      `<p><strong>Treatment Given:</strong> ${escapeHtml(ds.treatmentGiven)}</p>`,
+    );
+  if (ds?.surgicalProcedures) {
+    procedureParts.push(
+      `<p><strong>Surgical Procedures:</strong> ${escapeHtml(ds.surgicalProcedures)}</p>`,
+    );
+    const procId = generateUUID();
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${procId}`,
+      resource: {
+        resourceType: "Procedure",
+        id: procId,
+        meta: {
+          profile: [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Procedure",
+          ],
+        },
+        text: {
+          status: "generated",
+          div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>${escapeHtml(ds.surgicalProcedures)}</p></div>`,
+        },
+        status: "completed",
+        code: {
+          text: ds.surgicalProcedures,
+        },
+        subject: { reference: `urn:uuid:${patientUUID}` },
+        performedDateTime: toSafeISOString(visit.visitDate),
       },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml">${parts.join("")}</div>`,
-      },
-      entry: [{ reference: `urn:uuid:${dsDocId}` }],
     });
-  } else {
-    sections.push({
-      title: "Discharge Summary",
-      code: {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: "373942005",
-            display: "Discharge summary",
-          },
-        ],
-      },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>OPD visit. Discharge summary applicable for inpatient admissions.</p><p>Visit: ${escapeHtml(visit.department || "OPD")} - ${visitDateStr}.</p></div>`,
-      },
+    procedureEntries.push({ reference: `urn:uuid:${procId}` });
+  }
+  if (ds?.surgicalNote)
+    procedureParts.push(
+      `<p><strong>Surgical Note:</strong> ${escapeHtml(ds.surgicalNote)}</p>`,
+    );
+  sections.push({
+    title: "Procedures",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "371525003",
+          display: "Clinical procedure report",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div:
+        procedureParts.length > 0
+          ? `<div xmlns="http://www.w3.org/1999/xhtml">${procedureParts.join("")}</div>`
+          : `<div xmlns="http://www.w3.org/1999/xhtml"><p>No procedures recorded.</p></div>`,
+    },
+    ...(procedureEntries.length > 0 && { entry: procedureEntries }),
+  });
+
+  // ── Section 5: Medications (SNOMED 721912009) ──
+  const medEntries: any[] = [];
+  let medNarrativeHtml = "";
+  if (ds?.dischargeMedications && ds.dischargeMedications.length > 0) {
+    const medRows = ds.dischargeMedications
+      .map(
+        (m) =>
+          `<tr><td>${escapeHtml(m.medicine)}</td><td>${escapeHtml(m.dosage)}</td><td>${m.frequency ?? "-"}</td><td>${m.duration ?? "-"}</td><td>${m.instructions ?? "-"}</td></tr>`,
+      )
+      .join("");
+    medNarrativeHtml = `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th><th>Instructions</th></tr></thead><tbody>${medRows}</tbody></table>`;
+
+    ds.dischargeMedications.forEach((m) => {
+      const medId = generateUUID();
+      bundleEntries.push(
+        buildMedicationRequest(
+          m,
+          patientUUID,
+          orgUUID,
+          practitionerUUID,
+          doctor,
+          toSafeISOString(visit.visitDate),
+          medId,
+          conditionIdForMeds,
+          chiefComplaintText
+        ),
+      );
+      medEntries.push({ reference: `urn:uuid:${medId}` });
     });
   }
+  sections.push({
+    title: "Medications",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "721912009",
+          display: "Medication summary document",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: medNarrativeHtml
+        ? `<div xmlns="http://www.w3.org/1999/xhtml">${medNarrativeHtml}</div>`
+        : `<div xmlns="http://www.w3.org/1999/xhtml"><p>No discharge medications recorded.</p></div>`,
+    },
+    ...(medEntries.length > 0 && { entry: medEntries }),
+  });
+
+  // ── Section 6: Care Plan (SNOMED 734163000) ──
+  const carePlanParts: string[] = [];
+  const carePlanEntries: any[] = [];
+  if (ds?.carePlan)
+    carePlanParts.push(`<p>${escapeHtml(ds.carePlan)}</p>`);
+  if (ds?.followUpInstructions)
+    carePlanParts.push(
+      `<p><strong>Follow-up Instructions:</strong> ${escapeHtml(ds.followUpInstructions)}</p>`,
+    );
+  if (ds?.conditionAtDischarge)
+    carePlanParts.push(
+      `<p><strong>Condition at Discharge:</strong> ${escapeHtml(ds.conditionAtDischarge)}</p>`,
+    );
+  if (optionalData?.soapNotes?.plan)
+    carePlanParts.push(
+      `<p><strong>Plan:</strong> ${escapeHtml(optionalData.soapNotes.plan)}</p>`,
+    );
+  if (carePlanParts.length > 0) {
+    const carePlanId = generateUUID();
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${carePlanId}`,
+      resource: {
+        resourceType: "CarePlan",
+        id: carePlanId,
+        meta: {
+          profile: [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/CarePlan",
+          ],
+        },
+        text: {
+          status: "generated",
+          div: `<div xmlns="http://www.w3.org/1999/xhtml">${
+            carePlanParts.length > 0
+              ? carePlanParts.join("")
+              : "<p>Care plan details</p>"
+          }</div>`,
+        },
+        status: "active",
+        intent: "plan",
+        subject: { reference: `urn:uuid:${patientUUID}` },
+        description:
+          ds?.carePlan ||
+          ds?.followUpInstructions ||
+          optionalData?.soapNotes?.plan ||
+          "Discharge care plan",
+      },
+    });
+    carePlanEntries.push({ reference: `urn:uuid:${carePlanId}` });
+  }
+  sections.push({
+    title: "Care Plan",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "734163000",
+          display: "Care plan",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div:
+        carePlanParts.length > 0
+          ? `<div xmlns="http://www.w3.org/1999/xhtml">${carePlanParts.join("")}</div>`
+          : `<div xmlns="http://www.w3.org/1999/xhtml"><p>No care plan recorded.</p></div>`,
+    },
+    ...(carePlanEntries.length > 0 && { entry: carePlanEntries }),
+  });
+
+  // ── Section 7: Document Reference (SNOMED 373942005) ──
+  // PDF will be generated below; placeholder section created now
+  sections.push({
+    title: "Document Reference",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "373942005",
+          display: "Discharge summary",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>Discharge Summary Document</p></div>`,
+    },
+    entry: [{ reference: `urn:uuid:${dsDocId}` }],
+  });
 
   // Batch PDF generation (mirrors fhir.bundle.service.ts pattern)
   if (browser && optionalData?.dischargeSummary) {
@@ -1168,6 +1424,8 @@ const buildDischargeSummaryRecordBundle = async (
             patient,
             visit,
             optionalData.dischargeSummary,
+            optionalData?.assessment,
+            optionalData?.labReports,
           ),
         ],
         browser,
@@ -1197,6 +1455,9 @@ const buildDischargeSummaryRecordBundle = async (
       section.entry = section.entry.filter((e: any) =>
         availableIds.has(e.reference),
       );
+      if (section.entry.length === 0) {
+        delete section.entry;
+      }
     }
   });
 

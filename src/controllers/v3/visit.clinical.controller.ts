@@ -10,12 +10,13 @@ import { VisitLabReportModel } from "../../models/VisitLabReport";
 import { VisitSoapNotesModel } from "../../models/VisitSoapNotes";
 import { VisitDischargeSummaryModel } from "../../models/VisitDischargeSummary";
 import {
-  IPersonalHistoryEntry,
-  IAdditionalDetailsEntry,
   ISurgicalHistoryEntry,
   IImmunizationRecord,
   IMedicalHistoryEntry,
   VisitAssessmentModel,
+  IPhysicalActivity,
+  ILifestyle,
+  IWomenHealth,
 } from "../../models/VisitAssessment";
 
 const isValidDate = (dateString: string): boolean => {
@@ -491,8 +492,9 @@ export const recordAssessment = async (req: Request, res: Response) => {
       symptomsComplaints?: string;
       medicalHistory?: any;
       surgicalHistory?: any;
-      additionalDetails?: any;
-      personalHistory?: any;
+      physicalActivity?: any;
+      lifestyle?: any;
+      womenHealth?: any;
     };
 
     body = {
@@ -501,8 +503,9 @@ export const recordAssessment = async (req: Request, res: Response) => {
       immunization: parseIfString(body.immunization),
       medicalHistory: parseIfString(body.medicalHistory),
       surgicalHistory: parseIfString(body.surgicalHistory),
-      additionalDetails: parseIfString(body.additionalDetails),
-      personalHistory: parseIfString(body.personalHistory),
+      physicalActivity: parseIfString(body.physicalActivity),
+      lifestyle: parseIfString(body.lifestyle),
+      womenHealth: parseIfString(body.womenHealth),
     };
 
     const validationErrors: string[] = [];
@@ -526,12 +529,16 @@ export const recordAssessment = async (req: Request, res: Response) => {
       validationErrors.push("surgicalHistory must be an array if provided.");
     }
 
-    if (body.additionalDetails && !Array.isArray(body.additionalDetails)) {
-      validationErrors.push("additionalDetails must be an array if provided.");
+    if (body.physicalActivity && typeof body.physicalActivity !== "object") {
+      validationErrors.push("physicalActivity must be an object if provided.");
     }
 
-    if (body.personalHistory && !Array.isArray(body.personalHistory)) {
-      validationErrors.push("personalHistory must be an array if provided.");
+    if (body.lifestyle && typeof body.lifestyle !== "object") {
+      validationErrors.push("lifestyle must be an object if provided.");
+    }
+
+    if (body.womenHealth && typeof body.womenHealth !== "object") {
+      validationErrors.push("womenHealth must be an object if provided.");
     }
 
     let immunization: IImmunizationRecord | undefined = undefined;
@@ -647,8 +654,9 @@ export const recordAssessment = async (req: Request, res: Response) => {
         symptomsComplaints: body?.symptomsComplaints,
         medicalHistory: body?.medicalHistory,
         surgicalHistory: body?.surgicalHistory,
-        additionalDetails: body?.additionalDetails,
-        personalHistory: body?.personalHistory,
+        physicalActivity: body?.physicalActivity,
+        lifestyle: body?.lifestyle,
+        womenHealth: body?.womenHealth,
       },
     };
 
@@ -680,8 +688,9 @@ export const recordAssessment = async (req: Request, res: Response) => {
       body?.symptomsComplaints ||
       (body?.medicalHistory && body.medicalHistory.length > 0) ||
       (body?.surgicalHistory && body.surgicalHistory.length > 0) ||
-      (body?.personalHistory && body.personalHistory.length > 0) ||
-      (body?.additionalDetails && body.additionalDetails.length > 0)
+      body?.physicalActivity ||
+      body?.lifestyle ||
+      body?.womenHealth
     ) {
       hiTypes.push("OPConsultation");
     }

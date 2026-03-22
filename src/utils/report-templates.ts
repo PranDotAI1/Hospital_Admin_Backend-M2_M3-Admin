@@ -248,6 +248,8 @@ export const getDischargeSummaryTemplate = (
   patient: IPatient,
   visit: IScanShareVisit,
   ds: any,
+  assessment?: any,
+  labReports?: any[],
 ) => {
   const medRows =
     ds.dischargeMedications
@@ -316,6 +318,55 @@ export const getDischargeSummaryTemplate = (
         ${ds.followUpInstructions ? `<p><strong>Follow-up Instructions:</strong> ${ds.followUpInstructions}</p>` : ""}
         ${ds.advice ? `<p><strong>Advice:</strong> ${ds.advice}</p>` : ""}
       </div>
+
+      ${
+        assessment?.medicalHistory && assessment.medicalHistory.length > 0
+          ? `
+      <div class="section">
+        <div class="section-title">Past Medical History</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Disease</th>
+              <th>Duration</th>
+              <th>Medications</th>
+            </tr>
+          </thead>
+          <tbody>${assessment.medicalHistory
+            .map(
+              (h: any) =>
+                `<tr><td>${h.disease || "-"}</td><td>${h.duration || "-"}</td><td>${h.medications || "-"}</td></tr>`,
+            )
+            .join("")}</tbody>
+        </table>
+      </div>`
+          : ""
+      }
+
+      ${
+        labReports && labReports.length > 0
+          ? `
+      <div class="section">
+        <div class="section-title">Investigations (Lab Reports)</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Test</th>
+              <th>Result</th>
+              <th>Unit</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>${labReports
+            .map(
+              (lab: any) =>
+                `<tr><td>${lab.testType || "-"}</td><td>${lab.resultValue || "-"}</td><td>${lab.measurementUnit || "-"}</td><td>${lab.reportDate ? new Date(lab.reportDate).toLocaleDateString("en-IN") : "-"}</td></tr>`,
+            )
+            .join("")}</tbody>
+        </table>
+      </div>`
+          : ""
+      }
 
       ${
         medRows
