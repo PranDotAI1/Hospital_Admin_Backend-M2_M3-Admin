@@ -1111,7 +1111,7 @@ export const buildMedicationRequest = (
     dosageParts.push(med.instructions);
   if (med.customInstructions) dosageParts.push(med.customInstructions);
   const dosageText =
-    dosageParts.length > 1 ? dosageParts.slice(1).join(", ") : "As directed";
+    dosageParts.length > 0 ? dosageParts.join(", ") : "As directed";
 
   // Build timing: prefer structured FE data, fallback to text parsing
   const timing = med.timing ? med.timing : getFrequencyTiming(med.frequency);
@@ -1532,6 +1532,16 @@ const buildPdfDocumentReference = (
 
 /** Section title → hiType(s) for consent-based filtering (share only consented hiTypes) */
 const SECTION_HITYPE: Record<string, HIType | HIType[]> = {
+  // ── OPConsultation sections (ABDM 8-section spec) ──
+  "Chief Complaints": ["OPConsultation", "DischargeSummary"],
+  "Allergies": ["OPConsultation", "DischargeSummary"],
+  "Medical History": ["OPConsultation", "DischargeSummary"],
+  "Investigation Advice": "OPConsultation",
+  "Medications": ["OPConsultation", "DischargeSummary"],
+  "Procedure": "OPConsultation",
+  "Follow Up": "OPConsultation",
+  "Document Reference": ["OPConsultation", "WellnessRecord", "DischargeSummary"],
+  // Legacy section names still used by internal code paths
   "Chief Complaint": "OPConsultation",
   Symptoms: "OPConsultation",
   "Physical Examination": "OPConsultation",
@@ -1544,12 +1554,10 @@ const SECTION_HITYPE: Record<string, HIType | HIType[]> = {
   "General Assessment": "WellnessRecord",
   "Women Health": "WellnessRecord",
   "Lifestyle": "WellnessRecord",
-  Allergies: "OPConsultation",
   Prescription: "Prescription",
   "OP Consultation record": "OPConsultation",
   "Discharge Summary": "DischargeSummary",
-  // Medical / Surgical History belong to DischargeSummary; NOT Prescription or Immunization
-  "Medical History": "DischargeSummary",
+  // Surgical History belongs to DischargeSummary standalone block
   "Surgical History": "DischargeSummary",
   "Immunization Record": "ImmunizationRecord",
   "Health Document / Wellness": "OPConsultation",
@@ -1564,7 +1572,6 @@ const SECTION_HITYPE: Record<string, HIType | HIType[]> = {
     "HealthDocumentRecord",
     "Invoice",
   ],
-  "Document Reference": "WellnessRecord",
 };
 
 const includeSectionByHiType = (
@@ -1584,11 +1591,32 @@ const includeSectionByHiType = (
       "Discharge Summary",
       "Chief Complaints",
       "Medical History",
+      "Allergies",
       "Investigations",
       "Procedures",
       "Medications",
       "Care Plan",
       "Document Reference",
+      "Documents",
+    ].includes(sectionTitle);
+  }
+
+  // For OPConsultation-only bundles, use the ABDM 8-section titles
+  if (
+    allowedHiTypes.length === 1 &&
+    allowedHiTypes[0] === "OPConsultation"
+  ) {
+    return [
+      "Chief Complaints",
+      "Allergies",
+      "Medical History",
+      "Investigation Advice",
+      "Medications",
+      "Procedure",
+      "Follow Up",
+      "Document Reference",
+      // Keep these so legacy code paths still work when this function is called on them
+      "OP Consultation record",
       "Documents",
     ].includes(sectionTitle);
   }
@@ -1663,260 +1691,300 @@ export const generateCombinedBundleForCareContext = async (
 
   const sections: any[] = [];
 
-  const chiefComplaint = visit.complaint || "General OPD consultation";
-  const visitInfoParts: string[] = [];
-  if (dept) visitInfoParts.push(`Department: ${dept}`);
-  if (doctor) visitInfoParts.push(`Doctor: ${doctor}`);
-  visitInfoParts.push(`Visit Date: ${visitDateStr}`);
-  visitInfoParts.push(
-    `Token: ${visit.tokenNumber || careContext.careContextReference || "-"}`,
-  );
-  // S
+  // ═══════════════════════════════════════════════════════════
+  // OP CONSULTATION — ABDM 8-Section Structure
+  // Ref: https://nrces.in/ndhm/fhir/r4/Bundle-OPConsultation-example-01.json.html
+  // ═══════════════════════════════════════════════════════════
+
+  // ── Section 1: Chief Complaints (LOINC 10154-3) ──
   let conditionUUID: string | undefined;
-  if (includeSectionByHiType("Chief Complaint", allowedHiTypes)) {
+  if (
+    includeSectionByHiType("Chief Complaints", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    const chiefComplaintText =
+      optionalData?.soapNotes?.subjective ||
+      visit.complaint ||
+      "General OPD consultation";
+    conditionUUID = generateUUID();
+    const chiefCondition = buildConditionResource(
+      chiefComplaintText, conditionUUID, patientUUID, bundleDate, practitionerUUID,
+    );
+    bundleEntries.push(chiefCondition);
     sections.push({
-      title: "Chief Complaint",
-      code: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "10154-3",
-            display: "Chief complaint",
-          },
-        ],
-      },
+      title: "Chief Complaints",
+      code: { coding: [{ system: "http://loinc.org", code: "10154-3", display: "Chief complaint Narrative - Reported" }] },
       text: {
         status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Chief Complaint:</strong> ${escapeHtml(chiefComplaint).replace(/\n/g, "<br/>")}</p><p><strong>Visit Details:</strong><br/>${visitInfoParts.join("<br/>")}</p></div>`,
+        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Chief Complaint:</strong> ${escapeHtml(chiefComplaintText).replace(/\n/g, "<br/>")}</p></div>`,
       },
-      entry: [{ reference: `urn:uuid:${encounterUUID}` }],
+      entry: [
+        { reference: `urn:uuid:${encounterUUID}` },
+        { reference: `urn:uuid:${conditionUUID}` },
+      ],
     });
+  }
 
-    // Create Condition resource from chief complaint — used as reasonReference for medications
+  // Even when Chief Complaints section is excluded (e.g. standalone Prescription bundle),
+  // create the Condition resource so MedicationRequest.reasonReference is valid.
+  if (!conditionUUID && includeSectionByHiType("Prescription", allowedHiTypes)) {
+    const chiefComplaintText = optionalData?.soapNotes?.subjective || visit.complaint || "Consultation";
     conditionUUID = generateUUID();
-    const condition = buildConditionResource(
-      chiefComplaint,
-      conditionUUID,
-      patientUUID,
-      bundleDate,
-      practitionerUUID,
-    );
-    bundleEntries.push(condition);
-    sections[sections.length - 1].entry.push({
-      reference: `urn:uuid:${conditionUUID}`,
-    });
+    bundleEntries.push(buildConditionResource(chiefComplaintText, conditionUUID, patientUUID, bundleDate, practitionerUUID));
   }
 
-  // Even when Chief Complaint section is excluded (e.g. standalone Prescription bundle),
-  // create the Condition resource so MedicationRequest.reasonReference is valid per ABDM spec.
-  if (
-    !conditionUUID &&
-    includeSectionByHiType("Prescription", allowedHiTypes)
-  ) {
-    conditionUUID = generateUUID();
-    const condition = buildConditionResource(
-      chiefComplaint,
-      conditionUUID,
-      patientUUID,
-      bundleDate,
-      practitionerUUID,
-    );
-    bundleEntries.push(condition);
-  }
-
-  // Symptoms Section
-  if (
-    optionalData?.assessment?.symptomsComplaints &&
-    includeSectionByHiType("Symptoms", allowedHiTypes)
-  ) {
-    sections.push({
-      title: "Symptoms",
-      code: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "10164-2", // History of present illness
-            display: "History of present illness",
-          },
-        ],
-      },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Symptoms:</strong> ${escapeHtml(optionalData.assessment.symptomsComplaints).replace(/\n/g, "<br/>")}</p></div>`,
-      },
-      entry: [{ reference: `urn:uuid:${encounterUUID}` }],
-    });
-  }
-
-  // Allergies
-  if (patient.allergies && includeSectionByHiType("Allergies", allowedHiTypes)) {
-    const allergyId = generateUUID();
-    const allergyText =
-      typeof patient.allergies === "string"
-        ? patient.allergies
-        : JSON.stringify(patient.allergies);
-
-    bundleEntries.push({
-      fullUrl: `urn:uuid:${allergyId}`,
-      resource: {
-        resourceType: "AllergyIntolerance",
-        id: allergyId,
-        recordedDate: bundleDate,
-        clinicalStatus: {
-          coding: [
-            {
-              system:
-                "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
-              code: "active",
-              display: "Active",
-            },
-          ],
+  // ── Section 2: Allergies (LOINC 48765-2) ──
+  if (includeSectionByHiType("Allergies", allowedHiTypes)) {
+    const allergyText = (typeof patient.allergies === "string" && patient.allergies) ? patient.allergies : "No known allergies";
+    const allergyEntries: any[] = [];
+    
+    if (patient.allergies) {
+      const allergyId = generateUUID();
+      bundleEntries.push({
+        fullUrl: `urn:uuid:${allergyId}`,
+        resource: {
+          resourceType: "AllergyIntolerance",
+          id: allergyId,
+          recordedDate: bundleDate,
+          recorder: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+          clinicalStatus: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical", code: "active", display: "Active" }] },
+          verificationStatus: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification", code: "confirmed", display: "Confirmed" }] },
+          code: { text: allergyText },
+          patient: { reference: `urn:uuid:${patientUUID}` },
         },
-        verificationStatus: {
-          coding: [
-            {
-              system:
-                "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
-              code: "confirmed",
-              display: "Confirmed",
-            },
-          ],
-        },
-        code: {
-          text: allergyText,
-        },
-        patient: {
-          reference: `urn:uuid:${patientUUID}`,
-        },
-      },
-    });
+      });
+      allergyEntries.push({ reference: `urn:uuid:${allergyId}` });
+    }
 
     sections.push({
       title: "Allergies",
-      code: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "48765-2",
-            display: "Allergies and adverse reactions Document",
-          },
-        ],
-      },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Allergies:</strong> ${escapeHtml(allergyText).replace(/\n/g, "<br/>")}</p></div>`,
-      },
-      entry: [{ reference: `urn:uuid:${allergyId}` }],
+      code: { coding: [{ system: "http://loinc.org", code: "48765-2", display: "Allergies and adverse reactions Document" }] },
+      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Allergies:</strong> ${escapeHtml(allergyText)}</p></div>` },
+      ...(allergyEntries.length > 0 && { entry: allergyEntries }),
     });
   }
 
-  // O
-  if (includeSectionByHiType("Physical Examination", allowedHiTypes)) {
+  // ── Section 3: Medical History (LOINC 11329-0) ──
+  if (
+    includeSectionByHiType("Medical History", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    const mhParts: string[] = [];
+    const mhEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
+    const assessHistory = optionalData?.assessment?.medicalHistory;
+    if (patient.existingMedicalConditions)
+      mhParts.push(`<p><strong>Existing Conditions:</strong> ${escapeHtml(patient.existingMedicalConditions)}</p>`);
+    if (assessHistory && assessHistory.length > 0) {
+      const rows = assessHistory.map((h: any) => {
+        if (h.disease) {
+          const cid = generateUUID();
+          // Past conditions use clinicalStatus: Recurrence per ABDM OPConsultNote-05 example
+          bundleEntries.push({
+            fullUrl: `urn:uuid:${cid}`,
+            resource: {
+              resourceType: "Condition",
+              id: cid,
+              meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Condition"] },
+              clinicalStatus: {
+                coding: [{ system: "http://terminology.hl7.org/CodeSystem/condition-clinical", code: "recurrence", display: "Recurrence" }]
+              },
+              code: { text: h.disease },
+              subject: { reference: `urn:uuid:${patientUUID}` },
+              recordedDate: bundleDate,
+              recorder: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+            },
+          });
+          mhEntries.push({ reference: `urn:uuid:${cid}` });
+        }
+        return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
+      }).join("");
+      mhParts.push(`<table border="1" cellpadding="4"><thead><tr><th>Disease</th><th>Duration</th><th>Medications</th></tr></thead><tbody>${rows}</tbody></table>`);
+    }
     sections.push({
-      title: "Physical Examination",
-      code: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "29545-1",
-            display: "Physical examination",
-          },
-        ],
-      },
+      title: "Medical History",
+      code: { coding: [{ system: "http://loinc.org", code: "11329-0", display: "History of past illness" }] },
+      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${mhParts.join("") || "<p>No medical history recorded.</p>"}</div>` },
+      entry: mhEntries,
+    });
+  }
+
+  // ── Section 4: Investigation Advice (SNOMED 721981007) — ServiceRequest per ABDM example ──
+  if (
+    includeSectionByHiType("Investigation Advice", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    const iaText = optionalData?.soapNotes?.assessment || "";
+    const iaEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
+    if (iaText) {
+      const srId = generateUUID();
+      bundleEntries.push({
+        fullUrl: `urn:uuid:${srId}`,
+        resource: {
+          resourceType: "ServiceRequest",
+          id: srId,
+          meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/ServiceRequest"] },
+          status: "active",
+          intent: "order",
+          category: [{ coding: [{ system: "http://snomed.info/sct", code: "108252007", display: "Laboratory procedure" }] }],
+          code: { text: iaText },
+          subject: { reference: `urn:uuid:${patientUUID}` },
+          authoredOn: bundleDate,
+          requester: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+        },
+      });
+      iaEntries.push({ reference: `urn:uuid:${srId}` });
+    }
+    sections.push({
+      title: "Investigation Advice",
+      code: { coding: [{ system: "http://snomed.info/sct", code: "721981007", display: "Diagnostic studies report" }] },
       text: {
         status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Physical Examination:</strong></p><p>${escapeHtml(optionalData?.soapNotes?.objective || "No physical examination notes").replace(/\n/g, "<br/>")}</p></div>`,
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${iaText ? `<p>${escapeHtml(iaText).replace(/\n/g, "<br/>")}</p>` : "<p>No investigation advice recorded.</p>"}</div>`,
       },
-      entry: [{ reference: `urn:uuid:${encounterUUID}` }],
+      entry: iaEntries,
     });
+  }
 
-    if (optionalData?.soapNotes?.objective) {
-      const conditionUUID = generateUUID();
-      const condition = buildObservationResource(
-        optionalData?.soapNotes?.objective,
-        conditionUUID,
-        patientUUID,
-        bundleDate,
-        practitionerUUID,
-      );
-      bundleEntries.push(condition);
-      sections[sections.length - 1].entry.push({
-        reference: `urn:uuid:${conditionUUID}`,
+  // ── Section 5: Medications (SNOMED 721912009) — from prescription ──
+  if (
+    includeSectionByHiType("Medications", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    const meds = optionalData?.prescription?.medications;
+    const medEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
+    let medNarrativeHtml = "<p>No medications prescribed.</p>";
+
+    if (meds && meds.length > 0) {
+      const medRows = meds
+        .map((m: any) => `<tr><td>${escapeHtml(m.medicine || m.name || "-")}</td><td>${escapeHtml(m.dosage || "-")}</td><td>${m.frequency || "-"}</td><td>${m.duration || "-"}</td></tr>`)
+        .join("");
+      medNarrativeHtml = `<table border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead><tbody>${medRows}</tbody></table>`;
+
+      const chiefComplaintText =
+        optionalData?.soapNotes?.subjective ||
+        visit.complaint ||
+        "General OPD consultation";
+
+      meds.forEach((m: any) => {
+        const medId = generateUUID();
+        // pass conditionUUID and chiefComplaintText to avoid "NA" in reason field
+        bundleEntries.push(buildMedicationRequest(m, patientUUID, orgUUID, practitionerUUID, doctor, bundleDate, medId, conditionUUID || null, chiefComplaintText));
+        medEntries.push({ reference: `urn:uuid:${medId}` });
       });
     }
+
+    sections.push({
+      title: "Medications",
+      code: { coding: [{ system: "http://snomed.info/sct", code: "721912009", display: "Medication summary document" }] },
+      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${medNarrativeHtml}</div>` },
+      entry: medEntries,
+    });
   }
 
-  // A
-  if (includeSectionByHiType("Assessment and Diagnosis", allowedHiTypes)) {
+  // ── Section 6: Procedure (SNOMED 371525003) — from soapNotes.objective ──
+  if (
+    includeSectionByHiType("Procedure", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    const procText = optionalData?.soapNotes?.objective || "";
+    const procEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
+    if (procText) {
+      const procId = generateUUID();
+      bundleEntries.push({
+        fullUrl: `urn:uuid:${procId}`,
+        resource: {
+          resourceType: "Procedure",
+          id: procId,
+          meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Procedure"] },
+          status: "completed",
+          code: { text: procText },
+          subject: { reference: `urn:uuid:${patientUUID}` },
+          performedDateTime: bundleDate,
+        },
+      });
+      procEntries.push({ reference: `urn:uuid:${procId}` });
+    }
     sections.push({
-      title: "Assessment and Diagnosis",
-      code: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "51848-0",
-            display: "Assessment",
-          },
-        ],
-      },
+      title: "Procedure",
+      code: { coding: [{ system: "http://snomed.info/sct", code: "371525003", display: "Clinical procedure report" }] },
       text: {
         status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Assessment and Diagnosis:</strong></p><p>${escapeHtml(optionalData?.soapNotes?.assessment || "No assessment notes").replace(/\n/g, "<br/>")}</p></div>`,
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${procText ? `<p>${escapeHtml(procText).replace(/\n/g, "<br/>")}</p>` : "<p>No procedures recorded.</p>"}</div>`,
       },
-      entry: [{ reference: `urn:uuid:${encounterUUID}` }],
+      entry: procEntries,
     });
-
-    if (optionalData?.soapNotes?.assessment) {
-      const assessmentUUID = generateUUID();
-      const assessment = buildConditionResource(
-        optionalData?.soapNotes?.assessment,
-        assessmentUUID,
-        patientUUID,
-        bundleDate,
-        practitionerUUID,
-        true,
-      );
-      bundleEntries.push(assessment);
-      sections[sections.length - 1].entry.push({
-        reference: `urn:uuid:${assessmentUUID}`,
-      });
-    }
   }
 
-  // P
-  if (includeSectionByHiType("Plan of Care", allowedHiTypes)) {
-    sections.push({
-      title: "Plan of Care",
-      code: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "18776-5",
-            display: "Plan of care note",
-          },
+  // ── Section 7: Follow Up (LOINC 57828-6) — Appointment per ABDM OPConsultNote-05 example ──
+  if (
+    includeSectionByHiType("Follow Up", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    const followUpText = optionalData?.soapNotes?.plan || "";
+    const fuEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
+    if (followUpText) {
+      const apptId = generateUUID();
+      // Use visit date as created, set start = 7 days later as a guidance follow-up slot
+      const startDate = new Date(bundleDate);
+      startDate.setDate(startDate.getDate() + 7);
+      const startIso = startDate.toISOString();
+      const endDate = new Date(startDate);
+      endDate.setMinutes(endDate.getMinutes() + 30);
+      const endIso = endDate.toISOString();
+
+      const apptResource: any = {
+        resourceType: "Appointment",
+        id: apptId,
+        meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Appointment"] },
+        status: "booked",
+        serviceCategory: [{ coding: [{ system: "http://terminology.hl7.org/CodeSystem/service-category", code: "17", display: "General Practice" }] }],
+        serviceType: [{ coding: [{ system: "http://terminology.hl7.org/CodeSystem/service-type", code: "11", display: "Consultation" }] }],
+        appointmentType: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/v2-0276", code: "FOLLOWUP", display: "Follow-up visit" }] },
+        description: followUpText,
+        start: startIso,
+        end: endIso,
+        created: bundleDate,
+        participant: [
+          { actor: { reference: `urn:uuid:${patientUUID}` }, status: "accepted" },
+          { actor: { reference: `urn:uuid:${practitionerUUID}`, display: doctor }, status: "accepted" },
         ],
-      },
+      };
+      if (conditionUUID) {
+        apptResource.reasonReference = [{ reference: `urn:uuid:${conditionUUID}` }];
+      }
+      bundleEntries.push({ fullUrl: `urn:uuid:${apptId}`, resource: apptResource });
+      fuEntries.push({ reference: `urn:uuid:${apptId}` });
+    }
+    sections.push({
+      title: "Follow Up",
+      code: { coding: [{ system: "http://loinc.org", code: "57828-6", display: "Prescription list" }] },
       text: {
         status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Plan of care:</strong></p><p>${escapeHtml(optionalData?.soapNotes?.plan || "No plan of care notes").replace(/\n/g, "<br/>")}</p></div>`,
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${followUpText ? `<p>${escapeHtml(followUpText).replace(/\n/g, "<br/>")}</p>` : "<p>No follow-up instructions recorded.</p>"}</div>`,
       },
-      entry: [{ reference: `urn:uuid:${encounterUUID}` }],
+      entry: fuEntries,
     });
-    if (optionalData?.soapNotes?.plan) {
-      const planUUID = generateUUID();
-      const plan = buildPlanResource(
-        optionalData?.soapNotes?.plan,
-        planUUID,
-        patientUUID,
-        bundleDate,
-        practitionerUUID,
-      );
-      bundleEntries.push(plan);
-      sections[sections.length - 1].entry.push({
-        reference: `urn:uuid:${planUUID}`,
-      });
-    }
   }
+
+  // ── Section 8: Document Reference (OPConsultation PDF) ──
+  if (
+    includeSectionByHiType("Document Reference", allowedHiTypes) &&
+    !allowedHiTypes?.includes("DischargeSummary")
+  ) {
+    sections.push({
+      title: "Document Reference",
+      code: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }] },
+      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>OP Consultation Record</p></div>` },
+      entry: [
+        { reference: `urn:uuid:${encounterUUID}` },
+        { reference: `urn:uuid:${opConsultationDocId}` },
+      ],
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // END OF OP CONSULTATION SECTIONS — Wellness sections follow
+  // ═══════════════════════════════════════════════════════════
 
   // Vital Signs — with real vitals in the narrative
   if (includeSectionByHiType("Vital Signs", allowedHiTypes)) {
@@ -2686,7 +2754,7 @@ export const generateCombinedBundleForCareContext = async (
           bundleDate,
           medRequestId,
           conditionUUID,
-          chiefComplaint,
+          undefined, // chiefComplaint text embedded in Condition resource via conditionUUID
         );
         bundleEntries.push(medResource);
         medRequestEntries.push({ reference: `urn:uuid:${medRequestId}` });
