@@ -376,14 +376,11 @@ export const extractAbhaFromProfile = (
   const numId = allIds.find(
     (id) =>
       abhaNumberTypes.includes(id.type) &&
+      !id.value?.includes("@") &&
       id.value?.replace(/\D/g, "").length >= 14,
   );
   if (numId?.value) {
     const formatted = formatAbhaForStorage(numId.value);
-    if (formatted) abhaNumber = formatted;
-  }
-  if (!abhaNumber && abhaAddress) {
-    const formatted = formatAbhaForStorage(abhaAddress);
     if (formatted) abhaNumber = formatted;
   }
   return { abhaAddress, abhaNumber };

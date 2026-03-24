@@ -765,15 +765,25 @@ const buildDiagnosticReportRecordBundle = async (
   bundleEntries.push(buildPatientResource(patient, patientUUID));
   bundleEntries.push(buildOrganizationResource(orgUUID));
   bundleEntries.push(buildPractitionerResource(analystName, practitionerUUID));
-  bundleEntries.push(buildEncounterResource(visit, encounterUUID, patientUUID));
+  const encounter = buildEncounterResource(visit, encounterUUID, patientUUID);
+  (encounter.resource as any).participant = [
+    {
+      individual: {
+        reference: `urn:uuid:${practitionerUUID}`,
+        display: analystName,
+      },
+    },
+  ];
+  bundleEntries.push(encounter);
 
   const sections: any[] = [];
   const sectionEntries: any[] = [];
 
   if (labs && labs.length > 0) {
     const labRows: string[] = [];
+    const allObsRefs: { reference: string; display: string }[] = [];
 
-    // Create a separate DiagnosticReport for each lab test (matching example bundle)
+    // Build one Observation per test, then ONE DiagnosticReport referencing all
     labs.forEach((lab) => {
       const drId = generateUUID();
       const obsId = generateUUID();
@@ -781,12 +791,17 @@ const buildDiagnosticReportRecordBundle = async (
         ? toSafeISOString(lab.reportDate)
         : bundleDate;
 
-      // Build one Observation per test
+      // Build one Observation per test — collect refs for the SINGLE DiagnosticReport
       const obsResource: any = {
         fullUrl: `urn:uuid:${obsId}`,
         resource: {
           resourceType: "Observation",
           id: obsId,
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation",
+            ],
+          },
           status: "final",
           code: {
             text: lab.testType || "Laboratory result",
@@ -800,63 +815,32 @@ const buildDiagnosticReportRecordBundle = async (
           },
           subject: { reference: `urn:uuid:${patientUUID}` },
           effectiveDateTime: reportDate,
-          valueString: lab.resultValue
-            ? `${lab.resultValue}${lab.measurementUnit ? " " + lab.measurementUnit : ""}`
-            : undefined,
+          performer: [{ reference: `urn:uuid:${orgUUID}`, display: "Organization" }],
+          ...((() => {
+            const numVal = parseFloat(lab.resultValue || "");
+            const isNum = !isNaN(numVal) && (lab.resultValue || "").trim() !== "";
+            if (isNum) {
+              return {
+                valueQuantity: {
+                  value: numVal,
+                  unit: lab.measurementUnit || undefined,
+                  ...(lab.measurementUnit
+                    ? { system: "http://snomed.info/sct", code: "258797006" }
+                    : {}),
+                },
+              };
+            }
+            return lab.resultValue
+              ? { valueString: `${lab.resultValue}${lab.measurementUnit ? " " + lab.measurementUnit : ""}` }
+              : {};
+          })()),
         },
       };
       bundleEntries.push(obsResource);
-      // Do NOT add Observation to sectionEntries — it's referenced via DiagnosticReport.result[].
-      // Only DiagnosticReport goes in the section so PHR shows one card per test.
-
-      const drResource: any = {
-        fullUrl: `urn:uuid:${drId}`,
-        resource: {
-          resourceType: "DiagnosticReport",
-          id: drId,
-          status: "final",
-          category: [
-            {
-              coding: [
-                {
-                  system: "http://snomed.info/sct",
-                  code: "708196005",
-                  display: "Hematology service",
-                },
-              ],
-            },
-          ],
-          code: {
-            text: lab.testType || "Laboratory Report",
-            coding: [
-              {
-                system: "http://loinc.org",
-                code: "11502-2",
-                display: lab.testType || "Laboratory Report",
-              },
-            ],
-          },
-          subject: { reference: `urn:uuid:${patientUUID}` },
-          effectiveDateTime: reportDate,
-          issued: new Date().toISOString(),
-          // performer = Organisation (the lab), NOT the individual analyst
-          performer: [{ reference: `urn:uuid:${orgUUID}` }],
-          // resultsInterpreter = the analyst who interprets results (per NRCES spec)
-          resultsInterpreter: [
-            { reference: `urn:uuid:${practitionerUUID}`, display: analystName },
-          ],
-          result: [{ reference: `urn:uuid:${obsId}` }],
-          presentedForm: [],
-        },
-      };
-
-      // Add conclusion from additionalObservations if available
-      if (lab.additionalObservations) {
-        drResource.resource.conclusion = lab.additionalObservations;
-      }
-
-      bundleEntries.push(drResource);
-      sectionEntries.push({ reference: `urn:uuid:${drId}` });
+      allObsRefs.push({
+        reference: `urn:uuid:${obsId}`,
+        display: `Observation/${lab.testType ?? "lab-result"}`,
+      });
 
       labRows.push(
         `<tr><td>${escapeHtml(lab.testType || "-")}</td><td>${escapeHtml(lab.resultValue || "-")}</td><td>${escapeHtml(lab.measurementUnit || "-")}</td><td>${lab.reportDate ? toSafeLocaleDateString(lab.reportDate) : "-"}</td><td>${escapeHtml(lab.analystName || "-")}</td></tr>`,
@@ -865,10 +849,68 @@ const buildDiagnosticReportRecordBundle = async (
 
     const labTable = `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Date</th><th>Analyst</th></tr></thead><tbody>${labRows.join("")}</tbody></table>`;
 
-    // Wire PDF reference into section entries BEFORE pushing
-    sectionEntries.push({ reference: `urn:uuid:${drDocId}` });
+    // Build ONE DiagnosticReport that groups ALL Observations (per ABDM pattern)
+    const singleDrId = generateUUID();
+    const combinedConclusion = labs
+      .map((r: any) => r.additionalObservations)
+      .filter(Boolean)
+      .join("; ");
+    const singleDrResource: any = {
+      fullUrl: `urn:uuid:${singleDrId}`,
+      resource: {
+        resourceType: "DiagnosticReport",
+        id: singleDrId,
+        meta: {
+          profile: [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DiagnosticReportLab",
+          ],
+        },
+        status: "final",
+        category: [
+          {
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "708196005",
+                display: "Hematology service",
+              },
+            ],
+          },
+        ],
+        code: {
+          text: (labs[0] as any)?.captureTime
+            ? new Date((labs[0] as any).captureTime).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) + ", " + new Date((labs[0] as any).captureTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+            : "Laboratory report",
+          coding: [
+            {
+              system: "http://loinc.org",
+              code: "11502-2",
+              display: "Laboratory report",
+            },
+          ],
+        },
+        subject: { reference: `urn:uuid:${patientUUID}` },
+        effectiveDateTime: labs[0]?.reportDate
+          ? toSafeISOString(labs[0].reportDate)
+          : bundleDate,
+        issued: new Date().toISOString(),
+        performer: [{ reference: `urn:uuid:${orgUUID}` }],
+        resultsInterpreter: [
+          { reference: `urn:uuid:${practitionerUUID}`, display: analystName },
+        ],
+        result: allObsRefs,
+        presentedForm: [],
+        ...(combinedConclusion ? { conclusion: combinedConclusion } : {}),
+      },
+    };
+    bundleEntries.push(singleDrResource);
+
+    // Section: ONE DR entry + DocumentReference for PDF
+    sectionEntries.push({ reference: `urn:uuid:${singleDrId}`, type: "DiagnosticReport" });
+    sectionEntries.push({ reference: `urn:uuid:${drDocId}`, type: "DocumentReference" });
+    // Per ABDM: section title = "Diagnostic studies report" (SNOMED 721981007)
     sections.push({
-      title: "Diagnostic Report",
+      title: "Diagnostic studies report",
       code: {
         coding: [
           {
@@ -886,13 +928,13 @@ const buildDiagnosticReportRecordBundle = async (
     });
   } else {
     sections.push({
-      title: "Diagnostic Report",
+      title: "Laboratory report",
       code: {
         coding: [
           {
             system: "http://snomed.info/sct",
-            code: "721981007",
-            display: "Diagnostic studies report",
+            code: "4321000179101",
+            display: "Laboratory report",
           },
         ],
       },
@@ -975,9 +1017,10 @@ const buildDiagnosticReportRecordBundle = async (
           author: [
             {
               reference: `urn:uuid:${practitionerUUID}`,
+              display: analystName,
             },
           ],
-          title: `Diagnostic Report - ${patientName} - ${visitDateStr}`,
+          title: `Diagnostic Report- Lab - ${patientName} - ${visitDateStr}`,
           custodian: { reference: `urn:uuid:${orgUUID}` },
           section: sections,
         },

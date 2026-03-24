@@ -9,6 +9,9 @@ export interface IVisitDayCareBilling extends Document {
     particulars: string;
     rate: number;
     unit: number;
+    discount?: number;
+    cgst?: number;
+    sgst?: number;
     amount: number;
   }>;
   totalAmount: number;
@@ -33,6 +36,9 @@ const VisitDayCareBillingSchema: Schema = new Schema(
         particulars: { type: String },
         rate: { type: Number },
         unit: { type: Number },
+        discount: { type: Number, default: 0 },
+        cgst: { type: Number, default: 0 },
+        sgst: { type: Number, default: 0 },
         amount: { type: Number },
       },
     ],

@@ -111,7 +111,22 @@ export const isLinkTokenValid = (patient: IPatient): boolean => {
   const now = new Date();
   const expiresAt = new Date(patient.abdmLinkToken.expiresAt);
 
-  return now < expiresAt;
+  if (now >= expiresAt) {
+    return false;
+  }
+
+  // Defensive: if we stored which ABHA this token was issued for, verify it still matches.
+  // This catches stale tokens from before this field was added too (abhaAddress would be undefined).
+  if (
+    patient.abdmLinkToken.abhaAddress &&
+    patient.abhaaddress &&
+    patient.abdmLinkToken.abhaAddress.toLowerCase() !==
+      patient.abhaaddress.toLowerCase()
+  ) {
+    return false;
+  }
+
+  return true;
 };
 
 export const calculateTokenExpiry = (): Date => {
@@ -125,6 +140,8 @@ export const storeLinkToken = async (
   linkToken: string,
 ): Promise<void> => {
   const now = new Date();
+  // Fetch current abhaaddress so we can record it on the token
+  const patient = await PatientModel.findById(patientId).select("abhaaddress").lean();
   await PatientModel.updateOne(
     { _id: patientId },
     {
@@ -133,6 +150,9 @@ export const storeLinkToken = async (
         "abdmLinkToken.issuedAt": now,
         "abdmLinkToken.expiresAt": calculateTokenExpiry(),
         "abdmLinkToken.status": "ACTIVE",
+        ...(patient?.abhaaddress
+          ? { "abdmLinkToken.abhaAddress": patient.abhaaddress }
+          : {}),
       },
       $unset: { abdmLinkTokenRequestedAt: 1 },
     },
@@ -158,6 +178,7 @@ export const storeLinkTokenByAbhaAddress = async (
         "abdmLinkToken.issuedAt": now,
         "abdmLinkToken.expiresAt": calculateTokenExpiry(),
         "abdmLinkToken.status": "ACTIVE",
+        "abdmLinkToken.abhaAddress": normalized, // record which ABHA this token was issued for
       },
       $unset: { abdmLinkTokenRequestedAt: 1 },
     },
@@ -270,11 +291,37 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     );
     return isSuccess;
   } catch (error: any) {
+    const errCode = String(error.response?.data?.error?.code || error.response?.data?.code || "");
+    const isDuplicate = errCode.includes("1092") || /duplicate link token/i.test(
+      error.response?.data?.error?.message || error.response?.data?.message || ""
+    );
+
+    if (isDuplicate) {
+      // ABDM-1092: ABDM already has a pending token generation for this ABHA address.
+      // Treat as a soft success — set the cooldown so we don't keep hammering ABDM.
+      // The token will arrive via the on-generate-token callback.
+      console.log(
+        "CareContext: ABDM-1092 — token request already in flight for patient",
+        patient._id?.toString(),
+        "| Awaiting on-generate-token callback.",
+      );
+      try {
+        const patientId = patient._id?.toString();
+        if (patientId) {
+          await PatientModel.updateOne(
+            { _id: patientId },
+            { $set: { abdmLinkTokenRequestedAt: new Date() } },
+          );
+        }
+      } catch (_) {}
+      return false;
+    }
+
     console.error(
       "CareContext: Error requesting link token",
       error.response?.data || error.message,
     );
-    // Clear abdmLinkTokenRequestedAt on failure so retries are not blocked
+    // Only clear the cooldown for genuine failures (not duplicates) so retries are not blocked
     try {
       const patientId = patient._id?.toString();
       if (patientId) {
@@ -1497,74 +1544,108 @@ export const createCareContextsForExistingVisits = async (
       }
     }
 
-    console.log(
-      `[CareContext] Retroactive: Found ${visitIds.length} visits for patient ${uhid}`,
+    // Deduplicate visit IDs
+    const uniqueVisitIds = Array.from(
+      new Map(visitIds.map((id) => [id.toString(), id])).values(),
     );
 
-    if (visitIds.length === 0) {
+    console.log(
+      `[CareContext] Retroactive: Found ${uniqueVisitIds.length} visits for patient ${uhid}`,
+    );
+
+    if (uniqueVisitIds.length === 0) {
       console.log(`[CareContext] Retroactive: No visits to process`);
       return result;
     }
 
-    // Process each visit
-    for (const visitId of visitIds) {
-      try {
-        // Detect hiTypes from existing clinical data
-        const hiTypes = await detectHiTypesForVisit(visitId);
-        console.log(
-          `[CareContext] Retroactive: Detected hiTypes for visit ${visitId}:`,
-          hiTypes,
-        );
+    // ── STEP 1: Detect hiTypes for ALL visits concurrently ────────────────────
+    const hiTypeResults = await Promise.all(
+      uniqueVisitIds.map(async (visitId) => {
+        try {
+          const hiTypes = await detectHiTypesForVisit(visitId);
+          console.log(
+            `[CareContext] Retroactive: Detected hiTypes for visit ${visitId}:`,
+            hiTypes,
+          );
+          return { visitId, hiTypes, error: null };
+        } catch (err: any) {
+          return { visitId, hiTypes: [] as HIType[], error: err.message };
+        }
+      }),
+    );
 
-        // Create a separate CareContext for each detected HI type
-        for (const hiType of hiTypes) {
-          // Check if CareContext already exists for this (patientId, visitId, hiType)
-          const existingCC = await CareContextModel.findOne({
-            patientId,
-            visitId,
-            hiType,
-          });
-          if (existingCC) {
-            // Update abhaAddress if needed
-            if (
-              !existingCC.abhaAddress ||
-              existingCC.abhaAddress !== abhaAddress
-            ) {
-              await CareContextModel.updateOne(
-                { _id: existingCC._id },
-                { $set: { abhaAddress } },
-              );
-            }
-            continue;
-          }
+    for (const r of hiTypeResults) {
+      if (r.error) result.errors.push(`Visit ${r.visitId}: ${r.error}`);
+    }
 
-          // Get visit date for display text
-          let visitDate = new Date();
+    // Flat list of (visitId, hiType) pairs to process
+    const pairs = hiTypeResults.flatMap(({ visitId, hiTypes }) =>
+      hiTypes.map((hiType) => ({ visitId, hiType })),
+    );
+
+    if (pairs.length === 0) {
+      console.log(
+        `[CareContext] Retroactive: Created 0, Linked 0, Errors ${result.errors.length}`,
+      );
+      return result;
+    }
+
+    // ── STEP 2: Single batch query for all existing CCs ───────────────────────
+    const existingCCs = await CareContextModel.find({
+      patientId,
+      $or: pairs.map(({ visitId, hiType }) => ({ visitId, hiType })),
+    })
+      .select("_id visitId hiType abhaAddress")
+      .lean();
+
+    const existingSet = new Set(
+      existingCCs.map((cc) => `${cc.visitId}-${cc.hiType}`),
+    );
+
+    // ── STEP 3: Batch-fix stale abhaAddress on existing CCs in one shot ──────
+    const staleIds = existingCCs
+      .filter((cc) => !cc.abhaAddress || cc.abhaAddress !== abhaAddress)
+      .map((cc) => cc._id);
+
+    if (staleIds.length > 0) {
+      await CareContextModel.updateMany(
+        { _id: { $in: staleIds } },
+        { $set: { abhaAddress } },
+      );
+    }
+
+    // ── STEP 4: Build new CC docs for missing pairs concurrently ─────────────
+    const newPairs = pairs.filter(
+      ({ visitId, hiType }) => !existingSet.has(`${visitId}-${hiType}`),
+    );
+
+    if (newPairs.length > 0) {
+      // Build visitDate lookup map (avoid repeated array scans)
+      const visitDateMap = new Map<string, Date>();
+      for (const v of scanShareVisits) {
+        visitDateMap.set(v._id.toString(), v.visitDate);
+      }
+      for (const ev of patient.visits ?? []) {
+        if (ev.visitId && ev.visitDate) {
+          visitDateMap.set(ev.visitId.toString(), ev.visitDate);
+        }
+      }
+
+      // Generate all CC references concurrently
+      const newDocs = await Promise.all(
+        newPairs.map(async ({ visitId, hiType }) => {
+          const visitDate = visitDateMap.get(visitId.toString()) ?? new Date();
+          const ccRef = await generateCareContextReference(uhid, visitDate);
+          const hiTypeDisplay = HI_TYPE_DISPLAY_NAMES[hiType] || hiType;
           const ssVisit = scanShareVisits.find(
             (v) => v._id.toString() === visitId.toString(),
           );
-          if (ssVisit) {
-            visitDate = ssVisit.visitDate;
-          } else {
-            const embeddedVisit = patient.visits?.find(
-              (v) => v.visitId?.toString() === visitId.toString(),
-            );
-            if (embeddedVisit?.visitDate) {
-              visitDate = embeddedVisit.visitDate;
-            }
-          }
-
-          // Generate care context reference
-          const ccRef = await generateCareContextReference(uhid, visitDate);
-          const hiTypeDisplay = HI_TYPE_DISPLAY_NAMES[hiType] || hiType;
           const display = generateDisplayText(
             hiTypeDisplay,
             ssVisit?.department,
             visitDate,
           );
-
-          // Create CareContext for this specific HI type
-          const newCC = await CareContextModel.create({
+          return {
             patientId: patient._id,
             visitId,
             careContextReference: ccRef,
@@ -1577,30 +1658,31 @@ export const createCareContextsForExistingVisits = async (
             linkAttempts: 0,
             facilityId,
             facilityName,
-          });
+          };
+        }),
+      );
 
-          result.created++;
-          console.log(
-            `[CareContext] Retroactive: Created CareContext ${ccRef} for hiType: ${hiType}`,
+      // Batch insert — ordered:false so a single duplicate doesn't block the rest
+      try {
+        await CareContextModel.insertMany(newDocs, {
+          ordered: false,
+        } as any);
+        result.created = newDocs.length;
+        console.log(
+          `[CareContext] Retroactive: Created ${result.created} CareContexts via insertMany`,
+        );
+      } catch (bulkErr: any) {
+        // Partial inserts on duplicate key are ok (concurrent requests)
+        const insertedCount =
+          bulkErr.result?.insertedCount ?? bulkErr.insertedDocs?.length ?? 0;
+        if (insertedCount > 0) {
+          result.created = insertedCount;
+          console.warn(
+            `[CareContext] Retroactive: insertMany partial — ${result.created} inserted, some duplicates skipped`,
           );
-
-          // Trigger linking if requested and patient has valid link token
-          if (triggerLinking && isLinkTokenValid(patient)) {
-            try {
-              const linked = await linkCareContext(newCC._id);
-              if (linked) {
-                result.linked++;
-              }
-            } catch (linkErr: any) {
-              console.error(
-                `[CareContext] Retroactive: Link error for ${ccRef}:`,
-                linkErr.message,
-              );
-            }
-          }
+        } else {
+          result.errors.push(`insertMany error: ${bulkErr.message}`);
         }
-      } catch (visitErr: any) {
-        result.errors.push(`Visit ${visitId}: ${visitErr.message}`);
       }
     }
 

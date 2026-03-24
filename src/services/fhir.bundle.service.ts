@@ -279,11 +279,22 @@ const buildObservationBase = (
   effectiveDate: string,
   categoryCode: "vital-signs" | "laboratory" | "exam",
   categoryDisplay: string,
+  /** Optional: add NRCES Observation profile to meta */
+  includeProfile = false,
 ) => ({
   fullUrl: `urn:uuid:${obsId}`,
   resource: {
     resourceType: "Observation",
     id: obsId,
+    ...(includeProfile
+      ? {
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation",
+            ],
+          },
+        }
+      : {}),
     status: "final",
     category: [
       {
@@ -348,6 +359,8 @@ const buildLabObservation = (
   loincCode: string | null,
   value: string | number,
   unit?: string,
+  /** UUID of the Organization that performed the test (per ABDM spec) */
+  orgUUID?: string,
 ) => {
   const base = buildObservationBase(
     obsId,
@@ -355,6 +368,7 @@ const buildLabObservation = (
     date,
     "laboratory",
     "Laboratory",
+    true, // include NRCES Observation profile
   );
 
   const code = loincCode
@@ -370,23 +384,36 @@ const buildLabObservation = (
       }
     : { text: testName };
 
-  const valueQuantity =
-    typeof value === "number"
-      ? {
-          value,
-          unit,
-        }
-      : undefined;
+  // Per ABDM Lab-example-03: use valueQuantity when the result is numeric
+  const numericValue =
+    typeof value === "number" ? value : parseFloat(String(value));
+  const isNumeric = !isNaN(numericValue) && String(value).trim() !== "";
 
-  const valueString = typeof value === "string" ? value : undefined;
+  const valueQuantity = isNumeric
+    ? {
+        value: numericValue,
+        unit: unit || undefined,
+        ...(unit
+          ? { system: "http://snomed.info/sct", code: "258797006" }
+          : {}),
+      }
+    : undefined;
+
+  const valueString = !isNumeric ? String(value) : undefined;
+
+  // Per ABDM spec: Observation.performer = Organization (the lab)
+  const performer = orgUUID
+    ? [{ reference: `urn:uuid:${orgUUID}`, display: "Organization" }]
+    : undefined;
 
   const resource = {
     ...base,
     resource: {
       ...base.resource,
       code,
-      valueQuantity,
-      valueString,
+      ...(performer ? { performer } : {}),
+      ...(valueQuantity ? { valueQuantity } : {}),
+      ...(valueString ? { valueString } : {}),
     },
   };
 
@@ -455,7 +482,30 @@ const buildInvoiceResource = (
   practitionerRef: string,
   chargeItemIds: string[],
 ) => {
+  const parseNum = (val: any) => parseFloat(val) || 0;
+  
+  let calculatedTotalGross = 0;
+  let calculatedTotalNet = 0;
+
   const lineItems = billings.map((b, index) => {
+    const qty = parseNum(b.unit) || 1;
+    const rate = parseNum(b.rate) || parseNum(b.amount) || 0;
+    // Standard GST for medicines is usually 12% (6% CGST, 6% SGST).
+    // If not provided in the DB, calculate it based on the rate.
+    const cgst = parseNum(b.cgst) || (rate * 0.06);
+    const sgst = parseNum(b.sgst) || (rate * 0.06);
+    const discount = parseNum(b.discount) || 0;
+    
+    // PHR App Hack: The PHR app appears to ignore 'tax' priceComponents and only reads 'base' Rate and MRP.
+    // To ensure the PHR app displays the correct Final Total (which includes taxes), we must bake the tax into the Rate and MRP.
+    const rateWithTax = rate + (cgst / qty) + (sgst / qty);
+    
+    const itemGross = rateWithTax * qty;
+    const itemNet = itemGross - discount;
+    
+    calculatedTotalGross += itemGross;
+    calculatedTotalNet += itemNet;
+
     const priceComponents: any[] = [
       {
         type: "base",
@@ -470,7 +520,7 @@ const buildInvoiceResource = (
           ],
         },
         amount: {
-          value: b.rate ?? b.amount ?? 0,
+          value: rateWithTax,
           currency: "INR",
         },
       },
@@ -487,28 +537,66 @@ const buildInvoiceResource = (
           ],
         },
         amount: {
-          value: b.rate ?? b.amount ?? 0,
-          currency: "INR",
-        },
-      },
-      {
-        type: "discount",
-        code: {
-          coding: [
-            {
-              system:
-                "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
-              code: "02",
-              display: "Discount",
-            },
-          ],
-        },
-        amount: {
-          value: 0,
+          value: rateWithTax, // Assuming MRP same as Rate for now if not provided
           currency: "INR",
         },
       },
     ];
+
+    // Always include discount, even if 0, to enforce visibility in the PHR app
+    priceComponents.push({
+      type: "discount",
+      code: {
+        coding: [
+          {
+            system:
+              "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+            code: "02",
+            display: "Discount",
+          },
+        ],
+      },
+      amount: {
+        value: discount,
+        currency: "INR",
+      },
+    });
+
+    // We still include the separated tax components for strict FHIR compliance, 
+    // even though the basic PHR app ignores them.
+    priceComponents.push({
+      type: "tax",
+      code: {
+        coding: [
+          {
+            system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+            code: "03",
+            display: "CGST",
+          },
+        ],
+      },
+      amount: {
+        value: cgst,
+        currency: "INR",
+      },
+    });
+
+    priceComponents.push({
+      type: "tax",
+      code: {
+        coding: [
+          {
+            system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+            code: "04",
+            display: "SGST",
+          },
+        ],
+      },
+      amount: {
+        value: sgst,
+        currency: "INR",
+      },
+    });
 
     return {
       sequence: index + 1,
@@ -522,8 +610,24 @@ const buildInvoiceResource = (
 
   const billingRows = billings
     .map(
-      (b) =>
-        `<tr><td>${b.particulars || "Service"}</td><td>${b.unit || 1}</td><td>${b.rate ?? b.amount ?? 0} INR</td><td>${b.amount ?? 0} INR</td></tr>`,
+      (b) => {
+        const qty = parseNum(b.unit) || 1;
+        const rate = parseNum(b.rate) || parseNum(b.amount) || 0;
+        
+        const cgst = parseNum(b.cgst) || (rate * 0.06);
+        const sgst = parseNum(b.sgst) || (rate * 0.06);
+        const discount = parseNum(b.discount) || 0;
+        const tax = cgst + sgst;
+        
+        // Final net based on the exact same logic
+        const rateWithTax = rate + (cgst / qty) + (sgst / qty);
+        const finalItemNet = (rateWithTax * qty) - discount;
+        
+        let taxStr = `<br/><small>Tax: ${tax.toFixed(2)}</small>`;
+        if (discount > 0) taxStr += `<br/><small>Disc: -${discount}</small>`;
+        
+        return `<tr><td style="padding: 4px;">${escapeHtml(b.particulars || "Service")}</td><td style="padding: 4px;">${qty}</td><td style="padding: 4px;">${rateWithTax.toFixed(2)} INR</td><td style="padding: 4px;">${finalItemNet.toFixed(2)} INR ${taxStr}</td></tr>`;
+      }
     )
     .join("");
 
@@ -541,13 +645,19 @@ const buildInvoiceResource = (
         status: "generated",
         div: `<div xmlns="http://www.w3.org/1999/xhtml">
           <p><b>Invoice</b></p>
-          <table border="1" style="border-collapse: collapse;">
+          <table border="1" style="border-collapse: collapse; width: 100%;">
             <thead>
-              <tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>
+              <tr>
+                <th style="padding: 4px;">Item</th>
+                <th style="padding: 4px;">Qty</th>
+                <th style="padding: 4px;">Rate</th>
+                <th style="padding: 4px;">Amount</th>
+              </tr>
             </thead>
             <tbody>
               ${billingRows}
-              <tr><td colspan="3"><b>Total</b></td><td><b>${totalValue} INR</b></td></tr>
+              <tr><td colspan="3" style="padding: 4px;"><b>Total Gross</b></td><td style="padding: 4px;"><b>${calculatedTotalGross} INR</b></td></tr>
+              <tr><td colspan="3" style="padding: 4px;"><b>Total Net</b></td><td style="padding: 4px;"><b>${calculatedTotalNet} INR</b></td></tr>
             </tbody>
           </table>
         </div>`,
@@ -583,11 +693,11 @@ const buildInvoiceResource = (
       ],
       lineItem: lineItems,
       totalNet: {
-        value: totalValue,
+        value: calculatedTotalNet,
         currency: "INR",
       },
       totalGross: {
-        value: totalValue,
+        value: calculatedTotalGross,
         currency: "INR",
       },
     },
@@ -797,6 +907,7 @@ export interface ICombinedBundleOptionalData {
     resultValue?: string;
     measurementUnit?: string;
     reportDate?: Date;
+    captureTime?: Date;
     sampleId?: string;
     additionalObservations?: string;
     analystName?: string;
@@ -1210,19 +1321,17 @@ export const buildMedicationRequest = (
   };
 
   // reasonCode + reasonReference: NHA example ALWAYS has this — links to the Condition resource
-  if (conditionUUID && chiefComplaint) {
+  const fallbackReason = med.reason || chiefComplaint;
+
+  if (fallbackReason) {
     medRequest.resource.reasonCode = [
       {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: "11840006", // using the official example code for Traveler's Diarrhea just to match exactly
-            display: chiefComplaint,
-          },
-        ],
-        text: chiefComplaint,
+        text: fallbackReason,
       },
     ];
+  }
+
+  if (conditionUUID) {
     medRequest.resource.reasonReference = [
       {
         reference: `urn:uuid:${conditionUUID}`,
@@ -1667,23 +1776,34 @@ export const generateCombinedBundleForCareContext = async (
     ? optionalData.dischargeSummary.doctorSignature 
     : (visit.doctorName || "Doctor");
 
+  // For DiagnosticReport bundles, the analyst is the primary practitioner/author.
+  const primaryHiType = allowedHiTypes?.length === 1 ? allowedHiTypes[0] : undefined;
+  const isDiagnosticOnlyBundle = primaryHiType === "DiagnosticReport";
+
+  const labAnalystName = optionalData?.labReports?.find((r) => r.analystName)?.analystName;
+  const analystNameResolved = labAnalystName || visit.doctorName || "Doctor";
+  const analystPractitionerUUID = generateDeterministicUUID(`${analystNameResolved}_analyst_practitioner`);
+
   const bundleEntries: any[] = [];
 
   bundleEntries.push(buildPatientResource(patient, patientUUID));
   bundleEntries.push(buildOrganizationResource(orgUUID));
-  bundleEntries.push(buildPractitionerResource(doctor, practitionerUUID));
 
-  // For DiagnosticReport bundles the analyst is the author, not the doctor.
-  // These are declared here so Composition (built later) can reference them.
-  let analystPractitionerUUID: string | null = null;
-  let analystNameResolved: string | null = null;
+  if (isDiagnosticOnlyBundle) {
+    // For Diagnostic bundles, the analyst IS the primary practitioner
+    bundleEntries.push(buildPractitionerResource(analystNameResolved, practitionerUUID));
+  } else {
+    // For general bundles, the doctor is the primary practitioner
+    bundleEntries.push(buildPractitionerResource(doctor, practitionerUUID));
+    // If diagnostics are present, the analyst will be added as an additional practitioner later
+  }
 
   const encounter = buildEncounterResource(visit, encounterUUID, patientUUID);
   (encounter.resource as any).participant = [
     {
       individual: {
         reference: `urn:uuid:${practitionerUUID}`,
-        display: doctor,
+        display: isDiagnosticOnlyBundle ? analystNameResolved : doctor,
       },
     },
   ];
@@ -2602,14 +2722,19 @@ export const generateCombinedBundleForCareContext = async (
       ? `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Date</th><th>Analyst</th></tr></thead><tbody>${labDataRows}</tbody></table>`
       : `<p>No lab results stored for this visit.</p>`;
 
+    // Per ABDM DiagnosticReport-Lab-example-03:
+    // - Section title = "Diagnostic studies report" (from Composition.type SNOMED 721981007)
+    // - ONE DiagnosticReport groups ALL lab tests
+    // - Each individual test becomes a separate Observation in DR.result[]
+    // - DR.code = panel/report name; Observation.code = individual test name
     sections.push({
-      title: "Diagnostic Test Results",
+      title: "Diagnostic report",
       code: {
         coding: [
           {
-            system: "http://loinc.org",
-            code: "30954-2",
-            display: "Diagnostic results",
+            system: "http://snomed.info/sct",
+            code: "721981007",
+            display: "Diagnostic report",
           },
         ],
       },
@@ -2618,119 +2743,108 @@ export const generateCombinedBundleForCareContext = async (
         div: `<div xmlns="http://www.w3.org/1999/xhtml">${labNarrativeHtml}</div>`,
       },
       entry: [
-        { reference: `urn:uuid:${encounterUUID}` },
         ...(optionalData?.labReports?.length
-          ? [{ reference: `urn:uuid:${diagnosticReportDocId}` }]
+          ? [{ reference: `urn:uuid:${diagnosticReportDocId}`, type: "DocumentReference" }]
           : []),
       ],
     });
     if (optionalData?.labReports?.length) {
-      // Per NRCES FHIR spec (DiagnosticReport-Lab-example-01):
-      // - Each test type gets its OWN DiagnosticReport resource
-      // - DiagnosticReport.result[]  → Observation UUID(s)
-      // - DiagnosticReport.resultsInterpreter → Practitioner (the analyst who reads results)
-      // - DiagnosticReport.performer → Organization (the lab)
-      // - analyst is NOT in performer
+      if (!isDiagnosticOnlyBundle) {
+        // If not diagnostic-only, the analyst was not added yet – add them now as an additional practitioner
+        bundleEntries.push(
+          buildPractitionerResource(analystNameResolved, analystPractitionerUUID),
+        );
+      }
 
-      // Create ONE Practitioner resource for the analyst (shared across DRs)
-      analystPractitionerUUID = generateUUID();
-      const labAnalystName = optionalData.labReports.find(
-        (r) => r.analystName,
-      )?.analystName;
-      // ── DEBUG ── remove after confirming
-      console.log(
-        "[FHIR][analyst] labReports count:",
-        optionalData.labReports.length,
-        "| analystNames:",
-        optionalData.labReports.map((r) => r.analystName),
-        "| picked:",
-        labAnalystName,
-        "| doctorName:",
-        visit.doctorName,
-      );
-      analystNameResolved = labAnalystName || visit.doctorName || "Doctor";
-      console.log("[FHIR][analyst] analystNameResolved =", analystNameResolved);
-      bundleEntries.push(
-        buildPractitionerResource(analystNameResolved, analystPractitionerUUID),
-      );
-
+      // Build one Observation per lab test — these will all be referenced by a SINGLE DR
+      const allObsRefs: { reference: string; display: string }[] = [];
       for (const report of optionalData.labReports) {
-        // Build the Observation for this test
         const labObsUUID = generateUUID();
-        // Build result value string including unit (e.g. "5 mg/dL")
-        const resultWithUnit = [
-          report?.resultValue ?? "",
-          report?.measurementUnit ?? "",
-        ]
-          .filter(Boolean)
-          .join(" ");
         const labObs = buildLabObservation(
           labObsUUID,
           patientUUID,
           toSafeISOString(report?.reportDate),
           report?.testType ?? "",
           null, // no LOINC code — use text-only code so unit appears naturally
-          resultWithUnit,
+          report?.resultValue ?? "",
           report?.measurementUnit ?? "",
+          orgUUID, // pass org for Observation.performer (per ABDM spec)
         );
         bundleEntries.push(labObs);
+        allObsRefs.push({
+          reference: `urn:uuid:${labObsUUID}`,
+          display: `Observation/${report?.testType ?? "lab-result"}`,
+        });
+      }
 
-        // Build a dedicated DiagnosticReport for this test
-        const drUUID = generateUUID();
-        const drResource: any = {
-          fullUrl: `urn:uuid:${drUUID}`,
-          resource: {
-            resourceType: "DiagnosticReport",
-            id: drUUID,
-            status: "final",
-            category: [
-              {
-                coding: [
-                  {
-                    system: "http://snomed.info/sct",
-                    code: "708196005",
-                    display: "Hematology service",
-                  },
-                ],
-              },
+      // Build ONE DiagnosticReport that groups ALL Observations (per ABDM pattern)
+      const drUUID = generateUUID();
+      // Derive a meaningful conclusion from all additionalObservations
+      const combinedConclusion = optionalData.labReports
+        .map((r) => r.additionalObservations)
+        .filter(Boolean)
+        .join(", ");
+      const drResource: any = {
+        fullUrl: `urn:uuid:${drUUID}`,
+        resource: {
+          resourceType: "DiagnosticReport",
+          id: drUUID,
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DiagnosticReportLab",
             ],
-            code: {
-              text: report.testType || "Laboratory Report",
+          },
+          status: "final",
+          category: [
+            {
               coding: [
                 {
-                  system: "http://loinc.org",
-                  code: "11502-2",
-                  display: report.testType || "Laboratory Report",
+                  system: "http://snomed.info/sct",
+                  code: "708196005",
+                  display: "Hematology service",
                 },
               ],
             },
-            subject: { reference: `urn:uuid:${patientUUID}` },
-            effectiveDateTime: toSafeISOString(report.reportDate),
-            issued: new Date().toISOString(),
-            // performer = the organisation (lab/clinic) – not the individual analyst
-            performer: [{ reference: `urn:uuid:${orgUUID}` }],
-            // resultsInterpreter = the analyst who interprets the results (per NRCES spec)
-            resultsInterpreter: [
+          ],
+          code: {
+            text: optionalData.labReports[0]?.captureTime
+              ? new Date(optionalData.labReports[0].captureTime).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) + ", " + new Date(optionalData.labReports[0].captureTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+              : (optionalData.labReports[0]?.testType || "Laboratory report"),
+            coding: [
               {
-                reference: `urn:uuid:${analystPractitionerUUID}`,
-                display: analystNameResolved,
+                system: "http://loinc.org",
+                code: "11502-2",
+                display: "Laboratory report",
               },
             ],
-            result: [{ reference: `urn:uuid:${labObsUUID}` }],
           },
-        };
-        if (report.additionalObservations) {
-          drResource.resource.conclusion = report.additionalObservations;
-        }
+          subject: { reference: `urn:uuid:${patientUUID}` },
+          effectiveDateTime: toSafeISOString(
+            optionalData.labReports[0]?.reportDate,
+          ),
+          issued: new Date().toISOString(),
+          performer: [{ reference: `urn:uuid:${orgUUID}` }],
+          resultsInterpreter: [
+            {
+              reference: `urn:uuid:${
+                isDiagnosticOnlyBundle
+                  ? practitionerUUID
+                  : analystPractitionerUUID
+              }`,
+              display: analystNameResolved,
+            },
+          ],
+          result: allObsRefs,
+          ...(combinedConclusion ? { conclusion: combinedConclusion } : {}),
+        },
+      };
+      bundleEntries.push(drResource);
 
-        bundleEntries.push(drResource);
-        // Only add the DiagnosticReport to the section — NOT the Observation.
-        // Observations are already linked via DiagnosticReport.result[].
-        // Adding both causes PHR apps to render a separate card for every resource.
-        sections[sections.length - 1].entry.push({
-          reference: `urn:uuid:${drUUID}`,
-        });
-      }
+      // Only ONE DR entry in the section (per ABDM — NOT one per test)
+      sections[sections.length - 1].entry.push({
+        reference: `urn:uuid:${drUUID}`,
+        type: "DiagnosticReport",
+      });
     }
   } // end Diagnostic Test Results guard
 
@@ -2745,6 +2859,8 @@ export const generateCombinedBundleForCareContext = async (
 
       prescriptionMeds.forEach((m) => {
         const medRequestId = generateUUID();
+        const chiefComplaintText = optionalData?.soapNotes?.subjective || visit.complaint || "Prescription Consultation";
+        
         const medResource = buildMedicationRequest(
           m,
           patientUUID,
@@ -2754,7 +2870,7 @@ export const generateCombinedBundleForCareContext = async (
           bundleDate,
           medRequestId,
           conditionUUID,
-          undefined, // chiefComplaint text embedded in Condition resource via conditionUUID
+          chiefComplaintText, 
         );
         bundleEntries.push(medResource);
         medRequestEntries.push({ reference: `urn:uuid:${medRequestId}` });
@@ -3744,7 +3860,7 @@ export const generateCombinedBundleForCareContext = async (
         "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DiagnosticReportRecord",
       typeCode: "721981007",
       typeDisplay: "Diagnostic studies report",
-      titlePrefix: "Diagnostic Report",
+      titlePrefix: "Diagnostic Report- Lab",
     },
     DischargeSummary: {
       profile:
@@ -3792,10 +3908,8 @@ export const generateCombinedBundleForCareContext = async (
     titlePrefix: "Health Record",
   };
 
-  // Determine the single HI type driving this bundle (set when per-type CareContext is used).
+  // compositionMeta logic already handled primaryHiType above
   // For legacy multi-type bundles, primaryHiType is undefined → fall back to OPConsultRecord.
-  const primaryHiType =
-    allowedHiTypes?.length === 1 ? allowedHiTypes[0] : undefined;
   // Compatibility: PHR apps currently render Prescription DocumentReference more reliably
   // when Composition uses OPConsultRecord metadata (same as the known working commit behavior).
   const compositionMeta =
@@ -3805,7 +3919,6 @@ export const generateCombinedBundleForCareContext = async (
         DEFAULT_COMPOSITION_META;
 
   // Keep analyst-as-author logic specifically for DiagnosticReport bundles (per ABDM reference spec)
-  const isDiagnosticOnlyBundle = primaryHiType === "DiagnosticReport";
 
   const compositionResource = {
     fullUrl: `urn:uuid:${compositionUUID}`,
@@ -3834,16 +3947,9 @@ export const generateCombinedBundleForCareContext = async (
       date: new Date().toISOString(),
       author: [
         {
-          // Use analyst as author for DiagnosticReport-only bundles (per ABDM reference)
-          reference: `urn:uuid:${
-            isDiagnosticOnlyBundle && analystPractitionerUUID
-              ? analystPractitionerUUID
-              : practitionerUUID
-          }`,
-          display:
-            isDiagnosticOnlyBundle && analystNameResolved
-              ? analystNameResolved
-              : doctor,
+          // For DiagnosticReport-only bundles, the author is the practitioner resource we built (which contains analyst name)
+          reference: `urn:uuid:${practitionerUUID}`,
+          display: isDiagnosticOnlyBundle ? analystNameResolved : doctor,
         },
       ],
       title: `${compositionMeta.titlePrefix} - ${patientName} - ${visitDateStr}`,

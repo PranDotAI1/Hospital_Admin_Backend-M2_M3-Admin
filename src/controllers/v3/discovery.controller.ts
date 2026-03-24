@@ -19,6 +19,20 @@ import {
 } from "../../utils/constant";
 import { AbdmTokenService } from "../../services/abdm.token.service";
 
+const applyNameSplit = (updateData: Record<string, unknown>, fullName: string) => {
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length > 0) {
+    updateData.f_name = parts[0];
+    if (parts.length > 1) {
+      updateData.l_name = parts[parts.length - 1];
+      updateData.m_name = parts.length > 2 ? parts.slice(1, -1).join(" ") : "";
+    } else {
+      updateData.l_name = "";
+      updateData.m_name = "";
+    }
+  }
+};
+
 export const onDiscover = async (req: Request, res: Response) => {
   try {
     console.log(
@@ -124,6 +138,7 @@ export const onDiscover = async (req: Request, res: Response) => {
                 }
                 if (DISCOVERY_UPDATE_PATIENT_NAME && discoveryName) {
                   updateData.name = discoveryName;
+                  applyNameSplit(updateData, discoveryName);
                 }
                 if (Object.keys(updateData).length > 0) {
                   updateData.abhaLinkedAt = new Date();
@@ -331,6 +346,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
         const discoveryName = profile.name?.trim();
         if (DISCOVERY_UPDATE_PATIENT_NAME && discoveryName) {
           updateData.name = discoveryName;
+          applyNameSplit(updateData, discoveryName);
         }
 
         if (Object.keys(updateData).length > 0) {

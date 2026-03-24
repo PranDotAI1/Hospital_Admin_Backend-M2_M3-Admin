@@ -814,7 +814,12 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
 
       const abhaAddr =
         profileDetails.abhaAddress ?? (profileDetails as any).abha_address;
-      if (abhaAddr) updateData.abhaaddress = abhaAddr;
+      if (abhaAddr) {
+        updateData.abhaaddress = abhaAddr;
+        // Clear the stale link token — it was issued for the previous ABHA address.
+        // A fresh token will be requested for the new ABHA address before linking CareContexts.
+        updateData.$unset = { ...(updateData.$unset || {}), abdmLinkToken: 1 };
+      }
       if (profileDetails.profilePhoto)
         updateData.profilePhoto = profileDetails.profilePhoto;
     }

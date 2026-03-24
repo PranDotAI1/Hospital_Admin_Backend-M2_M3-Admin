@@ -25,6 +25,7 @@ export interface IAbdmLinkToken {
   issuedAt: Date;
   expiresAt: Date;
   status: "ACTIVE" | "EXPIRED";
+  abhaAddress?: string; // ABHA address this token was issued for
 }
 
 export interface IPatient extends Document {
@@ -214,6 +215,7 @@ const PatientSchema = new Schema<IPatient>(
       issuedAt: { type: Date },
       expiresAt: { type: Date },
       status: { type: String, enum: ["ACTIVE", "EXPIRED"] },
+      abhaAddress: { type: String, trim: true }, // ABHA address this token was issued for
     },
     abdmLinkTokenRequestedAt: { type: Date },
     isMerged: { type: Boolean, default: false },
