@@ -55,6 +55,7 @@ import {
   addVisit,
   searchPatients,
   checkExistingPatients,
+  updatePatient,
   updatePatientAndAddVisit,
 } from "../controllers/v3/patient.controller";
 import {
@@ -173,6 +174,7 @@ router.post("/patient/register", checkToken, registerPatient);
 router.post("/patient/check-existing", checkToken, checkExistingPatients);
 router.get("/patient/search", checkToken, searchPatients);
 router.post("/patient/:id/visit", checkToken, addVisit);
+router.patch("/patient/:id", checkToken, updatePatient);
 router.patch("/patient/:id/update-and-visit", checkToken, updatePatientAndAddVisit);
 router.post("/patient/:id/link-abha", checkToken, linkAbha);
 router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);

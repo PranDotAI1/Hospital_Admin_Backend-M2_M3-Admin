@@ -14,6 +14,7 @@ import {
   getOPConsultationTemplate,
   getInvoiceTemplate,
   getVitalsTemplate,
+  getImmunizationTemplate,
 } from "../utils/report-templates";
 
 interface ParsedVital {
@@ -1765,6 +1766,7 @@ export const generateCombinedBundleForCareContext = async (
   const diagnosticReportDocId = generateUUID();
   const opConsultationDocId = generateUUID();
   const vitalsDocId = generateUUID();
+  const immunizationDocId = generateUUID();
 
   const patientName =
     patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
@@ -2574,8 +2576,25 @@ export const generateCombinedBundleForCareContext = async (
       docId: diagnosticReportDocId,
     });
   }
+ 
+  // 5. Immunization PDF
+  const immData = optionalData?.assessment?.immunization;
+  if (
+    includeSectionByHiType("Immunization Record", allowedHiTypes) &&
+    immData &&
+    (immData.covid19Dose1Date || immData.covid19Dose2Date || immData.tetanusBoosterDate || immData.fluVaccineDate ||
+     immData.covid19Dose1?.date || immData.covid19Dose2?.date || immData.tetanusBooster?.date || immData.fluVaccine?.date)
+  ) {
+    pdfRequests.push({
+      title: "Immunization Record PDF",
+      typeCode: "41000179103",
+      typeDisplay: "Immunization record",
+      html: getImmunizationTemplate(patient, visit, immData),
+      docId: immunizationDocId,
+    });
+  }
 
-  // 5. Vitals PDF (WellnessRecord)
+  // 6. Vitals PDF (WellnessRecord)
   if (
     includeSectionByHiType("Vital Signs", allowedHiTypes) &&
     optionalData?.assessment?.vitals &&
@@ -3643,6 +3662,11 @@ export const generateCombinedBundleForCareContext = async (
         `<tr><td>${escapeHtml(v.name)}</td><td>${v.date ? toSafeLocaleDateString(v.date) : "-"}</td><td>${v.doseNumber}/${v.seriesDoses}</td><td>${v.manufacturer ? escapeHtml(v.manufacturer) : "-"}</td><td>${v.lotNumber || "-"}</td></tr>`,
       );
     });
+
+    if (vaccineEntries.length > 0) {
+      immEntryRefs.push({ reference: `urn:uuid:${immunizationDocId}` });
+    }
+
     const immunizationHtml =
       immRows.length > 0
         ? `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Vaccine</th><th>Date</th><th>Dose</th><th>Manufacturer</th><th>Lot Number</th></tr></thead><tbody>${immRows.join("")}</tbody></table>`

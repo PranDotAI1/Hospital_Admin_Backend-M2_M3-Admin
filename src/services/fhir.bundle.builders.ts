@@ -12,6 +12,7 @@ import {
   getDiagnosticReportTemplate,
   getDischargeSummaryTemplate,
   getOPConsultationTemplate,
+  getImmunizationTemplate,
 } from "../utils/report-templates";
 import {
   ICombinedBundleOptionalData,
@@ -1551,16 +1552,18 @@ const buildDischargeSummaryRecordBundle = async (
   };
 };
 
-const buildImmunizationRecordBundle = (
+const buildImmunizationRecordBundle = async (
   patient: IPatient,
   visit: IScanShareVisit,
   careContext: ICareContext,
   optionalData?: ICombinedBundleOptionalData,
-): any => {
+  browser?: Browser,
+): Promise<any> => {
   const bundleId = generateUUID();
   const patientUUID = generateUUID();
   const orgUUID = generateUUID();
   const compositionUUID = generateUUID();
+  const immDocId = generateUUID();
   const patientName =
     patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
   const visitDateStr = toSafeLocaleDateString(visit.visitDate);
@@ -1668,6 +1671,48 @@ const buildImmunizationRecordBundle = (
       },
     });
   }
+
+  // Batch PDF generation
+  if (browser && vaccineMap.length > 0) {
+    try {
+      const buffers = await generateMultiplePdfs(
+        [getImmunizationTemplate(patient, visit, immunization)],
+        browser,
+      );
+      if (buffers[0]) {
+        bundleEntries.push(
+          buildPdfDocumentReference(
+            immDocId,
+            patientUUID,
+            "Immunization Record PDF",
+            "41000179103",
+            "Immunization record",
+            toSafeISOString(visit.visitDate),
+            buffers[0].toString("base64"),
+          ),
+        );
+        
+        // Also attach the document reference to the section entries
+        const lastSection = sections[sections.length - 1];
+        if (lastSection && lastSection.title === "Immunization Record") {
+          lastSection.entry = lastSection.entry || [];
+          lastSection.entry.push({ reference: `urn:uuid:${immDocId}` });
+        }
+      }
+    } catch (err) {
+      console.error("[Builders] Immunization PDF generation failed:", err);
+    }
+  }
+
+  // Dangling reference cleanup
+  const availableIds = new Set(bundleEntries.map((e: any) => e.fullUrl));
+  sections.forEach((section) => {
+    if (section.entry) {
+      section.entry = section.entry.filter((e: any) =>
+        availableIds.has(e.reference),
+      );
+    }
+  });
 
   return {
     resourceType: "Bundle",
@@ -2145,11 +2190,12 @@ export const generateFhirBundle = async (
         browser,
       );
     case "ImmunizationRecord":
-      return buildImmunizationRecordBundle(
+      return await buildImmunizationRecordBundle(
         patient,
         visit,
         careContext,
         optionalData,
+        browser,
       );
     case "HealthDocumentRecord":
       return buildHealthDocumentRecordBundle(

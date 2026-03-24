@@ -1371,6 +1371,145 @@ export const checkExistingPatients = async (req: Request, res: Response) => {
   }
 };
 
+export const updatePatient = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const body = req.body;
+
+    let patient: any = await PatientModel.findOne({ uhid: id });
+    if (!patient) {
+      if (Types.ObjectId.isValid(id)) {
+        patient = await PatientModel.findById(id);
+      }
+    }
+
+    if (!patient) {
+      return res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Patient not found",
+      });
+    }
+
+    if (patient.isMerged || patient.status === "merged") {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "Cannot update a merged patient record",
+      });
+    }
+
+    // --- Build $set for patient profile updates ---
+    const setFields: any = {};
+
+    const f_name = sanitizeString(body.f_name || body.firstName, 100);
+    const m_name = sanitizeString(body.m_name || body.middleName, 100);
+    const l_name = sanitizeString(body.l_name || body.lastName, 100);
+    if (f_name) setFields.f_name = f_name;
+    if (m_name !== undefined) setFields.m_name = m_name;
+    if (l_name !== undefined) setFields.l_name = l_name;
+
+    // Recompute full name if any name part is provided
+    if (f_name || m_name || l_name) {
+      const newFName = f_name || patient.f_name;
+      const newMName = m_name !== undefined ? m_name : patient.m_name;
+      const newLName = l_name !== undefined ? l_name : patient.l_name;
+      setFields.name = [newFName, newMName, newLName].filter(Boolean).join(" ");
+    }
+
+    const mobile = sanitizeString(body.mobile, 15);
+    if (mobile) setFields.mobile = mobile;
+
+    const dob = sanitizeString(body.dob, 20);
+    if (dob) setFields.dob = dob;
+
+    const age = sanitizeString(body.age, 3);
+    if (age) setFields.age = age;
+
+    const gender = sanitizeString(body.gender, 10);
+    if (gender) setFields.gender = gender;
+
+    const address = sanitizeString(body.address, 500);
+    if (address) setFields.address = address;
+
+    const pincode = sanitizeString(body.pincode, 10);
+    if (pincode) setFields.pincode = pincode;
+
+    const email = sanitizeString(body.email, 100);
+    if (email) setFields.email = email;
+
+    const bloodGroup = sanitizeString(body.bloodGroup, 5);
+    if (bloodGroup) setFields.bloodGroup = bloodGroup;
+
+    const emergencyContact = sanitizeString(body.emergencyContact, 15);
+    if (emergencyContact) setFields.emergencyContact = emergencyContact;
+
+    const aadhaarNumber = sanitizeString(body.aadhaarNumber, 12);
+    if (aadhaarNumber) setFields.aadhaarNumber = aadhaarNumber;
+
+    const allergies = sanitizeString(body.allergies, 500);
+    if (allergies) setFields.allergies = allergies;
+
+    const existingMedicalConditions = sanitizeString(
+      body.existingMedicalConditions,
+      500,
+    );
+    if (existingMedicalConditions)
+      setFields.existingMedicalConditions = existingMedicalConditions;
+
+    const ongoingMedications = sanitizeString(body.ongoingMedications, 500);
+    if (ongoingMedications) setFields.ongoingMedications = ongoingMedications;
+
+    const updatePayload: any = {
+      $set: setFields,
+    };
+
+    // Handle insurance update if provided
+    if (body.insurance && typeof body.insurance === "object") {
+      const provider = sanitizeString(body.insurance.provider, 100);
+      const policyNumber = sanitizeString(body.insurance.policyNumber, 50);
+      if (provider || policyNumber) {
+        updatePayload.$push = {
+          insurance: {
+            provider: provider || "",
+            policyNumber: policyNumber || "",
+            addedOn: new Date(),
+          },
+        };
+      }
+    }
+
+    const updatedPatient = await PatientModel.findByIdAndUpdate(
+      patient._id,
+      updatePayload,
+      { new: true },
+    );
+
+    if (!updatedPatient) {
+      throw new Error("Failed to update patient");
+    }
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      message: "Patient profile updated successfully",
+      data: {
+        uhid: updatedPatient.uhid,
+        _id: updatedPatient._id,
+        name: updatedPatient.name,
+        mobile: updatedPatient.mobile,
+        abhaLinked: !!(
+          updatedPatient.ABHANumber || updatedPatient.abhaaddress
+        ),
+        patientData: updatedPatient,
+      },
+    });
+  } catch (error: any) {
+    console.error("Update Patient error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to update patient",
+    });
+  }
+};
+
 export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;

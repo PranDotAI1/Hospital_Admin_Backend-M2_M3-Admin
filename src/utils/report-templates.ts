@@ -560,3 +560,68 @@ export const getVitalsTemplate = (
     </html>
   `;
 };
+
+export const getImmunizationTemplate = (
+  patient: IPatient,
+  visit: IScanShareVisit,
+  immunization: any,
+) => {
+  const records = [
+    { name: "COVID-19 Dose 1", data: immunization?.covid19Dose1, date: immunization?.covid19Dose1Date },
+    { name: "COVID-19 Dose 2", data: immunization?.covid19Dose2, date: immunization?.covid19Dose2Date },
+    { name: "Tetanus Booster", data: immunization?.tetanusBooster, date: immunization?.tetanusBoosterDate },
+    { name: "Flu Vaccine", data: immunization?.fluVaccine, date: immunization?.fluVaccineDate },
+  ];
+
+  const immunizationRows = records
+    .filter((r) => r.data || r.date)
+    .map((r) => {
+      const date = r.data?.date || r.date;
+      const dateStr = date ? new Date(date).toLocaleDateString("en-IN") : "-";
+      return `
+    <tr>
+      <td>${r.name}</td>
+      <td>${dateStr}</td>
+      <td>${r.data?.manufacturer || "-"}</td>
+      <td>${r.data?.lotNumber || "-"}</td>
+      <td>${r.data?.doseNumber || "-"}</td>
+    </tr>`;
+    })
+    .join("");
+
+  return `
+    <html>
+    <head>${css}</head>
+    <body>
+      ${getPatientHeader(patient, visit)}
+
+      <div class="section">
+        <div class="section-title">Immunization Record</div>
+        ${
+          immunizationRows
+            ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Vaccine Name</th>
+              <th>Date</th>
+              <th>Manufacturer</th>
+              <th>Lot Number</th>
+              <th>Dose Number</th>
+            </tr>
+          </thead>
+          <tbody>${immunizationRows}</tbody>
+        </table>
+        `
+            : "<p>No immunization records found.</p>"
+        }
+      </div>
+
+      <div class="footer">
+        <p><strong>Practitioner: Dr. ${visit.doctorName || "Practitioner"}</strong></p>
+        <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
+      </div>
+    </body>
+    </html>
+  `;
+};
