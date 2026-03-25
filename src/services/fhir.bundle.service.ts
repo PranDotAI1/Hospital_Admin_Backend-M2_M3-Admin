@@ -490,17 +490,25 @@ const buildInvoiceResource = (
 
   const lineItems = billings.map((b, index) => {
     const qty = parseNum(b.unit) || 1;
-    const rate = parseNum(b.rate) || parseNum(b.amount) || 0;
-    // Standard GST for medicines is usually 12% (6% CGST, 6% SGST).
-    // If not provided in the DB, calculate it based on the rate.
-    const cgst = parseNum(b.cgst) || (rate * 0.06);
-    const sgst = parseNum(b.sgst) || (rate * 0.06);
+    // 'rate' or 'amount' from the frontend is treated as Tax-Inclusive.
+    const rateWithTax = parseNum(b.rate) || parseNum(b.amount) || 0;
+    
+    // Standard GST for most medical supplies/daycare is 5% total (2.5% CGST, 2.5% SGST). Core services are 0%.
+    // We calculate the implied tax from the inclusive rate if not explicitly provided in the DB.
+    // Implied tax per unit = Rate - (Rate / 1.05)
+    // Total implied tax = (Implied tax per unit) * qty
+    const impliedTotalTax = (rateWithTax - (rateWithTax / 1.05)) * qty;
+    
+    // Fall back to implied tax if b.cgst is 0 or undefined (matches previous || behavior)
+    const rawCgst = parseNum(b.cgst) || (impliedTotalTax / 2);
+    const rawSgst = parseNum(b.sgst) || (impliedTotalTax / 2);
+    const cgst = parseFloat(rawCgst.toFixed(2));
+    const sgst = parseFloat(rawSgst.toFixed(2));
+
     const discount = parseNum(b.discount) || 0;
     
-    // PHR App Hack: The PHR app appears to ignore 'tax' priceComponents and only reads 'base' Rate and MRP.
-    // To ensure the PHR app displays the correct Final Total (which includes taxes), we must bake the tax into the Rate and MRP.
-    const rateWithTax = rate + (cgst / qty) + (sgst / qty);
-    
+    // The PHR App displays the 'base' price component. Since it ignores the 'tax' components,
+    // and the user wants to see the final inclusive amount, we set the component amount to rateWithTax.
     const itemGross = rateWithTax * qty;
     const itemNet = itemGross - discount;
     
@@ -613,18 +621,22 @@ const buildInvoiceResource = (
     .map(
       (b) => {
         const qty = parseNum(b.unit) || 1;
-        const rate = parseNum(b.rate) || parseNum(b.amount) || 0;
+        // 'rate' or 'amount' from the frontend is treated as Tax-Inclusive.
+        const rateWithTax = parseNum(b.rate) || parseNum(b.amount) || 0;
         
-        const cgst = parseNum(b.cgst) || (rate * 0.06);
-        const sgst = parseNum(b.sgst) || (rate * 0.06);
+        const impliedTotalTax = (rateWithTax - (rateWithTax / 1.05)) * qty;
+        const rawCgst = parseNum(b.cgst) || (impliedTotalTax / 2);
+        const rawSgst = parseNum(b.sgst) || (impliedTotalTax / 2);
+        const cgst = parseFloat(rawCgst.toFixed(2));
+        const sgst = parseFloat(rawSgst.toFixed(2));
+        
         const discount = parseNum(b.discount) || 0;
         const tax = cgst + sgst;
         
-        // Final net based on the exact same logic
-        const rateWithTax = rate + (cgst / qty) + (sgst / qty);
+        // Final net based on the inclusive rate
         const finalItemNet = (rateWithTax * qty) - discount;
         
-        let taxStr = `<br/><small>Tax: ${tax.toFixed(2)}</small>`;
+        let taxStr = `<br/><small>Incl. Tax: ${tax.toFixed(2)}</small>`;
         if (discount > 0) taxStr += `<br/><small>Disc: -${discount}</small>`;
         
         return `<tr><td style="padding: 4px;">${escapeHtml(b.particulars || "Service")}</td><td style="padding: 4px;">${qty}</td><td style="padding: 4px;">${rateWithTax.toFixed(2)} INR</td><td style="padding: 4px;">${finalItemNet.toFixed(2)} INR ${taxStr}</td></tr>`;
