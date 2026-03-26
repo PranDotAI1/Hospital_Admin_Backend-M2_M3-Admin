@@ -1,6 +1,7 @@
 import http from 'http'; // Ensure you import the 'http' module
 import app from '../app';
 import dotenv from 'dotenv';
+import { setBridgeUrlOnStartup } from '../services/startup.service';
 
 dotenv.config();
 
@@ -49,6 +50,9 @@ function onListening(): void {
   }
   const bind = typeof addr === "string" ? `pipe ${addr}` : `port ${addr.port}`;
   console.log(`Listening on ${bind}`);
+
+  // Automatically configure the ABDM bridge URL on every server start
+  setBridgeUrlOnStartup();
 }
 
 function gracefulShutdown(signal: string): void {
