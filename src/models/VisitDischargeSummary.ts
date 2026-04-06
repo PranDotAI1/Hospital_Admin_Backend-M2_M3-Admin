@@ -16,6 +16,10 @@ export interface IDischargeMedication {
   };
   durationUnit?: string;
   customInstructions?: string;
+  /** SNOMED CT Clinical Drug code (per ABDM ndhm-medicine-codes ValueSet) */
+  snomedCode?: string;
+  /** SNOMED CT display text for the medicine (e.g. "Acetaminophen 500 mg oral tablet") */
+  snomedDisplay?: string;
 }
 
 export interface IVisitDischargeSummary extends Document {
@@ -57,6 +61,8 @@ const DischargeMedicationSchema = new Schema<IDischargeMedication>(
     },
     durationUnit: { type: String, trim: true },
     customInstructions: { type: String, trim: true },
+    snomedCode: { type: String, trim: true },
+    snomedDisplay: { type: String, trim: true },
   },
   { _id: false },
 );

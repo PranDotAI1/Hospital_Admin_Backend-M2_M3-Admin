@@ -71,6 +71,12 @@ import {
   getAssessment,
   recordAssessment,
 } from "../controllers/v3/visit.clinical.controller";
+import {
+  searchMedicines as searchMedicinesCtrl,
+  searchLabTests as searchLabTestsCtrl,
+  searchProcedures as searchProceduresCtrl,
+  searchConditions as searchConditionsCtrl,
+} from "../controllers/terminology.controller";
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
@@ -337,5 +343,11 @@ router.post(
 import dayCareBillingRoutes from "./billing.routes";
 
 router.use("/billing", dayCareBillingRoutes);
+
+// ── ABDM Clinical Terminology Search (SNOMED CT + LOINC) ──
+router.get("/terminology/medicines", checkToken, searchMedicinesCtrl);
+router.get("/terminology/lab-tests", checkToken, searchLabTestsCtrl);
+router.get("/terminology/procedures", checkToken, searchProceduresCtrl);
+router.get("/terminology/conditions", checkToken, searchConditionsCtrl);
 
 export default router;

@@ -130,6 +130,10 @@ export const recordPrescription = async (req: Request, res: Response) => {
         };
         durationUnit?: string;
         customInstructions?: string;
+        /** SNOMED CT Clinical Drug code from terminology search (per ABDM ndhm-medicine-codes) */
+        snomedCode?: string;
+        /** SNOMED CT display text for the medicine */
+        snomedDisplay?: string;
       }>;
       advice?: string;
     };
@@ -271,6 +275,10 @@ export const recordLabResults = async (req: Request, res: Response) => {
         reportTime?: string;
         additionalObservations?: string;
         analystName?: string;
+        /** LOINC code from terminology search (per ABDM DiagnosticReport spec) */
+        loincCode?: string;
+        /** LOINC display text for this lab test */
+        loincDisplay?: string;
       }>;
     };
     const reports = Array.isArray(body?.reports)
@@ -294,6 +302,8 @@ export const recordLabResults = async (req: Request, res: Response) => {
             ? { additionalObservations: r.additionalObservations }
             : {}),
           ...(r.analystName ? { analystName: r.analystName } : {}),
+          ...(r.loincCode ? { loincCode: r.loincCode } : {}),
+          ...(r.loincDisplay ? { loincDisplay: r.loincDisplay } : {}),
         }))
       : [];
 
@@ -395,6 +405,10 @@ export const recordDischargeSummary = async (req: Request, res: Response) => {
         };
         durationUnit?: string;
         customInstructions?: string;
+        /** SNOMED CT Clinical Drug code from terminology search (per ABDM ndhm-medicine-codes) */
+        snomedCode?: string;
+        /** SNOMED CT display text for the medicine */
+        snomedDisplay?: string;
       }>;
     };
     const dischargeMedications = Array.isArray(body?.dischargeMedications)

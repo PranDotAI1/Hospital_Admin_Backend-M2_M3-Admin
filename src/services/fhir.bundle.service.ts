@@ -912,6 +912,10 @@ export interface ICombinedBundleOptionalData {
         period: number;
         periodUnit: string;
       };
+      /** SNOMED CT Clinical Drug code (per ABDM ndhm-medicine-codes ValueSet) */
+      snomedCode?: string;
+      /** SNOMED CT display text for the medicine */
+      snomedDisplay?: string;
     }>;
     advice?: string;
   } | null;
@@ -924,6 +928,10 @@ export interface ICombinedBundleOptionalData {
     sampleId?: string;
     additionalObservations?: string;
     analystName?: string;
+    /** LOINC code for this lab test (per ABDM DiagnosticReport spec) */
+    loincCode?: string;
+    /** LOINC display text */
+    loincDisplay?: string;
   }>;
   soapNotes?: {
     subjective?: string;
@@ -950,6 +958,10 @@ export interface ICombinedBundleOptionalData {
         period: number;
         periodUnit: string;
       };
+      /** SNOMED CT Clinical Drug code (per ABDM ndhm-medicine-codes ValueSet) */
+      snomedCode?: string;
+      /** SNOMED CT display text for the medicine */
+      snomedDisplay?: string;
     }>;
     admissionDate?: Date;
     dischargeDate?: Date;
@@ -1314,11 +1326,24 @@ export const buildMedicationRequest = (
         coding: [
           {
             system: "http://snomed.info/sct",
-            code: form.code,
-            display: medicineDisplay,
+            // Use proper SNOMED CT Clinical Drug code when available (per ABDM ndhm-medicine-codes),
+            // otherwise fall back to dosage form code for backward compatibility
+            code: med.snomedCode || form.code,
+            display: med.snomedDisplay || medicineDisplay,
           },
         ],
         text: medicineDisplay,
+      },
+      // Dosage form (ABDM: separate from medication code)
+      form: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: form.code,
+            display: form.display,
+          },
+        ],
+        text: form.text,
       },
       subject: {
         reference: `urn:uuid:${patientUUID}`,
@@ -2795,8 +2820,8 @@ export const generateCombinedBundleForCareContext = async (
           labObsUUID,
           patientUUID,
           toSafeISOString(report?.reportDate),
-          report?.testType ?? "",
-          null, // no LOINC code — use text-only code so unit appears naturally
+          (report as any)?.loincDisplay || (report?.testType ?? ""),
+          (report as any)?.loincCode || null, // Use LOINC code from terminology search when available
           report?.resultValue ?? "",
           report?.measurementUnit ?? "",
           orgUUID, // pass org for Observation.performer (per ABDM spec)

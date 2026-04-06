@@ -12,6 +12,10 @@ export interface ILabReportLine {
   reportTime?: string;
   additionalObservations?: string;
   analystName?: string;
+  /** LOINC code for this lab test (per ABDM DiagnosticReport specification) */
+  loincCode?: string;
+  /** LOINC display text (e.g. "Glucose [Mass/volume] in Serum or Plasma") */
+  loincDisplay?: string;
 }
 
 export interface IVisitLabReport extends Document {
@@ -35,6 +39,8 @@ const LabReportLineSchema = new Schema<ILabReportLine>(
     reportTime: { type: String, trim: true },
     additionalObservations: { type: String, trim: true },
     analystName: { type: String, trim: true },
+    loincCode: { type: String, trim: true },
+    loincDisplay: { type: String, trim: true },
   },
   { _id: false },
 );
