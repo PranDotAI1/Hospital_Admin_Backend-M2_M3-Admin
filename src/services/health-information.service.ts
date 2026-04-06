@@ -23,10 +23,8 @@ import { VisitDayCareBilling } from "../models/VisitDayCareBilling";
 import { LabReportModel } from "../models/LabReport";
 import { LabTestTemplateModel } from "../models/LabTestTemplate";
 import * as fs from "fs";
-import {
-  FhirBundleService,
-  ICombinedBundleOptionalData,
-} from "./fhir.bundle.service";
+import { ICombinedBundleOptionalData } from "./fhir.bundle.service";
+import { generateFhirBundle } from "./fhir.bundle.builders";
 
 import {
   buildDataPushPayload,
@@ -650,16 +648,15 @@ const pushHealthData = async (
     let allPushed = true;
     for (const hiType of applicableHiTypes) {
       try {
-        const hiTypeFilter = [hiType];
         console.log(
           `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} [${hiType}]`,
         );
-        const fhirBundle = await FhirBundleService.generateCombinedBundleForCareContext(
+        const fhirBundle = await generateFhirBundle(
+          hiType,
           patient,
           visit as any,
           careContext,
           optionalData,
-          hiTypeFilter,
           browser,
         );
         const fhirBundleJson = JSON.stringify(fhirBundle);
