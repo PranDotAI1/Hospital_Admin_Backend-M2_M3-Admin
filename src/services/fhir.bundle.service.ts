@@ -13,6 +13,7 @@ import {
   getDischargeSummaryTemplate,
   getOPConsultationTemplate,
   getInvoiceTemplate,
+  getStructuredLabReportTemplate,
   getVitalsTemplate,
   getImmunizationTemplate,
 } from "../utils/report-templates";
@@ -996,6 +997,27 @@ export interface ICombinedBundleOptionalData {
     womenHealth?: any;
     documentUploads?: string[];
   } | null;
+  /** Structured lab reports from the new lab_reports collection (per-test-type with parameters) */
+  structuredLabReports?: Array<{
+    _id?: any;
+    testType: string;
+    displayName?: string;
+    sampleId: string;
+    reportDate: Date;
+    analystName: string;
+    observations?: string;
+    status: string;
+    loincCode?: string;
+    loincDisplay?: string;
+    parameters: Array<{
+      parameterName: string;
+      parameterValue: string;
+      unit: string;
+      referenceRange: string;
+      flag: string;
+      section?: string;
+    }>;
+  }>;
 }
 
 const getMedicationDetails = (med: any) => {
@@ -1333,17 +1355,6 @@ export const buildMedicationRequest = (
           },
         ],
         text: medicineDisplay,
-      },
-      // Dosage form (ABDM: separate from medication code)
-      form: {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: form.code,
-            display: form.display,
-          },
-        ],
-        text: form.text,
       },
       subject: {
         reference: `urn:uuid:${patientUUID}`,
@@ -1811,9 +1822,17 @@ export const generateCombinedBundleForCareContext = async (
   const bundleDate = toSafeISOString(visit.visitDate);
 
   const dept = visit.department || "OPD";
-  const doctor = (allowedHiTypes?.includes("DischargeSummary") && optionalData?.dischargeSummary?.doctorSignature) 
-    ? optionalData.dischargeSummary.doctorSignature 
-    : (visit.doctorName || "Doctor");
+  
+  // Refined doctor name derivation: avoid "Select Doctor" placeholders and prioritize real signatures
+  const visitDoc = visit.doctorName;
+  const dsDoc = optionalData?.dischargeSummary?.doctorSignature;
+  const isPlaceholder = (n?: string) => !n || n.toLowerCase().includes("select doctor") || n.toLowerCase().trim() === "doctor";
+
+  const doctor = !isPlaceholder(dsDoc)
+    ? dsDoc!
+    : !isPlaceholder(visitDoc)
+      ? visitDoc!
+      : (visit.department ? `${visit.department} Consultant` : "Medical Officer");
 
   // For DiagnosticReport bundles, the analyst is the primary practitioner/author.
   const primaryHiType = allowedHiTypes?.length === 1 ? allowedHiTypes[0] : undefined;
@@ -2613,6 +2632,35 @@ export const generateCombinedBundleForCareContext = async (
       docId: diagnosticReportDocId,
     });
   }
+
+  // 4b. Structured Lab Reports PDF
+  const structuredLabDocIds: string[] = [];
+  if (
+    includeSectionByHiType("Diagnostic Test Results", allowedHiTypes) &&
+    optionalData?.structuredLabReports &&
+    optionalData.structuredLabReports.length > 0
+  ) {
+    for (const slab of optionalData.structuredLabReports) {
+      const slabDocId = generateUUID();
+      structuredLabDocIds.push(slabDocId);
+      pdfRequests.push({
+        title: `${slab.displayName || slab.testType} Report PDF`,
+        typeCode: "4241000179101",
+        typeDisplay: "Laboratory report",
+        html: getStructuredLabReportTemplate(patient, visit, {
+          testType: slab.testType,
+          displayName: slab.displayName || slab.testType,
+          sampleId: slab.sampleId,
+          reportDate: slab.reportDate,
+          analystName: slab.analystName,
+          observations: slab.observations,
+          status: slab.status,
+          parameters: slab.parameters,
+        }),
+        docId: slabDocId,
+      });
+    }
+  }
  
   // 5. Immunization PDF
   const immData = optionalData?.assessment?.immunization;
@@ -2903,6 +2951,215 @@ export const generateCombinedBundleForCareContext = async (
       });
     }
   } // end Diagnostic Test Results guard
+
+  // ── NEW: Structured lab reports (from lab_reports collection) ────────────────
+  if (
+    includeSectionByHiType("Diagnostic Test Results", allowedHiTypes) &&
+    optionalData?.structuredLabReports &&
+    optionalData.structuredLabReports.length > 0
+  ) {
+    let slabIdx = 0;
+    for (const slab of optionalData.structuredLabReports) {
+      // Skip reports with no parameters that have values
+      const filledParams = slab.parameters.filter(
+        (p) => p.parameterValue && p.parameterValue.trim() !== "",
+      );
+      if (filledParams.length === 0) {
+        slabIdx++;
+        continue;
+      }
+
+      const displayName = slab.displayName || slab.testType;
+      const slabObsRefs: { reference: string; display: string }[] = [];
+      const slabSectionEntries: any[] = [];
+
+      // Add PDF reference if generated
+      if (structuredLabDocIds[slabIdx]) {
+        slabSectionEntries.push({
+          reference: `urn:uuid:${structuredLabDocIds[slabIdx]}`,
+          type: "DocumentReference",
+        });
+      }
+
+      // Build one Observation per parameter
+      for (const param of filledParams) {
+        const obsId = generateUUID();
+        const reportDate = slab.reportDate
+          ? toSafeISOString(slab.reportDate)
+          : bundleDate;
+
+        const numVal = parseFloat(param.parameterValue);
+        const isNum = !isNaN(numVal) && param.parameterValue.trim() !== "";
+
+        const obsResource: any = {
+          fullUrl: `urn:uuid:${obsId}`,
+          resource: {
+            resourceType: "Observation",
+            id: obsId,
+            meta: {
+              profile: [
+                "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation",
+              ],
+            },
+            status: "final",
+            category: [
+              {
+                coding: [
+                  {
+                    system: "http://terminology.hl7.org/CodeSystem/observation-category",
+                    code: "laboratory",
+                    display: "Laboratory",
+                  },
+                ],
+              },
+            ],
+            code: {
+              text: param.parameterName,
+              coding: [
+                {
+                  system: "http://loinc.org",
+                  code: "11502-2",
+                  display: param.parameterName,
+                },
+              ],
+            },
+            subject: { reference: `urn:uuid:${patientUUID}` },
+            effectiveDateTime: reportDate,
+            performer: [
+              { reference: `urn:uuid:${orgUUID}`, display: "Organization" },
+            ],
+            ...(isNum
+              ? {
+                  valueQuantity: {
+                    value: numVal,
+                    unit: param.unit || undefined,
+                    ...(param.unit
+                      ? {
+                          system: "http://snomed.info/sct",
+                          code: "258797006",
+                        }
+                      : {}),
+                  },
+                }
+              : {
+                  valueString: `${param.parameterValue}${param.unit ? " " + param.unit : ""}`,
+                }),
+            ...(param.referenceRange
+              ? {
+                  referenceRange: [
+                    {
+                      text: param.referenceRange,
+                    },
+                  ],
+                }
+              : {}),
+            ...(param.flag && param.flag !== ""
+              ? {
+                  interpretation: [
+                    {
+                      coding: [
+                        {
+                          system: "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                          code:
+                            param.flag === "High"
+                              ? "H"
+                              : param.flag === "Low"
+                                ? "L"
+                                : "N",
+                          display: param.flag,
+                        },
+                      ],
+                    },
+                  ],
+                }
+              : {}),
+          },
+        };
+        bundleEntries.push(obsResource);
+        slabObsRefs.push({
+          reference: `urn:uuid:${obsId}`,
+          display: `Observation/${param.parameterName}`,
+        });
+      }
+
+      // Build one DiagnosticReport for this structured lab
+      const slabDrId = generateUUID();
+      const slabDrResource: any = {
+        fullUrl: `urn:uuid:${slabDrId}`,
+        resource: {
+          resourceType: "DiagnosticReport",
+          id: slabDrId,
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DiagnosticReportLab",
+            ],
+          },
+          status: slab.status === "final" ? "final" : "preliminary",
+          category: [
+            {
+              coding: [
+                {
+                  system: "http://snomed.info/sct",
+                  code: "708196005",
+                  display: "Hematology service",
+                },
+              ],
+            },
+          ],
+          code: {
+            text: displayName,
+            coding: [
+              {
+                system: "http://loinc.org",
+                code: slab.loincCode || "11502-2",
+                display: slab.loincDisplay || displayName,
+              },
+            ],
+          },
+          subject: { reference: `urn:uuid:${patientUUID}` },
+          effectiveDateTime: slab.reportDate
+            ? toSafeISOString(slab.reportDate)
+            : bundleDate,
+          issued: new Date().toISOString(),
+          performer: [{ reference: `urn:uuid:${orgUUID}` }],
+          resultsInterpreter: [
+            {
+              reference: `urn:uuid:${practitionerUUID}`,
+              display: slab.analystName || analystNameResolved,
+            },
+          ],
+          result: slabObsRefs,
+          ...(slab.observations ? { conclusion: slab.observations } : {}),
+        },
+      };
+      bundleEntries.push(slabDrResource);
+
+      slabSectionEntries.push({
+        reference: `urn:uuid:${slabDrId}`,
+        type: "DiagnosticReport",
+      });
+
+      sections.push({
+        title: displayName,
+        code: {
+          coding: [
+            {
+              system: "http://snomed.info/sct",
+              code: "721981007",
+              display: "Diagnostic studies report",
+            },
+          ],
+        },
+        text: {
+          status: "generated",
+          div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>${displayName} — ${filledParams.length} parameter(s) recorded</p></div>`,
+        },
+        entry: slabSectionEntries,
+      });
+
+      slabIdx++;
+    }
+  }
 
   if (includeSectionByHiType("Prescription", allowedHiTypes)) {
     const prescriptionMeds =

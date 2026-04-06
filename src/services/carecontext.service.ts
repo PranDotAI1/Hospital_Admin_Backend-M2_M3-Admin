@@ -13,6 +13,7 @@ import { VisitLabReportModel } from "../models/VisitLabReport";
 import { VisitSoapNotesModel } from "../models/VisitSoapNotes";
 import { VisitDischargeSummaryModel } from "../models/VisitDischargeSummary";
 import { VisitAssessmentModel } from "../models/VisitAssessment";
+import { LabReportModel } from "../models/LabReport";
 import {
   generateUID,
   facilityId,
@@ -1422,6 +1423,12 @@ export const detectHiTypesForVisit = async (
   }
 
   if (labReport && (labReport.reports?.length ?? 0) > 0) {
+    hiTypes.add("DiagnosticReport");
+  }
+
+  // Also check new structured lab reports (lab_reports collection)
+  const newLabCount = await LabReportModel.countDocuments({ visitId });
+  if (newLabCount > 0) {
     hiTypes.add("DiagnosticReport");
   }
 

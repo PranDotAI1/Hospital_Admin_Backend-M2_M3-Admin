@@ -13,6 +13,7 @@ import {
   getDischargeSummaryTemplate,
   getOPConsultationTemplate,
   getImmunizationTemplate,
+  getStructuredLabReportTemplate,
 } from "../utils/report-templates";
 import {
   ICombinedBundleOptionalData,
@@ -946,7 +947,7 @@ const buildDiagnosticReportRecordBundle = async (
     });
   }
 
-  // Batch PDF generation (mirrors fhir.bundle.service.ts pattern)
+  // Batch PDF generation for LEGACY lab reports
   if (browser && labs && labs.length > 0) {
     try {
       const buffers = await generateMultiplePdfs(
@@ -968,6 +969,252 @@ const buildDiagnosticReportRecordBundle = async (
       }
     } catch (err) {
       console.error("[Builders] DiagnosticReport PDF generation failed:", err);
+    }
+  }
+
+  // ── NEW: Structured lab reports (from lab_reports collection) ────────────────
+  const structuredLabs = optionalData?.structuredLabReports;
+  if (structuredLabs && structuredLabs.length > 0) {
+    for (const slab of structuredLabs) {
+      // Skip reports with no parameters that have values
+      const filledParams = slab.parameters.filter(
+        (p) => p.parameterValue && p.parameterValue.trim() !== "",
+      );
+      if (filledParams.length === 0) continue;
+
+      const displayName = slab.displayName || slab.testType;
+      const slabObsRefs: { reference: string; display: string }[] = [];
+      const slabSectionEntries: any[] = [];
+
+      // Build one Observation per parameter
+      for (const param of filledParams) {
+        const obsId = generateUUID();
+        const reportDate = slab.reportDate
+          ? toSafeISOString(slab.reportDate)
+          : bundleDate;
+
+        const numVal = parseFloat(param.parameterValue);
+        const isNum =
+          !isNaN(numVal) && param.parameterValue.trim() !== "";
+
+        const obsResource: any = {
+          fullUrl: `urn:uuid:${obsId}`,
+          resource: {
+            resourceType: "Observation",
+            id: obsId,
+            meta: {
+              profile: [
+                "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation",
+              ],
+            },
+            status: "final",
+            category: [
+              {
+                coding: [
+                  {
+                    system:
+                      "http://terminology.hl7.org/CodeSystem/observation-category",
+                    code: "laboratory",
+                    display: "Laboratory",
+                  },
+                ],
+              },
+            ],
+            code: {
+              text: param.parameterName,
+              coding: [
+                {
+                  system: "http://loinc.org",
+                  code: "11502-2",
+                  display: param.parameterName,
+                },
+              ],
+            },
+            subject: { reference: `urn:uuid:${patientUUID}` },
+            effectiveDateTime: reportDate,
+            performer: [
+              { reference: `urn:uuid:${orgUUID}`, display: "Organization" },
+            ],
+            ...(isNum
+              ? {
+                  valueQuantity: {
+                    value: numVal,
+                    unit: param.unit || undefined,
+                    ...(param.unit
+                      ? {
+                          system: "http://snomed.info/sct",
+                          code: "258797006",
+                        }
+                      : {}),
+                  },
+                }
+              : {
+                  valueString: `${param.parameterValue}${param.unit ? " " + param.unit : ""}`,
+                }),
+            // ABDM: referenceRange
+            ...(param.referenceRange
+              ? {
+                  referenceRange: [
+                    {
+                      text: param.referenceRange,
+                    },
+                  ],
+                }
+              : {}),
+            // Flag interpretation
+            ...(param.flag && param.flag !== ""
+              ? {
+                  interpretation: [
+                    {
+                      coding: [
+                        {
+                          system:
+                            "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                          code:
+                            param.flag === "High"
+                              ? "H"
+                              : param.flag === "Low"
+                                ? "L"
+                                : "N",
+                          display: param.flag,
+                        },
+                      ],
+                    },
+                  ],
+                }
+              : {}),
+          },
+        };
+        bundleEntries.push(obsResource);
+        slabObsRefs.push({
+          reference: `urn:uuid:${obsId}`,
+          display: `Observation/${param.parameterName}`,
+        });
+      }
+
+      // Build one DiagnosticReport for this structured lab
+      const slabDrId = generateUUID();
+      const slabDrResource: any = {
+        fullUrl: `urn:uuid:${slabDrId}`,
+        resource: {
+          resourceType: "DiagnosticReport",
+          id: slabDrId,
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DiagnosticReportLab",
+            ],
+          },
+          status: slab.status === "final" ? "final" : "preliminary",
+          category: [
+            {
+              coding: [
+                {
+                  system: "http://snomed.info/sct",
+                  code: "708196005",
+                  display: "Hematology service",
+                },
+              ],
+            },
+          ],
+          code: {
+            text: displayName,
+            coding: [
+              {
+                system: "http://loinc.org",
+                code: slab.loincCode || "11502-2",
+                display: slab.loincDisplay || displayName,
+              },
+            ],
+          },
+          subject: { reference: `urn:uuid:${patientUUID}` },
+          effectiveDateTime: slab.reportDate
+            ? toSafeISOString(slab.reportDate)
+            : bundleDate,
+          issued: new Date().toISOString(),
+          performer: [{ reference: `urn:uuid:${orgUUID}` }],
+          resultsInterpreter: [
+            {
+              reference: `urn:uuid:${practitionerUUID}`,
+              display: slab.analystName || analystName,
+            },
+          ],
+          result: slabObsRefs,
+          presentedForm: [],
+          ...(slab.observations
+            ? { conclusion: slab.observations }
+            : {}),
+        },
+      };
+      bundleEntries.push(slabDrResource);
+
+      // Section entry refs
+      slabSectionEntries.push({
+        reference: `urn:uuid:${slabDrId}`,
+        type: "DiagnosticReport",
+      });
+
+      // PDF for this structured lab report
+      if (browser) {
+        const slabDocId = generateUUID();
+        try {
+          const slabPdfBuffers = await generateMultiplePdfs(
+            [
+              getStructuredLabReportTemplate(patient, visit, {
+                testType: slab.testType,
+                displayName,
+                sampleId: slab.sampleId,
+                reportDate: slab.reportDate,
+                analystName: slab.analystName,
+                observations: slab.observations,
+                status: slab.status,
+                parameters: slab.parameters,
+              }),
+            ],
+            browser,
+          );
+          if (slabPdfBuffers[0]) {
+            bundleEntries.push(
+              buildPdfDocumentReference(
+                slabDocId,
+                patientUUID,
+                `${displayName} Report`,
+                "4241000179101",
+                "Laboratory report",
+                bundleDate,
+                slabPdfBuffers[0].toString("base64"),
+              ),
+            );
+            slabSectionEntries.push({
+              reference: `urn:uuid:${slabDocId}`,
+              type: "DocumentReference",
+            });
+          }
+        } catch (pdfErr) {
+          console.error(
+            `[Builders] Structured lab report PDF generation failed for ${displayName}:`,
+            pdfErr,
+          );
+        }
+      }
+
+      // Section: title = test type display name (e.g. "Blood Test")
+      sections.push({
+        title: displayName,
+        code: {
+          coding: [
+            {
+              system: "http://snomed.info/sct",
+              code: "721981007",
+              display: "Diagnostic studies report",
+            },
+          ],
+        },
+        text: {
+          status: "generated",
+          div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>${displayName} — ${filledParams.length} parameter(s) recorded</p></div>`,
+        },
+        entry: slabSectionEntries,
+      });
     }
   }
 

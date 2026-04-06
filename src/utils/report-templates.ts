@@ -625,3 +625,194 @@ export const getImmunizationTemplate = (
     </html>
   `;
 };
+
+/**
+ * Structured Lab Report PDF template — supports different layouts per test type.
+ *
+ * - blood/lipid → Table with Parameter | Result | Unit | Range | Flag
+ * - urine      → Grouped sections (Physical, Chemical, Microscopic)
+ * - glucose     → Simple key-value pairs
+ *
+ * Abnormal values (High/Low) are highlighted in red.
+ */
+export const getStructuredLabReportTemplate = (
+  patient: IPatient,
+  visit: IScanShareVisit,
+  report: {
+    testType: string;
+    displayName: string;
+    sampleId: string;
+    reportDate: Date | string;
+    analystName: string;
+    observations?: string;
+    status: string;
+    parameters: Array<{
+      parameterName: string;
+      parameterValue: string;
+      unit: string;
+      referenceRange: string;
+      flag: string;
+      section?: string;
+    }>;
+  },
+) => {
+  const flagColor = (flag: string) =>
+    flag === "High" || flag === "Low" ? "color: #dc3545; font-weight: bold;" : "";
+
+  const flagBadge = (flag: string) => {
+    if (!flag) return "";
+    const badgeColor =
+      flag === "Normal" ? "#28a745" : flag === "High" ? "#dc3545" : "#dc3545";
+    return `<span style="background:${badgeColor};color:#fff;padding:2px 6px;border-radius:3px;font-size:0.8em;">${flag}</span>`;
+  };
+
+  const reportDate = report.reportDate
+    ? new Date(report.reportDate).toLocaleDateString("en-IN")
+    : "-";
+
+  let bodyHtml = "";
+
+  // ── Table layout for blood / lipid ──────────────────────────────────────────
+  if (report.testType === "blood" || report.testType === "lipid") {
+    const rows = report.parameters
+      .filter((p) => p.parameterValue && p.parameterValue.trim() !== "")
+      .map(
+        (p) => `
+      <tr>
+        <td>${p.parameterName}</td>
+        <td style="${flagColor(p.flag)}">${p.parameterValue}</td>
+        <td>${p.unit || "-"}</td>
+        <td>${p.referenceRange || "-"}</td>
+        <td>${flagBadge(p.flag)}</td>
+      </tr>`,
+      )
+      .join("");
+
+    bodyHtml = `
+      <div class="section">
+        <div class="section-title">${report.displayName}</div>
+        <p><strong>Sample ID:</strong> ${report.sampleId} &nbsp;&nbsp; <strong>Date:</strong> ${reportDate} &nbsp;&nbsp; <strong>Status:</strong> ${report.status.toUpperCase()}</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Parameter</th>
+              <th>Result</th>
+              <th>Unit</th>
+              <th>Reference Range</th>
+              <th>Flag</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // ── Grouped sections for urine ──────────────────────────────────────────────
+  else if (report.testType === "urine") {
+    const sections = new Map<string, typeof report.parameters>();
+    for (const p of report.parameters) {
+      const sec = p.section || "General";
+      if (!sections.has(sec)) sections.set(sec, []);
+      sections.get(sec)!.push(p);
+    }
+
+    let sectionHtml = "";
+    for (const [sectionName, params] of sections) {
+      const rows = params
+        .filter((p) => p.parameterValue && p.parameterValue.trim() !== "")
+        .map(
+          (p) => `
+        <tr>
+          <td>${p.parameterName}</td>
+          <td style="${flagColor(p.flag)}">${p.parameterValue} ${p.unit || ""}</td>
+          <td>${p.referenceRange || "-"}</td>
+          <td>${flagBadge(p.flag)}</td>
+        </tr>`,
+        )
+        .join("");
+
+      if (rows) {
+        sectionHtml += `
+        <div style="margin-bottom: 15px;">
+          <h4 style="color: #0056b3; margin-bottom: 5px;">${sectionName}</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Result</th>
+                <th>Reference Range</th>
+                <th>Flag</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+      }
+    }
+
+    bodyHtml = `
+      <div class="section">
+        <div class="section-title">${report.displayName}</div>
+        <p><strong>Sample ID:</strong> ${report.sampleId} &nbsp;&nbsp; <strong>Date:</strong> ${reportDate} &nbsp;&nbsp; <strong>Status:</strong> ${report.status.toUpperCase()}</p>
+        ${sectionHtml}
+      </div>`;
+  }
+
+  // ── Simple form for glucose ─────────────────────────────────────────────────
+  else {
+    const rows = report.parameters
+      .filter((p) => p.parameterValue && p.parameterValue.trim() !== "")
+      .map(
+        (p) => `
+      <tr>
+        <td><strong>${p.parameterName}</strong></td>
+        <td style="${flagColor(p.flag)}">${p.parameterValue} ${p.unit || ""}</td>
+        <td>${p.referenceRange || "-"}</td>
+        <td>${flagBadge(p.flag)}</td>
+      </tr>`,
+      )
+      .join("");
+
+    bodyHtml = `
+      <div class="section">
+        <div class="section-title">${report.displayName}</div>
+        <p><strong>Sample ID:</strong> ${report.sampleId} &nbsp;&nbsp; <strong>Date:</strong> ${reportDate} &nbsp;&nbsp; <strong>Status:</strong> ${report.status.toUpperCase()}</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Test</th>
+              <th>Result</th>
+              <th>Reference Range</th>
+              <th>Flag</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // ── Observations ────────────────────────────────────────────────────────────
+  const observationsHtml = report.observations
+    ? `
+      <div class="section">
+        <div class="section-title">Additional Observations</div>
+        <p>${report.observations}</p>
+      </div>`
+    : "";
+
+  return `
+    <html>
+    <head>${css}</head>
+    <body>
+      ${getPatientHeader(patient, visit)}
+      ${bodyHtml}
+      ${observationsHtml}
+      <div class="footer">
+        <p><strong>Analyst: ${report.analystName || "Lab In-charge"}</strong></p>
+        <p><strong>Practitioner: Dr. ${visit.doctorName || "Practitioner"}</strong></p>
+        <p class="small-text">Generated on ${new Date().toLocaleString("en-IN")}</p>
+      </div>
+    </body>
+    </html>
+  `;
+};

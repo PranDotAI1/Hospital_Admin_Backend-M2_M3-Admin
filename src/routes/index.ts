@@ -77,6 +77,16 @@ import {
   searchProcedures as searchProceduresCtrl,
   searchConditions as searchConditionsCtrl,
 } from "../controllers/terminology.controller";
+import {
+  getAvailableTestTypes,
+  getTestParameters,
+  upsertLabTest,
+  getVisitLabReport,
+  getLabReport,
+  updateLabTest,
+  getPatientLabReports,
+  finalizeLabReport,
+} from "../controllers/v3/lab-report.controller";
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
@@ -349,5 +359,15 @@ router.get("/terminology/medicines", checkToken, searchMedicinesCtrl);
 router.get("/terminology/lab-tests", checkToken, searchLabTestsCtrl);
 router.get("/terminology/procedures", checkToken, searchProceduresCtrl);
 router.get("/terminology/conditions", checkToken, searchConditionsCtrl);
+
+// ── Lab Test Templates & Structured Lab Reports ──
+router.get("/lab-tests/types", checkToken, getAvailableTestTypes);
+router.get("/lab-tests/parameters/:testType", checkToken, getTestParameters);
+router.post("/lab-reports/upsert", checkToken, upsertLabTest);
+router.get("/lab-reports/visit/:visitId", checkToken, getVisitLabReport);
+router.get("/lab-reports/patient/:patientId", checkToken, getPatientLabReports);
+router.get("/lab-reports/:id", checkToken, getLabReport);
+router.put("/lab-reports/:id/test/:testType", checkToken, updateLabTest);
+router.patch("/lab-reports/:id/finalize", checkToken, finalizeLabReport);
 
 export default router;
