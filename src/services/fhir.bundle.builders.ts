@@ -33,8 +33,23 @@ import {
 // ── Local helpers (duplicated from fhir.bundle.service to keep this file standalone) ──
 
 const VITAL_KEYS = [
-  "pulse", "spo2", "sbp", "dbp", "map", "temp", "respiration", "painScore",
-  "height", "weight", "bsa", "bmi", "category", "bs", "creatinine", "egfr", "egfr2",
+  "pulse",
+  "spo2",
+  "sbp",
+  "dbp",
+  "map",
+  "temp",
+  "respiration",
+  "painScore",
+  "height",
+  "weight",
+  "bsa",
+  "bmi",
+  "category",
+  "bs",
+  "creatinine",
+  "egfr",
+  "egfr2",
 ] as const;
 
 const generateUUID = (): string => {
@@ -45,6 +60,79 @@ const generateUUID = (): string => {
   });
 };
 
+/**
+ * Returns the ABDM-compliant DiagnosticReport.category coding array for a given lab testType.
+ *
+ * Per ABDM FHIR IG v6.5.0 / NRCES DiagnosticReportLab profile:
+ *   - Primary system: http://terminology.hl7.org/CodeSystem/v2-0074 (HL7 v2-0074 lab taxonomy)
+ *   - Secondary system: http://snomed.info/sct (service qualifier)
+ *
+ * Mappings:
+ *   blood   → HM / Hematology        + SNOMED 708196005 (Hematology service)
+ *   urine   → UA / Urinalysis        + SNOMED 4014000   (Urinalysis, complete)
+ *   glucose → CH / Chemistry         + SNOMED 275711006 (Serum chemistry test)
+ *   lipid   → CH / Chemistry         + SNOMED 275711006 (Serum chemistry test)
+ *   default → LAB / Laboratory       + SNOMED 708196005 (General pathology service)
+ */
+function getLabDrCategory(testType?: string): any[] {
+  const map: Record<
+    string,
+    {
+      v2Code: string;
+      v2Display: string;
+      snomedCode: string;
+      snomedDisplay: string;
+    }
+  > = {
+    blood: {
+      v2Code: "HM",
+      v2Display: "Hematology",
+      snomedCode: "708196005",
+      snomedDisplay: "Hematology service",
+    },
+    urine: {
+      v2Code: "UA",
+      v2Display: "Urinalysis",
+      snomedCode: "4014000",
+      snomedDisplay: "Urinalysis, complete",
+    },
+    glucose: {
+      v2Code: "CH",
+      v2Display: "Chemistry",
+      snomedCode: "275711006",
+      snomedDisplay: "Serum chemistry test",
+    },
+    lipid: {
+      v2Code: "CH",
+      v2Display: "Chemistry",
+      snomedCode: "275711006",
+      snomedDisplay: "Serum chemistry test",
+    },
+  };
+  const entry = map[(testType ?? "").toLowerCase()] ?? {
+    v2Code: "LAB",
+    v2Display: "Laboratory",
+    snomedCode: "708196005",
+    snomedDisplay: "General pathology service",
+  };
+  return [
+    {
+      coding: [
+        {
+          system: "http://terminology.hl7.org/CodeSystem/v2-0074",
+          code: entry.v2Code,
+          display: entry.v2Display,
+        },
+        {
+          system: "http://snomed.info/sct",
+          code: entry.snomedCode,
+          display: entry.snomedDisplay,
+        },
+      ],
+    },
+  ];
+}
+
 const toSafeISOString = (date: Date | string | undefined | null): string => {
   if (date == null || date === "") return new Date().toISOString();
   const d = date instanceof Date ? date : new Date(date as string);
@@ -54,7 +142,8 @@ const toSafeISOString = (date: Date | string | undefined | null): string => {
 const toSafeLocaleDateString = (
   date: Date | string | undefined | null,
 ): string => {
-  if (date == null || date === "") return new Date().toLocaleDateString("en-IN");
+  if (date == null || date === "")
+    return new Date().toLocaleDateString("en-IN");
   const d = date instanceof Date ? date : new Date(date as string);
   return isNaN(d.getTime())
     ? new Date().toLocaleDateString("en-IN")
@@ -139,7 +228,8 @@ const buildVitalObservation = (
       {
         coding: [
           {
-            system: "http://terminology.hl7.org/CodeSystem/observation-category",
+            system:
+              "http://terminology.hl7.org/CodeSystem/observation-category",
             code: "vital-signs",
             display: "Vital Signs",
           },
@@ -183,7 +273,12 @@ const buildOPConsultationBundle = async (
 
   const encounter = buildEncounterResource(visit, encounterUUID, patientUUID);
   (encounter.resource as any).participant = [
-    { individual: { reference: `urn:uuid:${practitionerUUID}`, display: doctor } },
+    {
+      individual: {
+        reference: `urn:uuid:${practitionerUUID}`,
+        display: doctor,
+      },
+    },
   ];
   bundleEntries.push(encounter);
 
@@ -191,12 +286,30 @@ const buildOPConsultationBundle = async (
 
   // ── Section 1: Chief Complaints (LOINC 10154-3) ──
   const chiefComplaintText =
-    optionalData?.soapNotes?.subjective || visit.complaint || "General OPD consultation";
+    optionalData?.soapNotes?.subjective ||
+    visit.complaint ||
+    "General OPD consultation";
   let conditionUUID: string | undefined = generateUUID();
-  bundleEntries.push(buildConditionResource(chiefComplaintText, conditionUUID, patientUUID, bundleDate, practitionerUUID));
+  bundleEntries.push(
+    buildConditionResource(
+      chiefComplaintText,
+      conditionUUID,
+      patientUUID,
+      bundleDate,
+      practitionerUUID,
+    ),
+  );
   sections.push({
     title: "Chief Complaints",
-    code: { coding: [{ system: "http://loinc.org", code: "10154-3", display: "Chief complaint Narrative - Reported" }] },
+    code: {
+      coding: [
+        {
+          system: "http://loinc.org",
+          code: "10154-3",
+          display: "Chief complaint Narrative - Reported",
+        },
+      ],
+    },
     text: {
       status: "generated",
       div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Chief Complaint:</strong> ${escapeHtml(chiefComplaintText).replace(/\n/g, "<br/>")}</p></div>`,
@@ -208,7 +321,10 @@ const buildOPConsultationBundle = async (
   });
 
   // ── Section 2: Allergies (LOINC 48765-2) ──
-  const allergyText = (typeof patient.allergies === "string" && patient.allergies) ? patient.allergies : "No known allergies";
+  const allergyText =
+    typeof patient.allergies === "string" && patient.allergies
+      ? patient.allergies
+      : "No known allergies";
   const allergyEntries: any[] = [];
   if (patient.allergies) {
     const allergyId = generateUUID();
@@ -218,9 +334,30 @@ const buildOPConsultationBundle = async (
         resourceType: "AllergyIntolerance",
         id: allergyId,
         recordedDate: bundleDate,
-        recorder: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
-        clinicalStatus: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical", code: "active", display: "Active" }] },
-        verificationStatus: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification", code: "confirmed", display: "Confirmed" }] },
+        recorder: {
+          reference: `urn:uuid:${practitionerUUID}`,
+          display: doctor,
+        },
+        clinicalStatus: {
+          coding: [
+            {
+              system:
+                "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
+              code: "active",
+              display: "Active",
+            },
+          ],
+        },
+        verificationStatus: {
+          coding: [
+            {
+              system:
+                "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
+              code: "confirmed",
+              display: "Confirmed",
+            },
+          ],
+        },
         code: { text: allergyText },
         patient: { reference: `urn:uuid:${patientUUID}` },
       },
@@ -229,8 +366,19 @@ const buildOPConsultationBundle = async (
   }
   sections.push({
     title: "Allergies",
-    code: { coding: [{ system: "http://loinc.org", code: "48765-2", display: "Allergies and adverse reactions Document" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Allergies:</strong> ${escapeHtml(allergyText)}</p></div>` },
+    code: {
+      coding: [
+        {
+          system: "http://loinc.org",
+          code: "48765-2",
+          display: "Allergies and adverse reactions Document",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml"><p><strong>Allergies:</strong> ${escapeHtml(allergyText)}</p></div>`,
+    },
     ...(allergyEntries.length > 0 && { entry: allergyEntries }),
   });
 
@@ -239,34 +387,67 @@ const buildOPConsultationBundle = async (
   const mhEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
   const assessHistory = optionalData?.assessment?.medicalHistory;
   if (patient.existingMedicalConditions)
-    mhParts.push(`<p><strong>Existing Conditions:</strong> ${escapeHtml(patient.existingMedicalConditions)}</p>`);
+    mhParts.push(
+      `<p><strong>Existing Conditions:</strong> ${escapeHtml(patient.existingMedicalConditions)}</p>`,
+    );
   if (assessHistory && assessHistory.length > 0) {
-    const rows = assessHistory.map((h: any) => {
-      if (h.disease) {
-        const cid = generateUUID();
-        bundleEntries.push({
-          fullUrl: `urn:uuid:${cid}`,
-          resource: {
-            resourceType: "Condition",
-            id: cid,
-            meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Condition"] },
-            clinicalStatus: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/condition-clinical", code: "recurrence", display: "Recurrence" }] },
-            code: { text: h.disease },
-            subject: { reference: `urn:uuid:${patientUUID}` },
-            recordedDate: bundleDate,
-            recorder: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
-          },
-        });
-        mhEntries.push({ reference: `urn:uuid:${cid}` });
-      }
-      return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
-    }).join("");
-    mhParts.push(`<table border="1" cellpadding="4"><thead><tr><th>Disease</th><th>Duration</th><th>Medications</th></tr></thead><tbody>${rows}</tbody></table>`);
+    const rows = assessHistory
+      .map((h: any) => {
+        if (h.disease) {
+          const cid = generateUUID();
+          bundleEntries.push({
+            fullUrl: `urn:uuid:${cid}`,
+            resource: {
+              resourceType: "Condition",
+              id: cid,
+              meta: {
+                profile: [
+                  "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Condition",
+                ],
+              },
+              clinicalStatus: {
+                coding: [
+                  {
+                    system:
+                      "http://terminology.hl7.org/CodeSystem/condition-clinical",
+                    code: "recurrence",
+                    display: "Recurrence",
+                  },
+                ],
+              },
+              code: { text: h.disease },
+              subject: { reference: `urn:uuid:${patientUUID}` },
+              recordedDate: bundleDate,
+              recorder: {
+                reference: `urn:uuid:${practitionerUUID}`,
+                display: doctor,
+              },
+            },
+          });
+          mhEntries.push({ reference: `urn:uuid:${cid}` });
+        }
+        return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
+      })
+      .join("");
+    mhParts.push(
+      `<table border="1" cellpadding="4"><thead><tr><th>Disease</th><th>Duration</th><th>Medications</th></tr></thead><tbody>${rows}</tbody></table>`,
+    );
   }
   sections.push({
     title: "Medical History",
-    code: { coding: [{ system: "http://loinc.org", code: "11329-0", display: "History of past illness" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${mhParts.join("") || "<p>No medical history recorded.</p>"}</div>` },
+    code: {
+      coding: [
+        {
+          system: "http://loinc.org",
+          code: "11329-0",
+          display: "History of past illness",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml">${mhParts.join("") || "<p>No medical history recorded.</p>"}</div>`,
+    },
     entry: mhEntries,
   });
 
@@ -280,22 +461,50 @@ const buildOPConsultationBundle = async (
       resource: {
         resourceType: "ServiceRequest",
         id: srId,
-        meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/ServiceRequest"] },
+        meta: {
+          profile: [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/ServiceRequest",
+          ],
+        },
         status: "active",
         intent: "order",
-        category: [{ coding: [{ system: "http://snomed.info/sct", code: "108252007", display: "Laboratory procedure" }] }],
+        category: [
+          {
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "108252007",
+                display: "Laboratory procedure",
+              },
+            ],
+          },
+        ],
         code: { text: iaText },
         subject: { reference: `urn:uuid:${patientUUID}` },
         authoredOn: bundleDate,
-        requester: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+        requester: {
+          reference: `urn:uuid:${practitionerUUID}`,
+          display: doctor,
+        },
       },
     });
     iaEntries.push({ reference: `urn:uuid:${srId}` });
   }
   sections.push({
     title: "Investigation Advice",
-    code: { coding: [{ system: "http://snomed.info/sct", code: "721981007", display: "Diagnostic studies report" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${iaText ? `<p>${escapeHtml(iaText).replace(/\n/g, "<br/>")}</p>` : "<p>No investigation advice recorded.</p>"}</div>` },
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "721981007",
+          display: "Diagnostic studies report",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml">${iaText ? `<p>${escapeHtml(iaText).replace(/\n/g, "<br/>")}</p>` : "<p>No investigation advice recorded.</p>"}</div>`,
+    },
     entry: iaEntries,
   });
 
@@ -304,20 +513,46 @@ const buildOPConsultationBundle = async (
   const medEntries: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
   let medNarrativeHtml = "<p>No medications prescribed.</p>";
   if (meds && meds.length > 0) {
-    const medRows = meds.map((m: any) =>
-      `<tr><td>${escapeHtml(m.medicine || "-")}</td><td>${escapeHtml(m.dosage || "-")}</td><td>${m.frequency || "-"}</td><td>${m.duration || "-"}</td></tr>`
-    ).join("");
+    const medRows = meds
+      .map(
+        (m: any) =>
+          `<tr><td>${escapeHtml(m.medicine || "-")}</td><td>${escapeHtml(m.dosage || "-")}</td><td>${m.frequency || "-"}</td><td>${m.duration || "-"}</td></tr>`,
+      )
+      .join("");
     medNarrativeHtml = `<table border="1" cellpadding="4"><thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead><tbody>${medRows}</tbody></table>`;
     meds.forEach((m: any) => {
       const medId = generateUUID();
-      bundleEntries.push(buildMedicationRequest(m, patientUUID, orgUUID, practitionerUUID, doctor, bundleDate, medId, conditionUUID || null, chiefComplaintText));
+      bundleEntries.push(
+        buildMedicationRequest(
+          m,
+          patientUUID,
+          orgUUID,
+          practitionerUUID,
+          doctor,
+          bundleDate,
+          medId,
+          conditionUUID || null,
+          chiefComplaintText,
+        ),
+      );
       medEntries.push({ reference: `urn:uuid:${medId}` });
     });
   }
   sections.push({
     title: "Medications",
-    code: { coding: [{ system: "http://snomed.info/sct", code: "721912009", display: "Medication summary document" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${medNarrativeHtml}</div>` },
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "721912009",
+          display: "Medication summary document",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml">${medNarrativeHtml}</div>`,
+    },
     entry: medEntries,
   });
 
@@ -331,7 +566,11 @@ const buildOPConsultationBundle = async (
       resource: {
         resourceType: "Procedure",
         id: procId,
-        meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Procedure"] },
+        meta: {
+          profile: [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Procedure",
+          ],
+        },
         status: "completed",
         code: { text: procText },
         subject: { reference: `urn:uuid:${patientUUID}` },
@@ -342,8 +581,19 @@ const buildOPConsultationBundle = async (
   }
   sections.push({
     title: "Procedure",
-    code: { coding: [{ system: "http://snomed.info/sct", code: "371525003", display: "Clinical procedure report" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${procText ? `<p>${escapeHtml(procText).replace(/\n/g, "<br/>")}</p>` : "<p>No procedures recorded.</p>"}</div>` },
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "371525003",
+          display: "Clinical procedure report",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml">${procText ? `<p>${escapeHtml(procText).replace(/\n/g, "<br/>")}</p>` : "<p>No procedures recorded.</p>"}</div>`,
+    },
     entry: procEntries,
   });
 
@@ -359,36 +609,99 @@ const buildOPConsultationBundle = async (
     const apptResource: any = {
       resourceType: "Appointment",
       id: apptId,
-      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Appointment"] },
+      meta: {
+        profile: [
+          "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Appointment",
+        ],
+      },
       status: "booked",
-      serviceCategory: [{ coding: [{ system: "http://terminology.hl7.org/CodeSystem/service-category", code: "17", display: "General Practice" }] }],
-      serviceType: [{ coding: [{ system: "http://terminology.hl7.org/CodeSystem/service-type", code: "11", display: "Consultation" }] }],
-      appointmentType: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/v2-0276", code: "FOLLOWUP", display: "Follow-up visit" }] },
+      serviceCategory: [
+        {
+          coding: [
+            {
+              system: "http://terminology.hl7.org/CodeSystem/service-category",
+              code: "17",
+              display: "General Practice",
+            },
+          ],
+        },
+      ],
+      serviceType: [
+        {
+          coding: [
+            {
+              system: "http://terminology.hl7.org/CodeSystem/service-type",
+              code: "11",
+              display: "Consultation",
+            },
+          ],
+        },
+      ],
+      appointmentType: {
+        coding: [
+          {
+            system: "http://terminology.hl7.org/CodeSystem/v2-0276",
+            code: "FOLLOWUP",
+            display: "Follow-up visit",
+          },
+        ],
+      },
       description: followUpText,
       start: startDate.toISOString(),
       end: endDate.toISOString(),
       created: bundleDate,
       participant: [
         { actor: { reference: `urn:uuid:${patientUUID}` }, status: "accepted" },
-        { actor: { reference: `urn:uuid:${practitionerUUID}`, display: doctor }, status: "accepted" },
+        {
+          actor: { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+          status: "accepted",
+        },
       ],
     };
-    if (conditionUUID) apptResource.reasonReference = [{ reference: `urn:uuid:${conditionUUID}` }];
-    bundleEntries.push({ fullUrl: `urn:uuid:${apptId}`, resource: apptResource });
+    if (conditionUUID)
+      apptResource.reasonReference = [
+        { reference: `urn:uuid:${conditionUUID}` },
+      ];
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${apptId}`,
+      resource: apptResource,
+    });
     fuEntries.push({ reference: `urn:uuid:${apptId}` });
   }
   sections.push({
     title: "Follow Up",
-    code: { coding: [{ system: "http://loinc.org", code: "57828-6", display: "Prescription list" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${followUpText ? `<p>${escapeHtml(followUpText).replace(/\n/g, "<br/>")}</p>` : "<p>No follow-up instructions recorded.</p>"}</div>` },
+    code: {
+      coding: [
+        {
+          system: "http://loinc.org",
+          code: "57828-6",
+          display: "Prescription list",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml">${followUpText ? `<p>${escapeHtml(followUpText).replace(/\n/g, "<br/>")}</p>` : "<p>No follow-up instructions recorded.</p>"}</div>`,
+    },
     entry: fuEntries,
   });
 
   // ── Section 8: Document Reference ──
   sections.push({
     title: "Document Reference",
-    code: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>OP Consultation Record</p></div>` },
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "371530004",
+          display: "Clinical consultation report",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>OP Consultation Record</p></div>`,
+    },
     entry: [
       { reference: `urn:uuid:${encounterUUID}` },
       { reference: `urn:uuid:${opConsultationDocId}` },
@@ -396,14 +709,29 @@ const buildOPConsultationBundle = async (
   });
 
   // ── PDF Generation ──
-  const pdfRequests: Array<{ title: string; typeCode: string; typeDisplay: string; html: string; docId: string }> = [];
+  const pdfRequests: Array<{
+    title: string;
+    typeCode: string;
+    typeDisplay: string;
+    html: string;
+    docId: string;
+  }> = [];
 
-  if (optionalData?.soapNotes || (optionalData?.assessment?.vitals && Object.keys(optionalData.assessment.vitals).length > 0)) {
+  if (
+    optionalData?.soapNotes ||
+    (optionalData?.assessment?.vitals &&
+      Object.keys(optionalData.assessment.vitals).length > 0)
+  ) {
     pdfRequests.push({
       title: "OP Consultation Report",
       typeCode: "371530004",
       typeDisplay: "Clinical consultation report",
-      html: getOPConsultationTemplate(patient, visit, optionalData?.soapNotes, optionalData?.assessment?.vitals),
+      html: getOPConsultationTemplate(
+        patient,
+        visit,
+        optionalData?.soapNotes,
+        optionalData?.assessment?.vitals,
+      ),
       docId: opConsultationDocId,
     });
   }
@@ -412,17 +740,35 @@ const buildOPConsultationBundle = async (
       title: "Prescription PDF",
       typeCode: "440545006",
       typeDisplay: "Prescription record",
-      html: getPrescriptionTemplate(patient, visit, meds || [], optionalData?.prescription?.advice),
+      html: getPrescriptionTemplate(
+        patient,
+        visit,
+        meds || [],
+        optionalData?.prescription?.advice,
+      ),
       docId: prescriptionDocId,
     });
   }
 
   if (browser && pdfRequests.length > 0) {
     try {
-      const buffers = await generateMultiplePdfs(pdfRequests.map((r) => r.html), browser);
+      const buffers = await generateMultiplePdfs(
+        pdfRequests.map((r) => r.html),
+        browser,
+      );
       buffers.forEach((buf, i) => {
         if (buf && pdfRequests[i]) {
-          bundleEntries.push(buildPdfDocumentReference(pdfRequests[i].docId, patientUUID, pdfRequests[i].title, pdfRequests[i].typeCode, pdfRequests[i].typeDisplay, bundleDate, buf.toString("base64")));
+          bundleEntries.push(
+            buildPdfDocumentReference(
+              pdfRequests[i].docId,
+              patientUUID,
+              pdfRequests[i].title,
+              pdfRequests[i].typeCode,
+              pdfRequests[i].typeDisplay,
+              bundleDate,
+              buf.toString("base64"),
+            ),
+          );
         }
       });
     } catch (err) {
@@ -430,9 +776,22 @@ const buildOPConsultationBundle = async (
       for (const req of pdfRequests) {
         try {
           const buf = await generatePdfFromHtml(req.html, browser);
-          bundleEntries.push(buildPdfDocumentReference(req.docId, patientUUID, req.title, req.typeCode, req.typeDisplay, bundleDate, buf.toString("base64")));
+          bundleEntries.push(
+            buildPdfDocumentReference(
+              req.docId,
+              patientUUID,
+              req.title,
+              req.typeCode,
+              req.typeDisplay,
+              bundleDate,
+              buf.toString("base64"),
+            ),
+          );
         } catch (e) {
-          console.error(`[Builders] OPConsultation fallback PDF failed for "${req.title}":`, e);
+          console.error(
+            `[Builders] OPConsultation fallback PDF failed for "${req.title}":`,
+            e,
+          );
         }
       }
     }
@@ -442,7 +801,9 @@ const buildOPConsultationBundle = async (
   const availableIds = new Set(bundleEntries.map((e: any) => e.fullUrl));
   sections.forEach((section) => {
     if (section.entry) {
-      section.entry = section.entry.filter((e: any) => availableIds.has(e.reference));
+      section.entry = section.entry.filter((e: any) =>
+        availableIds.has(e.reference),
+      );
       if (section.entry.length === 0) delete section.entry;
     }
   });
@@ -451,7 +812,10 @@ const buildOPConsultationBundle = async (
     resourceType: "Bundle",
     id: bundleId,
     meta: { lastUpdated: new Date().toISOString() },
-    identifier: { system: `https://${facilityId}.abdm.gov.in`, value: careContext.careContextReference },
+    identifier: {
+      system: `https://${facilityId}.abdm.gov.in`,
+      value: careContext.careContextReference,
+    },
     type: "document",
     timestamp: new Date().toISOString(),
     entry: [
@@ -460,16 +824,28 @@ const buildOPConsultationBundle = async (
         resource: {
           resourceType: "Composition",
           id: compositionUUID,
-          meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/OPConsultRecord"] },
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/OPConsultRecord",
+            ],
+          },
           status: "final",
           type: {
-            coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }],
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "371530004",
+                display: "Clinical consultation report",
+              },
+            ],
             text: "OP Consultation Record",
           },
           subject: { reference: `urn:uuid:${patientUUID}` },
           encounter: { reference: `urn:uuid:${encounterUUID}` },
           date: new Date().toISOString(),
-          author: [{ reference: `urn:uuid:${practitionerUUID}`, display: doctor }],
+          author: [
+            { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+          ],
           title: `OP Consultation - ${patientName} - ${visitDateStr}`,
           custodian: { reference: `urn:uuid:${orgUUID}` },
           section: sections,
@@ -807,10 +1183,13 @@ const buildDiagnosticReportRecordBundle = async (
           },
           subject: { reference: `urn:uuid:${patientUUID}` },
           effectiveDateTime: reportDate,
-          performer: [{ reference: `urn:uuid:${orgUUID}`, display: "Organization" }],
-          ...((() => {
+          performer: [
+            { reference: `urn:uuid:${orgUUID}`, display: "Organization" },
+          ],
+          ...(() => {
             const numVal = parseFloat(lab.resultValue || "");
-            const isNum = !isNaN(numVal) && (lab.resultValue || "").trim() !== "";
+            const isNum =
+              !isNaN(numVal) && (lab.resultValue || "").trim() !== "";
             if (isNum) {
               return {
                 valueQuantity: {
@@ -823,9 +1202,11 @@ const buildDiagnosticReportRecordBundle = async (
               };
             }
             return lab.resultValue
-              ? { valueString: `${lab.resultValue}${lab.measurementUnit ? " " + lab.measurementUnit : ""}` }
+              ? {
+                  valueString: `${lab.resultValue}${lab.measurementUnit ? " " + lab.measurementUnit : ""}`,
+                }
               : {};
-          })()),
+          })(),
         },
       };
       bundleEntries.push(obsResource);
@@ -858,20 +1239,18 @@ const buildDiagnosticReportRecordBundle = async (
           ],
         },
         status: "final",
-        category: [
-          {
-            coding: [
-              {
-                system: "http://snomed.info/sct",
-                code: "708196005",
-                display: "Hematology service",
-              },
-            ],
-          },
-        ],
+        category: getLabDrCategory((labs[0] as any)?.testType),
         code: {
           text: (labs[0] as any)?.captureTime
-            ? new Date((labs[0] as any).captureTime).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) + ", " + new Date((labs[0] as any).captureTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+            ? new Date((labs[0] as any).captureTime).toLocaleDateString(
+                "en-IN",
+                { day: "2-digit", month: "short", year: "numeric" },
+              ) +
+              ", " +
+              new Date((labs[0] as any).captureTime).toLocaleTimeString(
+                "en-IN",
+                { hour: "2-digit", minute: "2-digit" },
+              )
             : "Laboratory report",
           coding: [
             {
@@ -898,8 +1277,14 @@ const buildDiagnosticReportRecordBundle = async (
     bundleEntries.push(singleDrResource);
 
     // Section: ONE DR entry + DocumentReference for PDF
-    sectionEntries.push({ reference: `urn:uuid:${singleDrId}`, type: "DiagnosticReport" });
-    sectionEntries.push({ reference: `urn:uuid:${drDocId}`, type: "DocumentReference" });
+    sectionEntries.push({
+      reference: `urn:uuid:${singleDrId}`,
+      type: "DiagnosticReport",
+    });
+    sectionEntries.push({
+      reference: `urn:uuid:${drDocId}`,
+      type: "DocumentReference",
+    });
     // Per ABDM: section title = "Diagnostic studies report" (SNOMED 721981007)
     sections.push({
       title: "Diagnostic studies report",
@@ -984,8 +1369,7 @@ const buildDiagnosticReportRecordBundle = async (
           : bundleDate;
 
         const numVal = parseFloat(param.parameterValue);
-        const isNum =
-          !isNaN(numVal) && param.parameterValue.trim() !== "";
+        const isNum = !isNaN(numVal) && param.parameterValue.trim() !== "";
 
         const obsResource: any = {
           fullUrl: `urn:uuid:${obsId}`,
@@ -1015,8 +1399,8 @@ const buildDiagnosticReportRecordBundle = async (
               coding: [
                 {
                   system: "http://loinc.org",
-                  code: "11502-2",
-                  display: param.parameterName,
+                  code: param.loincCode || "11502-2",
+                  display: param.loincDisplay || param.parameterName,
                 },
               ],
             },
@@ -1095,17 +1479,7 @@ const buildDiagnosticReportRecordBundle = async (
             ],
           },
           status: slab.status === "final" ? "final" : "preliminary",
-          category: [
-            {
-              coding: [
-                {
-                  system: "http://snomed.info/sct",
-                  code: "708196005",
-                  display: "Hematology service",
-                },
-              ],
-            },
-          ],
+          category: getLabDrCategory(slab.testType),
           code: {
             text: displayName,
             coding: [
@@ -1130,9 +1504,7 @@ const buildDiagnosticReportRecordBundle = async (
           ],
           result: slabObsRefs,
           presentedForm: [],
-          ...(slab.observations
-            ? { conclusion: slab.observations }
-            : {}),
+          ...(slab.observations ? { conclusion: slab.observations } : {}),
         },
       };
       bundleEntries.push(slabDrResource);
@@ -1292,7 +1664,7 @@ const buildDischargeSummaryRecordBundle = async (
   bundleEntries.push(buildPatientResource(patient, patientUUID));
   bundleEntries.push(buildOrganizationResource(orgUUID));
   bundleEntries.push(buildPractitionerResource(doctor, practitionerUUID));
-  
+
   const encounter = buildEncounterResource(visit, encounterUUID, patientUUID);
   (encounter.resource as any).participant = [
     {
@@ -1309,7 +1681,10 @@ const buildDischargeSummaryRecordBundle = async (
 
   // ── Section 1: Chief Complaints (SNOMED 422843007) ──
   const chiefComplaintText =
-    ds?.chiefComplaints || ds?.diagnosis || assessment?.symptomsComplaints || "";
+    ds?.chiefComplaints ||
+    ds?.diagnosis ||
+    assessment?.symptomsComplaints ||
+    "";
   const chiefComplaintEntries: any[] = [];
   let conditionIdForMeds: string | undefined;
   if (chiefComplaintText) {
@@ -1360,9 +1735,7 @@ const buildDischargeSummaryRecordBundle = async (
       `<p><strong>Ward:</strong> ${escapeHtml(ds.ward)}</p>`,
     );
   if (ds?.bed)
-    medHistoryParts.push(
-      `<p><strong>Bed:</strong> ${escapeHtml(ds.bed)}</p>`,
-    );
+    medHistoryParts.push(`<p><strong>Bed:</strong> ${escapeHtml(ds.bed)}</p>`);
   if (ds?.clinicalSummary)
     medHistoryParts.push(
       `<p><strong>Clinical Summary:</strong> ${escapeHtml(ds.clinicalSummary)}</p>`,
@@ -1376,17 +1749,17 @@ const buildDischargeSummaryRecordBundle = async (
     const histRows = assessment.medicalHistory
       .map((h: any) => {
         if (h.disease) {
-           const condUUID = generateUUID();
-           const cond = buildConditionResource(
-             h.disease,
-             condUUID,
-             patientUUID,
-             toSafeISOString(visit.visitDate),
-             practitionerUUID,
-             false
-           );
-           bundleEntries.push(cond);
-           medHistoryEntries.push({ reference: `urn:uuid:${condUUID}` });
+          const condUUID = generateUUID();
+          const cond = buildConditionResource(
+            h.disease,
+            condUUID,
+            patientUUID,
+            toSafeISOString(visit.visitDate),
+            practitionerUUID,
+            false,
+          );
+          bundleEntries.push(cond);
+          medHistoryEntries.push({ reference: `urn:uuid:${condUUID}` });
         }
         return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
       })
@@ -1397,17 +1770,17 @@ const buildDischargeSummaryRecordBundle = async (
   }
 
   if (medHistoryEntries.length === 0 && medHistoryParts.length > 0) {
-     const condUUID = generateUUID();
-     const cond = buildConditionResource(
-       "Past Medical History Details",
-       condUUID,
-       patientUUID,
-       toSafeISOString(visit.visitDate),
-       practitionerUUID,
-       false
-     );
-     bundleEntries.push(cond);
-     medHistoryEntries.push({ reference: `urn:uuid:${condUUID}` });
+    const condUUID = generateUUID();
+    const cond = buildConditionResource(
+      "Past Medical History Details",
+      condUUID,
+      patientUUID,
+      toSafeISOString(visit.visitDate),
+      practitionerUUID,
+      false,
+    );
+    bundleEntries.push(cond);
+    medHistoryEntries.push({ reference: `urn:uuid:${condUUID}` });
   }
 
   sections.push({
@@ -1435,9 +1808,7 @@ const buildDischargeSummaryRecordBundle = async (
   const investigationParts: string[] = [];
   const investigationEntries: any[] = [];
   if (ds?.investigationsResults)
-    investigationParts.push(
-      `<p>${escapeHtml(ds.investigationsResults)}</p>`,
-    );
+    investigationParts.push(`<p>${escapeHtml(ds.investigationsResults)}</p>`);
   if (optionalData?.labReports && optionalData.labReports.length > 0) {
     const labRows = optionalData.labReports
       .map(
@@ -1451,27 +1822,27 @@ const buildDischargeSummaryRecordBundle = async (
   }
 
   if (investigationParts.length > 0) {
-      const obsUUID = generateUUID();
-      bundleEntries.push({
-        fullUrl: `urn:uuid:${obsUUID}`,
-        resource: {
-          resourceType: "Observation",
-          id: obsUUID,
-          status: "final",
-          code: {
-            text: "Investigations Narrative",
-            coding: [
-              {
-                system: "http://snomed.info/sct",
-                code: "721981007",
-                display: "Diagnostic studies report",
-              },
-            ],
-          },
-          subject: { reference: `urn:uuid:${patientUUID}` },
+    const obsUUID = generateUUID();
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${obsUUID}`,
+      resource: {
+        resourceType: "Observation",
+        id: obsUUID,
+        status: "final",
+        code: {
+          text: "Investigations Narrative",
+          coding: [
+            {
+              system: "http://snomed.info/sct",
+              code: "721981007",
+              display: "Diagnostic studies report",
+            },
+          ],
         },
-      });
-      investigationEntries.push({ reference: `urn:uuid:${obsUUID}` });
+        subject: { reference: `urn:uuid:${patientUUID}` },
+      },
+    });
+    investigationEntries.push({ reference: `urn:uuid:${obsUUID}` });
   }
 
   sections.push({
@@ -1580,7 +1951,7 @@ const buildDischargeSummaryRecordBundle = async (
           toSafeISOString(visit.visitDate),
           medId,
           conditionIdForMeds,
-          chiefComplaintText
+          chiefComplaintText,
         ),
       );
       medEntries.push({ reference: `urn:uuid:${medId}` });
@@ -1609,8 +1980,7 @@ const buildDischargeSummaryRecordBundle = async (
   // ── Section 6: Care Plan (SNOMED 734163000) ──
   const carePlanParts: string[] = [];
   const carePlanEntries: any[] = [];
-  if (ds?.carePlan)
-    carePlanParts.push(`<p>${escapeHtml(ds.carePlan)}</p>`);
+  if (ds?.carePlan) carePlanParts.push(`<p>${escapeHtml(ds.carePlan)}</p>`);
   if (ds?.followUpInstructions)
     carePlanParts.push(
       `<p><strong>Follow-up Instructions:</strong> ${escapeHtml(ds.followUpInstructions)}</p>`,
@@ -1882,7 +2252,9 @@ const buildImmunizationRecordBundle = async (
           text: v.name,
         },
         patient: { reference: `urn:uuid:${patientUUID}` },
-        occurrenceDateTime: v.date ? toSafeISOString(v.date) : toSafeISOString(visit.visitDate),
+        occurrenceDateTime: v.date
+          ? toSafeISOString(v.date)
+          : toSafeISOString(visit.visitDate),
         primarySource: true,
         lotNumber: v.lotNumber || "N/A",
         doseQuantity: { value: 0.5, unit: "ml" },
@@ -1898,11 +2270,21 @@ const buildImmunizationRecordBundle = async (
         const mfrId = generateUUID();
         bundleEntries.push({
           fullUrl: `urn:uuid:${mfrId}`,
-          resource: { resourceType: "Organization", id: mfrId, name: v.manufacturer },
+          resource: {
+            resourceType: "Organization",
+            id: mfrId,
+            name: v.manufacturer,
+          },
         });
-        immResource.manufacturer = { reference: `urn:uuid:${mfrId}`, display: v.manufacturer };
+        immResource.manufacturer = {
+          reference: `urn:uuid:${mfrId}`,
+          display: v.manufacturer,
+        };
       }
-      bundleEntries.push({ fullUrl: `urn:uuid:${immId}`, resource: immResource });
+      bundleEntries.push({
+        fullUrl: `urn:uuid:${immId}`,
+        resource: immResource,
+      });
       immunizationRefs.push({ reference: `urn:uuid:${immId}` });
       rows.push(
         `<tr><td>${escapeHtml(v.name)}</td><td>${v.date ? toSafeLocaleDateString(v.date) : "-"}</td><td>${v.doseNumber}/${v.seriesDoses}</td><td>${v.manufacturer ? escapeHtml(v.manufacturer) : "-"}</td><td>${v.lotNumber || "-"}</td></tr>`,
@@ -1912,7 +2294,13 @@ const buildImmunizationRecordBundle = async (
     sections.push({
       title: "Immunization Record",
       code: {
-        coding: [{ system: "http://snomed.info/sct", code: "41000179103", display: "Immunization record" }],
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "41000179103",
+            display: "Immunization record",
+          },
+        ],
       },
       text: {
         status: "generated",
@@ -1958,7 +2346,7 @@ const buildImmunizationRecordBundle = async (
             buffers[0].toString("base64"),
           ),
         );
-        
+
         // Also attach the document reference to the section entries
         const lastSection = sections[sections.length - 1];
         if (lastSection && lastSection.title === "Immunization Record") {
@@ -2231,7 +2619,12 @@ const buildWellnessRecordBundle = async (
 
   const encounter = buildEncounterResource(visit, encounterUUID, patientUUID);
   (encounter.resource as any).participant = [
-    { individual: { reference: `urn:uuid:${practitionerUUID}`, display: doctor } },
+    {
+      individual: {
+        reference: `urn:uuid:${practitionerUUID}`,
+        display: doctor,
+      },
+    },
   ];
   bundleEntries.push(encounter);
 
@@ -2241,33 +2634,64 @@ const buildWellnessRecordBundle = async (
   if (optionalData?.assessment?.vitals) {
     const vitalEntryRefs: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
     const vitalRows: string[] = [];
-    const vitals = optionalData.assessment.vitals as Record<string, string | number | undefined>;
+    const vitals = optionalData.assessment.vitals as Record<
+      string,
+      string | number | undefined
+    >;
 
     Object.keys(vitals).forEach((assessmentKey) => {
-      if (!VITAL_KEYS.includes(assessmentKey as (typeof VITAL_KEYS)[number])) return;
+      if (!VITAL_KEYS.includes(assessmentKey as (typeof VITAL_KEYS)[number]))
+        return;
       // Skip Body Measurement keys (height/weight/bsa/bmi) from Vital Signs in WellnessRecord
       if (["height", "weight", "bsa", "bmi"].includes(assessmentKey)) return;
 
-      const valueAndUnit = getVitalValueAndUnit(vitals[assessmentKey], assessmentKey);
+      const valueAndUnit = getVitalValueAndUnit(
+        vitals[assessmentKey],
+        assessmentKey,
+      );
       if (valueAndUnit === null) return;
       const { value, unit } = valueAndUnit;
       if (Number.isNaN(value) || typeof value !== "number") return;
 
       const obsUUID = generateUUID();
-      bundleEntries.push(buildVitalObservation(obsUUID, patientUUID, bundleDate, assessmentKey, "", value, unit));
+      bundleEntries.push(
+        buildVitalObservation(
+          obsUUID,
+          patientUUID,
+          bundleDate,
+          assessmentKey,
+          "",
+          value,
+          unit,
+        ),
+      );
       vitalEntryRefs.push({ reference: `urn:uuid:${obsUUID}` });
-      vitalRows.push(`<tr><td>${escapeHtml(assessmentKey)}</td><td>${value}</td><td>${escapeHtml(unit)}</td></tr>`);
+      vitalRows.push(
+        `<tr><td>${escapeHtml(assessmentKey)}</td><td>${value}</td><td>${escapeHtml(unit)}</td></tr>`,
+      );
     });
 
-    const vitalsNarrativeHtml = vitalRows.length > 0
-      ? `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Vital</th><th>Value</th><th>Unit</th></tr></thead><tbody>${vitalRows.join("")}</tbody></table>`
-      : `<p>No vital signs recorded for this visit.</p>`;
+    const vitalsNarrativeHtml =
+      vitalRows.length > 0
+        ? `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Vital</th><th>Value</th><th>Unit</th></tr></thead><tbody>${vitalRows.join("")}</tbody></table>`
+        : `<p>No vital signs recorded for this visit.</p>`;
 
     // Attach PDF doc ref to Vital Signs section if available (will add after PDF gen)
     sections.push({
       title: "Vital Signs",
-      code: { coding: [{ system: "http://loinc.org", code: "8716-3", display: "Vital signs" }] },
-      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${vitalsNarrativeHtml}</div>` },
+      code: {
+        coding: [
+          {
+            system: "http://loinc.org",
+            code: "8716-3",
+            display: "Vital signs",
+          },
+        ],
+      },
+      text: {
+        status: "generated",
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${vitalsNarrativeHtml}</div>`,
+      },
       entry: vitalEntryRefs,
     });
   }
@@ -2276,27 +2700,56 @@ const buildWellnessRecordBundle = async (
   {
     const bmRows: string[] = [];
     const bmEntryRefs: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
-    const vitals = optionalData?.assessment?.vitals as Record<string, string | number | undefined> | undefined;
+    const vitals = optionalData?.assessment?.vitals as
+      | Record<string, string | number | undefined>
+      | undefined;
     if (vitals) {
       Object.keys(vitals).forEach((assessmentKey) => {
         if (!["height", "weight", "bsa", "bmi"].includes(assessmentKey)) return;
-        const valueAndUnit = getVitalValueAndUnit(vitals[assessmentKey], assessmentKey);
+        const valueAndUnit = getVitalValueAndUnit(
+          vitals[assessmentKey],
+          assessmentKey,
+        );
         if (valueAndUnit === null) return;
         const { value, unit } = valueAndUnit;
         if (Number.isNaN(value) || typeof value !== "number") return;
         const obsUUID = generateUUID();
-        bundleEntries.push(buildVitalObservation(obsUUID, patientUUID, bundleDate, assessmentKey, "", value, unit));
+        bundleEntries.push(
+          buildVitalObservation(
+            obsUUID,
+            patientUUID,
+            bundleDate,
+            assessmentKey,
+            "",
+            value,
+            unit,
+          ),
+        );
         bmEntryRefs.push({ reference: `urn:uuid:${obsUUID}` });
-        bmRows.push(`<tr><td>${escapeHtml(assessmentKey)}</td><td>${value}</td><td>${escapeHtml(unit)}</td></tr>`);
+        bmRows.push(
+          `<tr><td>${escapeHtml(assessmentKey)}</td><td>${value}</td><td>${escapeHtml(unit)}</td></tr>`,
+        );
       });
     }
-    const bmNarrativeHtml = bmRows.length > 0
-      ? `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Measurement</th><th>Value</th><th>Unit</th></tr></thead><tbody>${bmRows.join("")}</tbody></table>`
-      : `<p>No body measurements recorded.</p>`;
+    const bmNarrativeHtml =
+      bmRows.length > 0
+        ? `<table xmlns="http://www.w3.org/1999/xhtml" border="1" cellpadding="4"><thead><tr><th>Measurement</th><th>Value</th><th>Unit</th></tr></thead><tbody>${bmRows.join("")}</tbody></table>`
+        : `<p>No body measurements recorded.</p>`;
     sections.push({
       title: "Body Measurement",
-      code: { coding: [{ system: "http://loinc.org", code: "8716-3", display: "Vital signs" }] },
-      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${bmNarrativeHtml}</div>` },
+      code: {
+        coding: [
+          {
+            system: "http://loinc.org",
+            code: "8716-3",
+            display: "Vital signs",
+          },
+        ],
+      },
+      text: {
+        status: "generated",
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${bmNarrativeHtml}</div>`,
+      },
       entry: bmEntryRefs,
     });
   }
@@ -2307,41 +2760,98 @@ const buildWellnessRecordBundle = async (
     const gaEntryRefs: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
 
     if (optionalData?.assessment?.symptomsComplaints) {
-      gaParts.push(`<p><strong>Symptoms/Complaints:</strong> ${escapeHtml(optionalData.assessment.symptomsComplaints).replace(/\n/g, "<br/>")}</p>`);
+      gaParts.push(
+        `<p><strong>Symptoms/Complaints:</strong> ${escapeHtml(optionalData.assessment.symptomsComplaints).replace(/\n/g, "<br/>")}</p>`,
+      );
       const condUUID = generateUUID();
-      bundleEntries.push(buildConditionResource(optionalData.assessment.symptomsComplaints, condUUID, patientUUID, bundleDate, practitionerUUID, false));
+      bundleEntries.push(
+        buildConditionResource(
+          optionalData.assessment.symptomsComplaints,
+          condUUID,
+          patientUUID,
+          bundleDate,
+          practitionerUUID,
+          false,
+        ),
+      );
       gaEntryRefs.push({ reference: `urn:uuid:${condUUID}` });
     }
 
-    if (optionalData?.assessment?.medicalHistory && optionalData.assessment.medicalHistory.length > 0) {
-      const medRows = optionalData.assessment.medicalHistory.map((h: any) => {
-        if (h.disease) {
-          const condUUID = generateUUID();
-          bundleEntries.push(buildConditionResource(h.disease, condUUID, patientUUID, bundleDate, practitionerUUID, false));
-          gaEntryRefs.push({ reference: `urn:uuid:${condUUID}` });
-        }
-        return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
-      }).join("");
-      gaParts.push(`<p><strong>Medical History:</strong></p><table border="1" cellpadding="4"><thead><tr><th>Disease</th><th>Duration</th><th>Medications</th></tr></thead><tbody>${medRows}</tbody></table>`);
+    if (
+      optionalData?.assessment?.medicalHistory &&
+      optionalData.assessment.medicalHistory.length > 0
+    ) {
+      const medRows = optionalData.assessment.medicalHistory
+        .map((h: any) => {
+          if (h.disease) {
+            const condUUID = generateUUID();
+            bundleEntries.push(
+              buildConditionResource(
+                h.disease,
+                condUUID,
+                patientUUID,
+                bundleDate,
+                practitionerUUID,
+                false,
+              ),
+            );
+            gaEntryRefs.push({ reference: `urn:uuid:${condUUID}` });
+          }
+          return `<tr><td>${escapeHtml(h.disease || "-")}</td><td>${escapeHtml(h.duration || "-")}</td><td>${escapeHtml(h.medications || "-")}</td></tr>`;
+        })
+        .join("");
+      gaParts.push(
+        `<p><strong>Medical History:</strong></p><table border="1" cellpadding="4"><thead><tr><th>Disease</th><th>Duration</th><th>Medications</th></tr></thead><tbody>${medRows}</tbody></table>`,
+      );
     }
 
-    if (optionalData?.assessment?.surgicalHistory && optionalData.assessment.surgicalHistory.length > 0) {
-      const surgRows = optionalData.assessment.surgicalHistory.map((h: any) => {
-        if (h.surgical) {
-          const condUUID = generateUUID();
-          bundleEntries.push(buildConditionResource(h.surgical, condUUID, patientUUID, bundleDate, practitionerUUID, false));
-          gaEntryRefs.push({ reference: `urn:uuid:${condUUID}` });
-        }
-        return `<tr><td>${escapeHtml(h.surgical || "-")}</td><td>${escapeHtml(h.surgeonName || "-")}</td><td>${escapeHtml(h.hospital || "-")}</td><td>${escapeHtml(h.date || "-")}</td></tr>`;
-      }).join("");
-      gaParts.push(`<p><strong>Surgical History:</strong></p><table border="1" cellpadding="4"><thead><tr><th>Surgical</th><th>Surgeon Name</th><th>Hospital</th><th>Date</th></tr></thead><tbody>${surgRows}</tbody></table>`);
+    if (
+      optionalData?.assessment?.surgicalHistory &&
+      optionalData.assessment.surgicalHistory.length > 0
+    ) {
+      const surgRows = optionalData.assessment.surgicalHistory
+        .map((h: any) => {
+          if (h.surgical) {
+            const condUUID = generateUUID();
+            bundleEntries.push(
+              buildConditionResource(
+                h.surgical,
+                condUUID,
+                patientUUID,
+                bundleDate,
+                practitionerUUID,
+                false,
+              ),
+            );
+            gaEntryRefs.push({ reference: `urn:uuid:${condUUID}` });
+          }
+          return `<tr><td>${escapeHtml(h.surgical || "-")}</td><td>${escapeHtml(h.surgeonName || "-")}</td><td>${escapeHtml(h.hospital || "-")}</td><td>${escapeHtml(h.date || "-")}</td></tr>`;
+        })
+        .join("");
+      gaParts.push(
+        `<p><strong>Surgical History:</strong></p><table border="1" cellpadding="4"><thead><tr><th>Surgical</th><th>Surgeon Name</th><th>Hospital</th><th>Date</th></tr></thead><tbody>${surgRows}</tbody></table>`,
+      );
     }
 
-    const gaNarrativeHtml = gaParts.length > 0 ? gaParts.join("") : `<p>No general assessment recorded.</p>`;
+    const gaNarrativeHtml =
+      gaParts.length > 0
+        ? gaParts.join("")
+        : `<p>No general assessment recorded.</p>`;
     sections.push({
       title: "General Assessment",
-      code: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }] },
-      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${gaNarrativeHtml}</div>` },
+      code: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "371530004",
+            display: "Clinical consultation report",
+          },
+        ],
+      },
+      text: {
+        status: "generated",
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${gaNarrativeHtml}</div>`,
+      },
       entry: gaEntryRefs,
     });
   }
@@ -2355,7 +2865,15 @@ const buildWellnessRecordBundle = async (
       resourceType: "Observation",
       id: paObsUUID,
       status: "final",
-      code: { coding: [{ system: "http://snomed.info/sct", code: "68130003", display: "Physical activity" }] },
+      code: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "68130003",
+            display: "Physical activity",
+          },
+        ],
+      },
       subject: { reference: `urn:uuid:${patientUUID}` },
     };
 
@@ -2368,13 +2886,27 @@ const buildWellnessRecordBundle = async (
       paObservation.valueString = "No physical activity details recorded.";
       paParts.push(`<p>No physical activity details recorded.</p>`);
     }
-    bundleEntries.push({ fullUrl: `urn:uuid:${paObsUUID}`, resource: paObservation });
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${paObsUUID}`,
+      resource: paObservation,
+    });
     paEntryRefs.push({ reference: `urn:uuid:${paObsUUID}` });
 
     sections.push({
       title: "Physical Activity",
-      code: { coding: [{ system: "http://snomed.info/sct", code: "68130003", display: "Physical activity" }] },
-      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${paParts.join("")}</div>` },
+      code: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "68130003",
+            display: "Physical activity",
+          },
+        ],
+      },
+      text: {
+        status: "generated",
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${paParts.join("")}</div>`,
+      },
       entry: paEntryRefs,
     });
   }
@@ -2388,7 +2920,15 @@ const buildWellnessRecordBundle = async (
       resourceType: "Observation",
       id: lifeObsUUID,
       status: "final",
-      code: { coding: [{ system: "http://snomed.info/sct", code: "228272008", display: "Health-related behavior" }] },
+      code: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "228272008",
+            display: "Health-related behavior",
+          },
+        ],
+      },
       subject: { reference: `urn:uuid:${patientUUID}` },
     };
 
@@ -2401,13 +2941,27 @@ const buildWellnessRecordBundle = async (
       lifeObservation.valueString = "No lifestyle details recorded.";
       lifeParts.push(`<p>No lifestyle details recorded.</p>`);
     }
-    bundleEntries.push({ fullUrl: `urn:uuid:${lifeObsUUID}`, resource: lifeObservation });
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${lifeObsUUID}`,
+      resource: lifeObservation,
+    });
     lifeEntryRefs.push({ reference: `urn:uuid:${lifeObsUUID}` });
 
     sections.push({
       title: "Lifestyle",
-      code: { coding: [{ system: "http://snomed.info/sct", code: "228272008", display: "Health-related behavior" }] },
-      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${lifeParts.join("")}</div>` },
+      code: {
+        coding: [
+          {
+            system: "http://snomed.info/sct",
+            code: "228272008",
+            display: "Health-related behavior",
+          },
+        ],
+      },
+      text: {
+        status: "generated",
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${lifeParts.join("")}</div>`,
+      },
       entry: lifeEntryRefs,
     });
   }
@@ -2421,7 +2975,15 @@ const buildWellnessRecordBundle = async (
       resourceType: "Observation",
       id: whPlaceholderUUID,
       status: "final",
-      code: { coding: [{ system: "http://loinc.org", code: "42798-9", display: "Age at menarche" }] },
+      code: {
+        coding: [
+          {
+            system: "http://loinc.org",
+            code: "42798-9",
+            display: "Age at menarche",
+          },
+        ],
+      },
       subject: { reference: `urn:uuid:${patientUUID}` },
     };
 
@@ -2430,14 +2992,22 @@ const buildWellnessRecordBundle = async (
     if (wh && typeof wh === "object") {
       if (wh.ageAtMenarche !== undefined && wh.ageAtMenarche !== null) {
         hasWhData = true;
-        whPlaceholderObs.valueQuantity = { value: wh.ageAtMenarche, unit: "years", system: "http://unitsofmeasure.org", code: "a" };
-        whParts.push(`<p><strong>Age at Menarche:</strong> ${wh.ageAtMenarche} years</p>`);
+        whPlaceholderObs.valueQuantity = {
+          value: wh.ageAtMenarche,
+          unit: "years",
+          system: "http://unitsofmeasure.org",
+          code: "a",
+        };
+        whParts.push(
+          `<p><strong>Age at Menarche:</strong> ${wh.ageAtMenarche} years</p>`,
+        );
       }
       if (wh.lastMenstrualPeriod) {
         hasWhData = true;
-        const lmpDate = wh.lastMenstrualPeriod instanceof Date
-          ? wh.lastMenstrualPeriod.toISOString().split("T")[0]
-          : String(wh.lastMenstrualPeriod).split("T")[0];
+        const lmpDate =
+          wh.lastMenstrualPeriod instanceof Date
+            ? wh.lastMenstrualPeriod.toISOString().split("T")[0]
+            : String(wh.lastMenstrualPeriod).split("T")[0];
         const lmpUUID = generateUUID();
         bundleEntries.push({
           fullUrl: `urn:uuid:${lmpUUID}`,
@@ -2445,13 +3015,23 @@ const buildWellnessRecordBundle = async (
             resourceType: "Observation",
             id: lmpUUID,
             status: "final",
-            code: { coding: [{ system: "http://loinc.org", code: "8665-2", display: "Last menstrual period start date" }] },
+            code: {
+              coding: [
+                {
+                  system: "http://loinc.org",
+                  code: "8665-2",
+                  display: "Last menstrual period start date",
+                },
+              ],
+            },
             subject: { reference: `urn:uuid:${patientUUID}` },
             valueDateTime: lmpDate,
           },
         });
         whEntryRefs.push({ reference: `urn:uuid:${lmpUUID}` });
-        whParts.push(`<p><strong>Last Menstrual Period:</strong> ${lmpDate}</p>`);
+        whParts.push(
+          `<p><strong>Last Menstrual Period:</strong> ${lmpDate}</p>`,
+        );
       }
     }
 
@@ -2459,13 +3039,27 @@ const buildWellnessRecordBundle = async (
       whPlaceholderObs.valueString = "No Women Health data recorded.";
       whParts.push(`<p>No Women Health data recorded.</p>`);
     }
-    bundleEntries.push({ fullUrl: `urn:uuid:${whPlaceholderUUID}`, resource: whPlaceholderObs });
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${whPlaceholderUUID}`,
+      resource: whPlaceholderObs,
+    });
     whEntryRefs.push({ reference: `urn:uuid:${whPlaceholderUUID}` });
 
     sections.push({
       title: "Women Health",
-      code: { coding: [{ system: "http://loinc.org", code: "42798-9", display: "Age at menarche" }] },
-      text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml">${whParts.join("")}</div>` },
+      code: {
+        coding: [
+          {
+            system: "http://loinc.org",
+            code: "42798-9",
+            display: "Age at menarche",
+          },
+        ],
+      },
+      text: {
+        status: "generated",
+        div: `<div xmlns="http://www.w3.org/1999/xhtml">${whParts.join("")}</div>`,
+      },
       entry: whEntryRefs,
     });
   }
@@ -2473,17 +3067,54 @@ const buildWellnessRecordBundle = async (
   // ── Document Reference ──
   sections.push({
     title: "Document Reference",
-    code: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical document" }] },
-    text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>Wellness Record Documentation</p></div>` },
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "371530004",
+          display: "Clinical document",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>Wellness Record Documentation</p></div>`,
+    },
     entry: [{ reference: `urn:uuid:${encounterUUID}` }],
   });
 
   // ── PDF Generation ──
-  if (browser && optionalData?.assessment?.vitals && Object.keys(optionalData.assessment.vitals).length > 0) {
+  if (
+    browser &&
+    optionalData?.assessment?.vitals &&
+    Object.keys(optionalData.assessment.vitals).length > 0
+  ) {
     try {
-      const buffers = await generateMultiplePdfs([getVitalsTemplate(patient, visit, optionalData.assessment.vitals as Record<string, string | number | undefined>)], browser);
+      const buffers = await generateMultiplePdfs(
+        [
+          getVitalsTemplate(
+            patient,
+            visit,
+            optionalData.assessment.vitals as Record<
+              string,
+              string | number | undefined
+            >,
+          ),
+        ],
+        browser,
+      );
       if (buffers[0]) {
-        bundleEntries.push(buildPdfDocumentReference(vitalsDocId, patientUUID, "Wellness/Vitals Record PDF", "371530004", "Clinical consultation report", bundleDate, buffers[0].toString("base64")));
+        bundleEntries.push(
+          buildPdfDocumentReference(
+            vitalsDocId,
+            patientUUID,
+            "Wellness/Vitals Record PDF",
+            "371530004",
+            "Clinical consultation report",
+            bundleDate,
+            buffers[0].toString("base64"),
+          ),
+        );
         // Attach to Vital Signs section entry if present
         const vsSection = sections.find((s) => s.title === "Vital Signs");
         if (vsSection && vsSection.entry) {
@@ -2493,8 +3124,28 @@ const buildWellnessRecordBundle = async (
     } catch (err) {
       console.error("[Builders] WellnessRecord PDF generation failed:", err);
       try {
-        const buf = await generatePdfFromHtml(getVitalsTemplate(patient, visit, optionalData.assessment.vitals as Record<string, string | number | undefined>), browser);
-        bundleEntries.push(buildPdfDocumentReference(vitalsDocId, patientUUID, "Wellness/Vitals Record PDF", "371530004", "Clinical consultation report", bundleDate, buf.toString("base64")));
+        const buf = await generatePdfFromHtml(
+          getVitalsTemplate(
+            patient,
+            visit,
+            optionalData.assessment.vitals as Record<
+              string,
+              string | number | undefined
+            >,
+          ),
+          browser,
+        );
+        bundleEntries.push(
+          buildPdfDocumentReference(
+            vitalsDocId,
+            patientUUID,
+            "Wellness/Vitals Record PDF",
+            "371530004",
+            "Clinical consultation report",
+            bundleDate,
+            buf.toString("base64"),
+          ),
+        );
         const vsSection = sections.find((s) => s.title === "Vital Signs");
         if (vsSection && vsSection.entry) {
           vsSection.entry.push({ reference: `urn:uuid:${vitalsDocId}` });
@@ -2509,7 +3160,9 @@ const buildWellnessRecordBundle = async (
   const availableIds = new Set(bundleEntries.map((e: any) => e.fullUrl));
   sections.forEach((section) => {
     if (section.entry) {
-      section.entry = section.entry.filter((e: any) => availableIds.has(e.reference));
+      section.entry = section.entry.filter((e: any) =>
+        availableIds.has(e.reference),
+      );
       if (section.entry.length === 0) delete section.entry;
     }
   });
@@ -2518,7 +3171,10 @@ const buildWellnessRecordBundle = async (
     resourceType: "Bundle",
     id: bundleId,
     meta: { lastUpdated: new Date().toISOString() },
-    identifier: { system: `https://${facilityId}.abdm.gov.in`, value: careContext.careContextReference },
+    identifier: {
+      system: `https://${facilityId}.abdm.gov.in`,
+      value: careContext.careContextReference,
+    },
     type: "document",
     timestamp: new Date().toISOString(),
     entry: [
@@ -2527,16 +3183,28 @@ const buildWellnessRecordBundle = async (
         resource: {
           resourceType: "Composition",
           id: compositionUUID,
-          meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/WellnessRecord"] },
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/WellnessRecord",
+            ],
+          },
           status: "final",
           type: {
-            coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }],
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "371530004",
+                display: "Clinical consultation report",
+              },
+            ],
             text: "Wellness Record",
           },
           subject: { reference: `urn:uuid:${patientUUID}` },
           encounter: { reference: `urn:uuid:${encounterUUID}` },
           date: new Date().toISOString(),
-          author: [{ reference: `urn:uuid:${practitionerUUID}`, display: doctor }],
+          author: [
+            { reference: `urn:uuid:${practitionerUUID}`, display: doctor },
+          ],
           title: `Wellness Record - ${patientName} - ${visitDateStr}`,
           custodian: { reference: `urn:uuid:${orgUUID}` },
           section: sections,
@@ -2582,7 +3250,10 @@ const buildInvoiceRecordBundle = (
   const sectionEntry: any[] = [{ reference: `urn:uuid:${encounterUUID}` }];
   let billingRows = "";
 
-  if (optionalData?.billing?.billings && optionalData.billing.billings.length > 0) {
+  if (
+    optionalData?.billing?.billings &&
+    optionalData.billing.billings.length > 0
+  ) {
     const billings = optionalData.billing.billings;
 
     // Build one ChargeItem per billing line
@@ -2598,18 +3269,25 @@ const buildInvoiceRecordBundle = (
           meta: {
             versionId: "1",
             lastUpdated: bundleDate,
-            profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/ChargeItem"],
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/ChargeItem",
+            ],
           },
           status: "billed",
           code: {
-            coding: [{
-              system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-billing-codes",
-              code: "07",
-              display: "Consultation",
-            }],
+            coding: [
+              {
+                system:
+                  "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-billing-codes",
+                code: "07",
+                display: "Consultation",
+              },
+            ],
           },
           subject: { reference: patientRef, display: "Patient" },
-          performer: [{ actor: { reference: practRef, display: "Practitioner" } }],
+          performer: [
+            { actor: { reference: practRef, display: "Practitioner" } },
+          ],
           quantity: { value: billing.unit || 1 },
           productCodeableConcept: { text: billing.particulars || "Service" },
         },
@@ -2622,9 +3300,9 @@ const buildInvoiceRecordBundle = (
     const lineItems = billings.map((b: any, index: number) => {
       const qty = parseNum(b.unit) || 1;
       const rateWithTax = parseNum(b.rate) || parseNum(b.amount) || 0;
-      const impliedTotalTax = (rateWithTax - (rateWithTax / 1.05)) * qty;
-      const rawCgst = parseNum(b.cgst) || (impliedTotalTax / 2);
-      const rawSgst = parseNum(b.sgst) || (impliedTotalTax / 2);
+      const impliedTotalTax = (rateWithTax - rateWithTax / 1.05) * qty;
+      const rawCgst = parseNum(b.cgst) || impliedTotalTax / 2;
+      const rawSgst = parseNum(b.sgst) || impliedTotalTax / 2;
       const cgst = parseFloat(rawCgst.toFixed(2));
       const sgst = parseFloat(rawSgst.toFixed(2));
       const discount = parseNum(b.discount) || 0;
@@ -2636,27 +3314,72 @@ const buildInvoiceRecordBundle = (
       const priceComponents: any[] = [
         {
           type: "base",
-          code: { coding: [{ system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components", code: "01", display: "Rate" }] },
+          code: {
+            coding: [
+              {
+                system:
+                  "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+                code: "01",
+                display: "Rate",
+              },
+            ],
+          },
           amount: { value: rateWithTax, currency: "INR" },
         },
         {
           type: "informational",
-          code: { coding: [{ system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components", code: "00", display: "MRP" }] },
+          code: {
+            coding: [
+              {
+                system:
+                  "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+                code: "00",
+                display: "MRP",
+              },
+            ],
+          },
           amount: { value: rateWithTax, currency: "INR" },
         },
         {
           type: "discount",
-          code: { coding: [{ system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components", code: "02", display: "Discount" }] },
+          code: {
+            coding: [
+              {
+                system:
+                  "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+                code: "02",
+                display: "Discount",
+              },
+            ],
+          },
           amount: { value: discount, currency: "INR" },
         },
         {
           type: "tax",
-          code: { coding: [{ system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components", code: "03", display: "CGST" }] },
+          code: {
+            coding: [
+              {
+                system:
+                  "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+                code: "03",
+                display: "CGST",
+              },
+            ],
+          },
           amount: { value: cgst, currency: "INR" },
         },
         {
           type: "tax",
-          code: { coding: [{ system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components", code: "04", display: "SGST" }] },
+          code: {
+            coding: [
+              {
+                system:
+                  "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
+                code: "04",
+                display: "SGST",
+              },
+            ],
+          },
           amount: { value: sgst, currency: "INR" },
         },
       ];
@@ -2668,7 +3391,10 @@ const buildInvoiceRecordBundle = (
 
       return {
         sequence: index + 1,
-        chargeItemReference: { reference: `urn:uuid:${chargeItemIds[index]}`, display: b.particulars || "Service" },
+        chargeItemReference: {
+          reference: `urn:uuid:${chargeItemIds[index]}`,
+          display: b.particulars || "Service",
+        },
         priceComponent: priceComponents,
       };
     });
@@ -2695,27 +3421,46 @@ const buildInvoiceRecordBundle = (
         meta: {
           versionId: "1",
           lastUpdated: bundleDate,
-          profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Invoice"],
+          profile: [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Invoice",
+          ],
         },
         text: { status: "generated", div: invoiceHtml },
         identifier: [{ value: invoiceResId }],
         status: "issued",
-        type: { coding: [{ system: "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-billing-codes", code: "07", display: "Consultation" }] },
+        type: {
+          coding: [
+            {
+              system:
+                "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-billing-codes",
+              code: "07",
+              display: "Consultation",
+            },
+          ],
+        },
         subject: { reference: patientRef, display: "Patient" },
         date: bundleDate,
-        participant: [{ actor: { reference: practRef, display: "Practitioner" } }],
+        participant: [
+          { actor: { reference: practRef, display: "Practitioner" } },
+        ],
         lineItem: lineItems,
         totalNet: { value: calculatedTotalNet, currency: "INR" },
         totalGross: { value: calculatedTotalGross, currency: "INR" },
       },
     });
 
-    sectionEntry.push({ reference: `urn:uuid:${invoiceResId}`, type: "Invoice" } as any);
+    sectionEntry.push({
+      reference: `urn:uuid:${invoiceResId}`,
+      type: "Invoice",
+    } as any);
 
     // Narrative section rows (summary view for section text)
-    const narRows = billings.map((item: any) =>
-      `<tr><td style="padding: 4px;">${escapeHtml(item.particulars)}</td><td style="padding: 4px;">${item.unit || 1}</td><td style="padding: 4px;">${item.rate ?? item.amount ?? 0} INR</td><td style="padding: 4px;">${item.amount ?? 0} INR</td></tr>`
-    ).join("");
+    const narRows = billings
+      .map(
+        (item: any) =>
+          `<tr><td style="padding: 4px;">${escapeHtml(item.particulars)}</td><td style="padding: 4px;">${item.unit || 1}</td><td style="padding: 4px;">${item.rate ?? item.amount ?? 0} INR</td><td style="padding: 4px;">${item.amount ?? 0} INR</td></tr>`,
+      )
+      .join("");
     const totalRow = `<tr><td colspan="3" style="padding: 4px;"><strong>Total</strong></td><td style="padding: 4px;"><strong>${optionalData.billing.totalAmount} INR</strong></td></tr>`;
     billingRows = narRows + totalRow;
   } else {
@@ -2734,7 +3479,10 @@ const buildInvoiceRecordBundle = (
     resourceType: "Bundle",
     id: bundleId,
     meta: { lastUpdated: new Date().toISOString() },
-    identifier: { system: `https://${facilityId}.abdm.gov.in`, value: careContext.careContextReference },
+    identifier: {
+      system: `https://${facilityId}.abdm.gov.in`,
+      value: careContext.careContextReference,
+    },
     type: "document",
     timestamp: new Date().toISOString(),
     entry: [
@@ -2743,10 +3491,20 @@ const buildInvoiceRecordBundle = (
         resource: {
           resourceType: "Composition",
           id: compositionUUID,
-          meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/InvoiceRecord"] },
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/InvoiceRecord",
+            ],
+          },
           status: "final",
           type: {
-            coding: [{ system: "http://snomed.info/sct", code: "52471000210109", display: "Invoice" }],
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "52471000210109",
+                display: "Invoice",
+              },
+            ],
             text: "Invoice",
           },
           subject: { reference: patientRef },
@@ -2758,7 +3516,15 @@ const buildInvoiceRecordBundle = (
           section: [
             {
               title: "Invoice",
-              code: { coding: [{ system: "http://snomed.info/sct", code: "52471000210109", display: "Invoice" }] },
+              code: {
+                coding: [
+                  {
+                    system: "http://snomed.info/sct",
+                    code: "52471000210109",
+                    display: "Invoice",
+                  },
+                ],
+              },
               text: { status: "generated", div: sectionNarrativeDiv },
               entry: sectionEntry,
             },
@@ -2835,7 +3601,12 @@ export const generateFhirBundle = async (
         browser,
       );
     case "Invoice":
-      return buildInvoiceRecordBundle(patient, visit, careContext, optionalData);
+      return buildInvoiceRecordBundle(
+        patient,
+        visit,
+        careContext,
+        optionalData,
+      );
     default:
       return await buildOPConsultationBundle(
         patient,

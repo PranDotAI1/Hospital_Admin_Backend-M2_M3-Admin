@@ -7,6 +7,9 @@ export interface ILabReportParameter {
   referenceRange: string;
   flag: "Normal" | "High" | "Low" | "";
   section?: string;
+  /** LOINC code for this parameter (used in ABDM FHIR Observation.code) */
+  loincCode?: string;
+  loincDisplay?: string;
 }
 
 /**
@@ -56,6 +59,8 @@ const LabReportParameterSchema = new Schema<ILabReportParameter>(
       default: "",
     },
     section: { type: String, trim: true },
+    loincCode: { type: String, trim: true },
+    loincDisplay: { type: String, trim: true },
   },
   { _id: false },
 );

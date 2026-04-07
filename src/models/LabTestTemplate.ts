@@ -7,6 +7,9 @@ export interface ILabTestParameter {
   inputType: "number" | "text" | "select";
   options?: string[];
   section?: string;
+  /** LOINC code for this individual parameter (used in ABDM FHIR Observation.code) */
+  loincCode?: string;
+  loincDisplay?: string;
 }
 
 export interface ILabTestTemplate extends Document {
@@ -14,6 +17,14 @@ export interface ILabTestTemplate extends Document {
   displayName: string;
   uiType: "table" | "grouped_form" | "simple_form";
   parameters: ILabTestParameter[];
+  /** LOINC panel code for this test type (used in ABDM FHIR DiagnosticReport.code) */
+  loincCode?: string;
+  /** Human-readable display for loincCode */
+  loincDisplay?: string;
+  /** HL7 v2-0074 category code (e.g. "HM", "UA", "CH") */
+  categoryCode?: string;
+  /** Display text for the HL7 v2-0074 category code */
+  categoryDisplay?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -30,6 +41,8 @@ const LabTestParameterSchema = new Schema<ILabTestParameter>(
     },
     options: { type: [String], default: undefined },
     section: { type: String, trim: true },
+    loincCode: { type: String, trim: true },
+    loincDisplay: { type: String, trim: true },
   },
   { _id: false },
 );
@@ -50,6 +63,10 @@ const LabTestTemplateSchema = new Schema<ILabTestTemplate>(
       required: true,
     },
     parameters: { type: [LabTestParameterSchema], required: true },
+    loincCode: { type: String, trim: true },
+    loincDisplay: { type: String, trim: true },
+    categoryCode: { type: String, trim: true },
+    categoryDisplay: { type: String, trim: true },
   },
   { timestamps: true },
 );

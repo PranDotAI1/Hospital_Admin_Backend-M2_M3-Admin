@@ -13,9 +13,7 @@ import type { HIType } from "../../models/CareContext";
  * Parse a reference range string like "13-17" into { min, max }.
  * Returns null for non-parseable ranges (e.g. empty or text-based).
  */
-const parseRange = (
-  range: string,
-): { min: number; max: number } | null => {
+const parseRange = (range: string): { min: number; max: number } | null => {
   if (!range || typeof range !== "string") return null;
   const match = range.match(
     /^\s*([+-]?\d+(?:\.\d+)?)\s*[-–]\s*([+-]?\d+(?:\.\d+)?)\s*$/,
@@ -243,16 +241,34 @@ export const upsertLabTest = async (
       });
     }
 
+    // Build name → LOINC lookup from template so codes are auto-populated
+    // even if the client omits them.
+    const templateParamMap = new Map<
+      string,
+      { loincCode?: string; loincDisplay?: string }
+    >(
+      (template.parameters as any[]).map((p) => [
+        (p.name as string).toLowerCase(),
+        { loincCode: p.loincCode, loincDisplay: p.loincDisplay },
+      ]),
+    );
+
     // Auto-flag parameters
     const flaggedParams = autoFlagParameters(
-      parameters.map((p: any) => ({
-        parameterName: p.parameterName || p.name || "",
-        parameterValue: String(p.parameterValue ?? p.value ?? ""),
-        unit: p.unit || "",
-        referenceRange: p.referenceRange || p.range || "",
-        flag: p.flag || "",
-        section: p.section || "",
-      })),
+      parameters.map((p: any) => {
+        const pName = (p.parameterName || p.name || "").toLowerCase();
+        const tplLoinc = templateParamMap.get(pName);
+        return {
+          parameterName: p.parameterName || p.name || "",
+          parameterValue: String(p.parameterValue ?? p.value ?? ""),
+          unit: p.unit || "",
+          referenceRange: p.referenceRange || p.range || "",
+          flag: p.flag || "",
+          section: p.section || "",
+          loincCode: p.loincCode || tplLoinc?.loincCode,
+          loincDisplay: p.loincDisplay || tplLoinc?.loincDisplay,
+        };
+      }),
     );
 
     const testEntry = {
@@ -267,8 +283,9 @@ export const upsertLabTest = async (
       equipmentStatus,
       status: "draft" as const,
       parameters: flaggedParams,
-      loincCode,
-      loincDisplay,
+      // Prefer explicit values from the request; fall back to ABDM LOINC codes from template.
+      loincCode: loincCode || template.loincCode,
+      loincDisplay: loincDisplay || template.loincDisplay,
     };
 
     const resolvedVisitId =
@@ -676,7 +693,9 @@ export const finalizeLabReport = async (
     } else {
       // Finalize the entire record
       const hasAnyValue = report.tests.some((t) =>
-        t.parameters.some((p) => p.parameterValue && p.parameterValue.trim() !== ""),
+        t.parameters.some(
+          (p) => p.parameterValue && p.parameterValue.trim() !== "",
+        ),
       );
       if (!hasAnyValue) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
