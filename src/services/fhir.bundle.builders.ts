@@ -2034,6 +2034,7 @@ const buildHealthDocumentRecordBundle = (
   const bundleId = generateUUID();
   const patientUUID = generateUUID();
   const orgUUID = generateUUID();
+  const practitionerUUID = generateUUID();
   const encounterUUID = generateUUID();
   const compositionUUID = generateUUID();
   const patientName =
@@ -2043,10 +2044,14 @@ const buildHealthDocumentRecordBundle = (
   const bundleEntries: any[] = [];
   bundleEntries.push(buildPatientResource(patient, patientUUID));
   bundleEntries.push(buildOrganizationResource(orgUUID));
+  bundleEntries.push(
+    buildPractitionerResource(visit.doctorName || "Doctor", practitionerUUID),
+  );
   bundleEntries.push(buildEncounterResource(visit, encounterUUID, patientUUID));
 
   const sections: any[] = [];
   const parts: string[] = [];
+  const docRefUUIDs: string[] = [];
 
   // Uploaded documents (primary content for HealthDocumentRecord)
   const docUploads = (optionalData?.assessment as any)?.documentUploads as
@@ -2067,6 +2072,48 @@ const buildHealthDocumentRecordBundle = (
     parts.push(
       `<p><strong>Uploaded Documents (${docUploads.length}):</strong></p><table border="1" cellpadding="4"><thead><tr><th>File Name</th><th>Type</th><th>Upload Date</th></tr></thead><tbody>${docRows}</tbody></table>`,
     );
+
+    // Create a DocumentReference resource for each uploaded document
+    for (const doc of docUploads) {
+      const docRefUUID = generateUUID();
+      docRefUUIDs.push(docRefUUID);
+      bundleEntries.push({
+        fullUrl: `urn:uuid:${docRefUUID}`,
+        resource: {
+          resourceType: "DocumentReference",
+          id: docRefUUID,
+          meta: {
+            profile: [
+              "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DocumentReference",
+            ],
+          },
+          status: "current",
+          type: {
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "371530004",
+                display: "Clinical consultation report",
+              },
+            ],
+          },
+          subject: { reference: `urn:uuid:${patientUUID}` },
+          date: doc.uploadDate
+            ? toSafeISOString(doc.uploadDate)
+            : new Date().toISOString(),
+          author: [{ reference: `urn:uuid:${practitionerUUID}` }],
+          description: doc.fileName || "Uploaded document",
+          content: [
+            {
+              attachment: {
+                contentType: doc.mimeType || "application/octet-stream",
+                title: doc.fileName || "document",
+              },
+            },
+          ],
+        },
+      });
+    }
   } else {
     parts.push(`<p>No documents uploaded for this visit.</p>`);
   }
@@ -2087,7 +2134,10 @@ const buildHealthDocumentRecordBundle = (
         status: "generated",
         div: `<div xmlns="http://www.w3.org/1999/xhtml">${parts.join("")}</div>`,
       },
-      entry: [{ reference: `urn:uuid:${encounterUUID}` }],
+      entry: [
+        { reference: `urn:uuid:${encounterUUID}` },
+        ...docRefUUIDs.map((id) => ({ reference: `urn:uuid:${id}` })),
+      ],
     });
   } else {
     sections.push({
@@ -2142,7 +2192,7 @@ const buildHealthDocumentRecordBundle = (
           subject: { reference: `urn:uuid:${patientUUID}` },
           encounter: { reference: `urn:uuid:${encounterUUID}` },
           date: new Date().toISOString(),
-          author: [{ reference: `urn:uuid:${orgUUID}` }],
+          author: [{ reference: `urn:uuid:${practitionerUUID}` }],
           title: `Health Document - ${patientName} - ${visitDateStr}`,
           custodian: { reference: `urn:uuid:${orgUUID}` },
           section: sections,

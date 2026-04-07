@@ -650,7 +650,8 @@ export const recordAssessment = async (req: Request, res: Response) => {
 
     const files = (req.files as Express.Multer.File[]) || [];
     const validFiles = files.filter(
-      (file) => file.size > 0 && file.originalname && file.originalname.trim() !== ""
+      (file) =>
+        file.size > 0 && file.originalname && file.originalname.trim() !== "",
     );
     const newUploads = validFiles.map((file) => ({
       fileName: file.originalname,
@@ -701,10 +702,7 @@ export const recordAssessment = async (req: Request, res: Response) => {
     if (
       body?.symptomsComplaints ||
       (body?.medicalHistory && body.medicalHistory.length > 0) ||
-      (body?.surgicalHistory && body.surgicalHistory.length > 0) ||
-      body?.physicalActivity ||
-      body?.lifestyle ||
-      body?.womenHealth
+      (body?.surgicalHistory && body.surgicalHistory.length > 0)
     ) {
       hiTypes.push("OPConsultation");
     }

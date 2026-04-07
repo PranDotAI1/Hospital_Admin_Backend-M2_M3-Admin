@@ -14,6 +14,7 @@ import { VisitSoapNotesModel } from "../models/VisitSoapNotes";
 import { VisitDischargeSummaryModel } from "../models/VisitDischargeSummary";
 import { VisitAssessmentModel } from "../models/VisitAssessment";
 import { LabReportModel } from "../models/LabReport";
+import { VisitDayCareBilling } from "../models/VisitDayCareBilling";
 import {
   generateUID,
   facilityId,
@@ -23,6 +24,7 @@ import {
   MAX_LINK_ATTEMPTS,
   LINK_TOKEN_VALIDITY_MONTHS,
   LINK_TOKEN_REQUEST_COOLDOWN_HOURS,
+  SEPARATE_CARECONTEXT_PER_HITYPE,
 } from "../utils/constant";
 import { AbdmTokenService } from "./abdm.token.service";
 
@@ -142,7 +144,9 @@ export const storeLinkToken = async (
 ): Promise<void> => {
   const now = new Date();
   // Fetch current abhaaddress so we can record it on the token
-  const patient = await PatientModel.findById(patientId).select("abhaaddress").lean();
+  const patient = await PatientModel.findById(patientId)
+    .select("abhaaddress")
+    .lean();
   await PatientModel.updateOne(
     { _id: patientId },
     {
@@ -246,7 +250,9 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     const abhaNumber14 = to14DigitAbha(latestPatient.ABHANumber);
     const payload: Record<string, string> = {
       abhaAddress: normalizeAbhaAddress(latestPatient.abhaaddress) ?? "",
-      name: latestPatient.name || `${latestPatient.f_name} ${latestPatient.l_name || ""}`.trim(),
+      name:
+        latestPatient.name ||
+        `${latestPatient.f_name} ${latestPatient.l_name || ""}`.trim(),
       gender: normalizeGenderForAbdm(latestPatient.gender),
       yearOfBirth: yearOfBirth || "",
     };
@@ -292,10 +298,16 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     );
     return isSuccess;
   } catch (error: any) {
-    const errCode = String(error.response?.data?.error?.code || error.response?.data?.code || "");
-    const isDuplicate = errCode.includes("1092") || /duplicate link token/i.test(
-      error.response?.data?.error?.message || error.response?.data?.message || ""
+    const errCode = String(
+      error.response?.data?.error?.code || error.response?.data?.code || "",
     );
+    const isDuplicate =
+      errCode.includes("1092") ||
+      /duplicate link token/i.test(
+        error.response?.data?.error?.message ||
+          error.response?.data?.message ||
+          "",
+      );
 
     if (isDuplicate) {
       // ABDM-1092: ABDM already has a pending token generation for this ABHA address.
@@ -336,7 +348,10 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
         );
       }
     } catch (clearErr) {
-      console.warn("CareContext: Failed to clear abdmLinkTokenRequestedAt:", clearErr);
+      console.warn(
+        "CareContext: Failed to clear abdmLinkTokenRequestedAt:",
+        clearErr,
+      );
     }
     return false;
   }
@@ -489,14 +504,20 @@ const HI_TYPE_DISPLAY_NAMES: Record<string, string> = {
 };
 
 /**
- * Create or update a single CareContext for a visit, adding the given hiType.
+ * Create or update a CareContext for a visit.
  *
- * One-CareContext-per-visit model: all HI types for a single visit
- * are accumulated in one CareContext's hiTypes array, but each type
- * gets its own separate FHIR bundle when data is pushed to ABDM.
+ * Behaviour depends on SEPARATE_CARECONTEXT_PER_HITYPE toggle:
  *
- * Idempotent: if a CareContext already exists for (patientId, visitId),
- * the hiType is added to its hiTypes array (if not already present).
+ * **true (default)** — One CareContext per (visit × hiType).
+ *   Each hiType gets its own independent CareContext with a unique
+ *   careContextReference, display and FHIR bundle.
+ *   Lookup key: `{ patientId, visitId, hiType }`.
+ *
+ * **false (legacy)** — One CareContext per visit.
+ *   All hiTypes are merged into a single CareContext's hiTypes array.
+ *   Lookup key: `{ patientId, visitId }`.
+ *
+ * Idempotent in both modes.
  */
 export const createOrUpdateCareContextForVisit = async (
   patientId: Types.ObjectId | string,
@@ -513,102 +534,75 @@ export const createOrUpdateCareContextForVisit = async (
       return null;
     }
 
-    // Check if a CareContext already exists for this visit
-    const existingContext = await CareContextModel.findOne({
-      patientId,
-      visitId,
-    });
+    // ── Toggle-aware lookup ──
+    const lookupQuery = SEPARATE_CARECONTEXT_PER_HITYPE
+      ? { patientId, visitId, hiType }
+      : { patientId, visitId };
+
+    const existingContext = await CareContextModel.findOne(lookupQuery);
+
     if (existingContext) {
-      // Add the new hiType to the existing context (idempotent via $addToSet)
-      const alreadyHasType = Array.isArray(existingContext.hiTypes) && existingContext.hiTypes.includes(hiType);
-      if (!alreadyHasType) {
-        await CareContextModel.updateOne(
-          { _id: existingContext._id },
-          { $addToSet: { hiTypes: hiType } },
-        );
-        existingContext.hiTypes = [...(existingContext.hiTypes || []), hiType];
-        console.log(
-          "CareContext: Added hiType",
-          hiType,
-          "to existing context for visit",
-          visitId,
-          "-> hiTypes:",
-          existingContext.hiTypes,
-        );
+      if (!SEPARATE_CARECONTEXT_PER_HITYPE) {
+        // Legacy: merge hiType into the existing context
+        const alreadyHasType =
+          Array.isArray(existingContext.hiTypes) &&
+          existingContext.hiTypes.includes(hiType);
+        if (!alreadyHasType) {
+          await CareContextModel.updateOne(
+            { _id: existingContext._id },
+            { $addToSet: { hiTypes: hiType } },
+          );
+          existingContext.hiTypes = [
+            ...(existingContext.hiTypes || []),
+            hiType,
+          ];
+          console.log(
+            "CareContext: Added hiType",
+            hiType,
+            "to existing context for visit",
+            visitId,
+            "-> hiTypes:",
+            existingContext.hiTypes,
+          );
+        } else {
+          console.log(
+            "CareContext: Already has hiType",
+            hiType,
+            "for visit",
+            visitId,
+          );
+        }
       } else {
         console.log(
-          "CareContext: Already has hiType",
-          hiType,
-          "for visit",
+          "CareContext: Already exists for visit",
           visitId,
+          "hiType",
+          hiType,
         );
       }
 
       // Existing context may still need sync actions after clinical updates.
-      if (patient.abhaaddress) {
-        if (
-          existingContext.linkingStatus === CareContextStatus.LINKED ||
-          existingContext.linkingStatus === CareContextStatus.NOTIFIED
-        ) {
-          setImmediate(async () => {
-            try {
-              await notifyContext(existingContext);
-            } catch (err) {
-              console.warn(
-                "CareContext: notify retry failed for existing context:",
-                (err as any)?.message || err,
-              );
-            }
-          });
-        } else {
-          if (isLinkTokenValid(patient)) {
-            setImmediate(async () => {
-              try {
-                const abdmToken = await AbdmTokenService.getToken();
-                await linkCareContext(existingContext._id, abdmToken);
-              } catch (err) {
-                console.warn(
-                  "CareContext: link retry failed for existing context:",
-                  (err as any)?.message || err,
-                );
-              }
-            });
-          } else {
-            setImmediate(async () => {
-              try {
-                await requestLinkToken(patient);
-              } catch (err) {
-                console.warn(
-                  "CareContext: token request retry failed for existing context:",
-                  (err as any)?.message || err,
-                );
-              }
-            });
-          }
-        }
-      }
-
+      triggerLinkingActions(existingContext, patient);
       return existingContext;
     }
 
-    // Get visit details for display
+    // ── Create new CareContext ──
     const visit = await ScanShareVisitModel.findById(visitId);
     const department = visit?.department;
     const visitDate = visit?.visitDate || new Date();
-
     const patientRef = patient.uhid || patient._id.toString();
 
-    // Generate unique care context reference
     const careContextReference = await generateCareContextReference(
       patientRef,
       visitDate,
     );
 
-    // Display text uses generic "OPD Visit" since one context covers all HI types
-    const display = generateDisplayText("OPD Visit", department, visitDate);
+    // In per-hiType mode, include the hiType in the display text
+    const visitLabel = SEPARATE_CARECONTEXT_PER_HITYPE
+      ? HI_TYPE_DISPLAY_NAMES[hiType] || hiType
+      : "OPD Visit";
+    const display = generateDisplayText(visitLabel, department, visitDate);
 
-    // Create care context record with the initial hiType
-    // Retry with new reference if duplicate key error (E11000) on careContextReference occurs
     let careContext: ICareContext;
     let retries = 3;
     while (true) {
@@ -633,38 +627,51 @@ export const createOrUpdateCareContextForVisit = async (
         });
         break;
       } catch (createErr: any) {
-        // Duplicate key on (patientId, visitId) means another request created it
-        // between our findOne and create. Just find and update it.
-        if (
-          createErr?.code === 11000 &&
-          (createErr?.keyPattern?.patientId ||
+        // Duplicate key on compound index — race condition; find and return/update
+        if (createErr?.code === 11000) {
+          const dupKeyMsg = String(createErr?.message || "");
+          const isCompoundDup =
+            createErr?.keyPattern?.patientId ||
             createErr?.keyPattern?.visitId ||
-            String(createErr?.message || "").includes("patientId_1_visitId_1"))
-        ) {
-          console.log(
-            "CareContext: Concurrent creation detected for visit",
-            visitId,
-            "— merging hiType",
-            hiType,
-          );
-          const raceContext = await CareContextModel.findOneAndUpdate(
-            { patientId, visitId },
-            { $addToSet: { hiTypes: hiType } },
-            { new: true },
-          );
-          if (raceContext) return raceContext;
-          return null;
-        }
+            dupKeyMsg.includes("patientId_1_visitId_1") ||
+            dupKeyMsg.includes("patientId_1_visitId_1_hiType_1");
 
-        // Duplicate careContextReference collision — retry with new ref
-        if (createErr.code === 11000 && retries > 1) {
-          retries--;
-          console.warn(
-            "CareContext: Duplicate reference collision, retrying...",
-            retries,
-            "attempts left",
-          );
-          continue;
+          if (isCompoundDup) {
+            console.log(
+              "CareContext: Concurrent creation detected for visit",
+              visitId,
+              "hiType",
+              hiType,
+              "— finding existing",
+            );
+            if (SEPARATE_CARECONTEXT_PER_HITYPE) {
+              const raceContext = await CareContextModel.findOne({
+                patientId,
+                visitId,
+                hiType,
+              });
+              if (raceContext) return raceContext;
+            } else {
+              const raceContext = await CareContextModel.findOneAndUpdate(
+                { patientId, visitId },
+                { $addToSet: { hiTypes: hiType } },
+                { new: true },
+              );
+              if (raceContext) return raceContext;
+            }
+            return null;
+          }
+
+          // Duplicate careContextReference collision — retry with new ref
+          if (retries > 1) {
+            retries--;
+            console.warn(
+              "CareContext: Duplicate reference collision, retrying...",
+              retries,
+              "attempts left",
+            );
+            continue;
+          }
         }
         throw createErr;
       }
@@ -679,49 +686,73 @@ export const createOrUpdateCareContextForVisit = async (
       careContext.careContextReference,
     );
 
-    if (patient.abhaaddress) {
-      if (isLinkTokenValid(patient)) {
-        console.log(
-          "CareContext: Patient has valid link token, auto-linking...",
-        );
-        setImmediate(async () => {
-          try {
-            const abdmToken = await AbdmTokenService.getToken();
-            await linkCareContext(careContext._id, abdmToken);
-          } catch (autoLinkError) {
-            console.error(
-              "CareContext: Auto-link failed (non-blocking):",
-              autoLinkError,
-            );
-          }
-        });
-      } else {
-        console.log(
-          "CareContext: No valid link token for patient",
-          patient.uhid || patient._id,
-          "-> requesting link token from ABDM (cooldown-protected)",
-        );
-        setImmediate(async () => {
-          try {
-            await requestLinkToken(patient);
-          } catch (tokenErr) {
-            console.error(
-              "CareContext: Link token request failed (non-blocking):",
-              tokenErr,
-            );
-          }
-        });
-      }
-    } else {
-      console.log(
-        "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
-      );
-    }
-
+    triggerLinkingActions(careContext, patient);
     return careContext;
   } catch (error) {
-    console.error("CareContext: Error in createOrUpdateCareContextForVisit", hiType, error);
+    console.error(
+      "CareContext: Error in createOrUpdateCareContextForVisit",
+      hiType,
+      error,
+    );
     return null;
+  }
+};
+
+/** Trigger ABDM linking/notification in the background for a care context */
+const triggerLinkingActions = (
+  context: ICareContext,
+  patient: IPatient,
+): void => {
+  if (!patient.abhaaddress) {
+    console.log(
+      "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
+    );
+    return;
+  }
+
+  if (
+    context.linkingStatus === CareContextStatus.LINKED ||
+    context.linkingStatus === CareContextStatus.NOTIFIED
+  ) {
+    setImmediate(async () => {
+      try {
+        await notifyContext(context);
+      } catch (err) {
+        console.warn(
+          "CareContext: notify retry failed for existing context:",
+          (err as any)?.message || err,
+        );
+      }
+    });
+  } else if (isLinkTokenValid(patient)) {
+    console.log("CareContext: Patient has valid link token, auto-linking...");
+    setImmediate(async () => {
+      try {
+        const abdmToken = await AbdmTokenService.getToken();
+        await linkCareContext(context._id, abdmToken);
+      } catch (err) {
+        console.warn(
+          "CareContext: link retry failed for existing context:",
+          (err as any)?.message || err,
+        );
+      }
+    });
+  } else {
+    console.log(
+      "CareContext: No valid link token for patient",
+      patient.uhid || patient._id,
+      "-> requesting link token from ABDM (cooldown-protected)",
+    );
+    setImmediate(async () => {
+      try {
+        await requestLinkToken(patient);
+      } catch (err) {
+        console.warn(
+          "CareContext: token request retry failed for existing context:",
+          (err as any)?.message || err,
+        );
+      }
+    });
   }
 };
 
@@ -748,7 +779,11 @@ export const addHiTypesForVisit = async (
   let lastContext: ICareContext | null = null;
 
   for (const hiType of uniqueTypes) {
-    const ctx = await createOrUpdateCareContextForVisit(patientId, visitId, hiType);
+    const ctx = await createOrUpdateCareContextForVisit(
+      patientId,
+      visitId,
+      hiType,
+    );
     if (ctx) {
       updated++;
       lastContext = ctx;
@@ -1065,9 +1100,10 @@ export const notifyContext = async (
           careContextReference: careContext.careContextReference,
         },
         // Send ALL hiTypes so PHR shows all record types for this visit
-        hiTypes: Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
-          ? careContext.hiTypes
-          : [resolvedHiType],
+        hiTypes:
+          Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
+            ? careContext.hiTypes
+            : [resolvedHiType],
         date: new Date().toISOString(),
         hip: {
           id: facilityId,
@@ -1414,10 +1450,7 @@ export const detectHiTypesForVisit = async (
     (assessment &&
       (assessment.symptomsComplaints ||
         (assessment.medicalHistory?.length ?? 0) > 0 ||
-        (assessment.surgicalHistory?.length ?? 0) > 0 ||
-        assessment.physicalActivity ||
-        assessment.lifestyle ||
-        assessment.womenHealth))
+        (assessment.surgicalHistory?.length ?? 0) > 0))
   ) {
     hiTypes.add("OPConsultation");
   }
@@ -1443,9 +1476,20 @@ export const detectHiTypesForVisit = async (
     hiTypes.add("ImmunizationRecord");
   }
 
-  // WellnessRecord for vitals, HealthDocumentRecord if we store documents
+  // WellnessRecord for vitals
   if (assessment?.vitals) {
     hiTypes.add("WellnessRecord");
+  }
+
+  // HealthDocumentRecord if uploaded documents exist
+  if ((assessment as any)?.documentUploads?.length > 0) {
+    hiTypes.add("HealthDocumentRecord");
+  }
+
+  // Invoice if billing data exists
+  const billingCount = await VisitDayCareBilling.countDocuments({ visitId });
+  if (billingCount > 0) {
+    hiTypes.add("Invoice");
   }
 
   return Array.from(hiTypes) as HIType[];

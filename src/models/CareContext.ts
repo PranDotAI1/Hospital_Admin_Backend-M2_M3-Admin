@@ -209,8 +209,7 @@ CareContextSchema.pre("validate", function (next) {
   return next();
 });
 
-// One CareContext per visit (all HI types merged into one context).
-CareContextSchema.index({ patientId: 1, visitId: 1 }, { unique: true, sparse: true });
+CareContextSchema.index({ patientId: 1, visitId: 1, hiType: 1 }, { unique: true, sparse: true });
 CareContextSchema.index({ abhaAddress: 1, linkingStatus: 1 });
 CareContextSchema.index({ linkRequestId: 1 }, { sparse: true });
 CareContextSchema.index({ notifyRequestId: 1 }, { sparse: true });
