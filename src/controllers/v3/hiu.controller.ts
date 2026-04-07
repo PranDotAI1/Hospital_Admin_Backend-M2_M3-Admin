@@ -241,7 +241,6 @@ import {
 } from "../../models/ConsentArtefact";
 import { PHRConsentArtefactModel } from "../../models/PHRConsentArtefact";
 import { Types } from "mongoose";
-import { ConsentService } from "../../services/consent.service";
 
 export const getExternalRecords = async (req: Request, res: Response) => {
   try {
@@ -282,13 +281,34 @@ export const getExternalRecords = async (req: Request, res: Response) => {
       query.consentArtefactId = consentArtefactId;
     }
 
-    // Only return records whose consent is still GRANTED (revoked/expired data is removed on notify; this is a safety filter)
+    // Only return records whose consent is GRANTED, not expired, AND belongs to THIS patient.
+    // Previous approach was global (all GRANTED artefacts) — this caused data leak when
+    // other patients had GRANTED consents and orphaned records existed.
+    const now = new Date();
+
+    // Step 1: Find artefacts that belong to THIS patient and are still valid
+    const patientAbhaAddress = objectIdRegex.test(patientId as string)
+      ? null
+      : patientId;
+
+    const patientArtefactFilter: any = {
+      status: ConsentArtefactStatus.GRANTED,
+      $or: [
+        { expiryDate: { $exists: false } },
+        { expiryDate: null },
+        { expiryDate: { $gt: now } },
+      ],
+    };
+    // Scope to this patient's artefacts only
+    if (patientAbhaAddress) {
+      patientArtefactFilter.patientAbhaAddress = patientAbhaAddress;
+    }
+
     const grantedArtefactIds = await ConsentArtefactModel.distinct(
       "artefactId",
-      {
-        status: ConsentArtefactStatus.GRANTED,
-      },
+      patientArtefactFilter,
     );
+
     if (grantedArtefactIds.length > 0) {
       if (
         query.consentArtefactId &&
@@ -320,17 +340,13 @@ export const getExternalRecords = async (req: Request, res: Response) => {
       `[HIU] returning total: ${total}, returning records length: ${records.length}`,
     );
 
-    // Add auto-trigger for data fetch if we have GRANTED artefacts but no records
-    if (records.length === 0 && grantedArtefactIds.length > 0) {
-      console.log(
-        `[HIU] No external records found, but ${grantedArtefactIds.length} GRANTED artefacts exist. Triggering auto-fetch as fallback.`,
-      );
-
-      // Pass only the ones matching the patient context if possible, but triggerHiuDataFetchAsync deduplicates anyway
-      ConsentService.triggerHiuDataFetchAsync(
-        query.consentArtefactId?.$in || grantedArtefactIds,
-      );
-    }
+    // NOTE: Auto-trigger removed. Data fetch MUST only happen via explicit
+    // consent-grant callbacks (HIP notify / on-fetch / on-status). Triggering
+    // on page-load created an infinite feedback loop:
+    //   FE opens page -> 0 records -> auto-trigger -> ABDM returns new artefact
+    //   IDs -> ghost artefacts stored -> data fetched -> user revokes -> only
+    //   latest artefact revoked -> old ones stay GRANTED -> next page-load
+    //   triggers again -> infinite cycle.
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
@@ -372,9 +388,15 @@ export const getExternalRecordById = async (req: Request, res: Response) => {
     }
 
     // Do not return record if its consent was revoked/expired or if it's a PHR consent (external records are HIMS only)
+    const now = new Date();
     const artefactGranted = await ConsentArtefactModel.findOne({
       artefactId: record.consentArtefactId,
       status: ConsentArtefactStatus.GRANTED,
+      $or: [
+        { expiryDate: { $exists: false } },
+        { expiryDate: null },
+        { expiryDate: { $gt: now } },
+      ],
     });
     if (!artefactGranted) {
       return res.status(STATUS_CODE.NOT_FOUND).json({

@@ -1,4 +1,10 @@
 import { ConsentRequestModel } from "../../models/ConsentRequest";
+import {
+  ConsentArtefactModel,
+  ConsentArtefactStatus,
+} from "../../models/ConsentArtefact";
+import { PHRConsentArtefactModel } from "../../models/PHRConsentArtefact";
+import { ExternalHealthRecordModel } from "../../models/ExternalHealthRecord";
 import { ConsentService } from "../../services/consent.service";
 import { generateUID } from "../../utils/constant";
 
@@ -195,11 +201,21 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
         );
 
         // AUTO-TRIGGER: Fetch health data immediately after the artefact details are stored.
+        // Only trigger if artefact is properly linked to a ConsentRequest (not self-referencing/unlinked).
         if (consentStatus === "GRANTED" && !usePHRCollection) {
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Consent GRANTED, initiating HIU data fetch for ${artefact.artefactId}`,
-          );
-          ConsentService.triggerHiuDataFetchAsync([artefact.artefactId]);
+          if (
+            artefact.consentRequestId &&
+            artefact.consentRequestId !== artefact.artefactId
+          ) {
+            console.log(
+              `${LOG_PREFIX} [AUTO-TRIGGER] Consent GRANTED, initiating HIU data fetch for ${artefact.artefactId}`,
+            );
+            ConsentService.triggerHiuDataFetchAsync([artefact.artefactId]);
+          } else {
+            console.warn(
+              `${LOG_PREFIX} [AUTO-TRIGGER] Skipping for ${artefact.artefactId}: artefact has no valid consentRequestId link (self-ref or null). Will not auto-fetch.`,
+            );
+          }
         }
       }
     } else {
@@ -240,6 +256,88 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         lastCheckedAt: new Date(),
       };
 
+      // Capture ABDM-provided event timestamp when consent transitions to GRANTED
+      if (body.consentRequest.status === "GRANTED" && !statusUpdate.grantedAt) {
+        statusUpdate.grantedAt = body.timestamp
+          ? new Date(body.timestamp)
+          : new Date();
+      }
+
+      // Safety net: handle REVOKED/EXPIRED/DENIED reported via on-status
+      // (primary handling is in on-notify; this covers cases where on-notify was missed)
+      // Use $or to match both by consentRequestId AND by artefactId (handles self-referencing ghost artefacts)
+      const reqId = body.consentRequest.id;
+      const eventTs = body.timestamp ? new Date(body.timestamp) : new Date();
+      const broadQuery = {
+        $or: [{ consentRequestId: reqId }, { artefactId: reqId }],
+      };
+
+      if (body.consentRequest.status === "REVOKED") {
+        statusUpdate.revokedAt = eventTs;
+        await ConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: eventTs },
+        });
+        await PHRConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: eventTs },
+        });
+        const revokedIds = await ConsentArtefactModel.distinct(
+          "artefactId",
+          broadQuery,
+        );
+        if (revokedIds.length > 0) {
+          await ExternalHealthRecordModel.deleteMany({
+            consentArtefactId: { $in: revokedIds },
+          });
+        }
+        console.log(
+          `${LOG_PREFIX} on-status REVOKED safety net: updated artefacts and removed external records for ${reqId}`,
+        );
+      }
+
+      if (body.consentRequest.status === "EXPIRED") {
+        await ConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.EXPIRED },
+        });
+        await PHRConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.EXPIRED },
+        });
+        const expiredIds = await ConsentArtefactModel.distinct(
+          "artefactId",
+          broadQuery,
+        );
+        if (expiredIds.length > 0) {
+          await ExternalHealthRecordModel.deleteMany({
+            consentArtefactId: { $in: expiredIds },
+          });
+        }
+        console.log(
+          `${LOG_PREFIX} on-status EXPIRED safety net: updated artefacts and removed external records for ${reqId}`,
+        );
+      }
+
+      if (body.consentRequest.status === "DENIED") {
+        statusUpdate.deniedAt = eventTs;
+        await ConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.DENIED, deniedAt: eventTs },
+        });
+        await PHRConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.DENIED, deniedAt: eventTs },
+        });
+        const deniedIds = await ConsentArtefactModel.distinct(
+          "artefactId",
+          broadQuery,
+        );
+        if (deniedIds.length > 0) {
+          await ExternalHealthRecordModel.deleteMany({
+            consentArtefactId: { $in: deniedIds },
+          });
+        }
+        console.log(
+          `${LOG_PREFIX} on-status DENIED safety net: updated artefacts and cleaned external records for ${reqId}`,
+        );
+      }
+
+      // Write statusUpdate (with any grantedAt/revokedAt/deniedAt fields) to ConsentRequest
       const updateResult = await ConsentRequestModel.updateOne(
         {
           $or: [
@@ -250,19 +348,28 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         { $set: statusUpdate },
       );
 
-      // Add auto-trigger for data fetch if status is GRANTED
+      // Auto-trigger for GRANTED on-status: only if a local ConsentRequest exists
+      // (prevents triggering data fetch for unknown/external consent IDs)
       if (
         body.consentRequest.status === "GRANTED" &&
         body.consentRequest.consentArtefacts &&
-        body.consentRequest.consentArtefacts.length > 0
+        body.consentRequest.consentArtefacts.length > 0 &&
+        updateResult.matchedCount > 0
       ) {
         const artefactIds = body.consentRequest.consentArtefacts.map(
           (a: any) => a.id,
         );
         console.log(
-          `${LOG_PREFIX} Consent status is GRANTED via on-status callback. Triggering data fetch for artefacts: ${artefactIds.join(", ")}`,
+          `${LOG_PREFIX} Consent status is GRANTED via on-status callback (local request matched). Triggering data fetch for artefacts: ${artefactIds.join(", ")}`,
         );
         ConsentService.triggerHiuDataFetchAsync(artefactIds);
+      } else if (
+        body.consentRequest.status === "GRANTED" &&
+        updateResult.matchedCount === 0
+      ) {
+        console.warn(
+          `${LOG_PREFIX} on-status GRANTED but no local ConsentRequest matched for ${body.consentRequest.id}. Skipping auto-trigger to prevent ghost artefacts.`,
+        );
       }
 
       console.log(

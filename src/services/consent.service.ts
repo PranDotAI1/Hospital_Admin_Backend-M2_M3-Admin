@@ -24,6 +24,52 @@ import { ExternalHealthRecordModel } from "../models/ExternalHealthRecord";
 const LOG_PREFIX = "[CONSENT]";
 
 // ============================================================================
+// Helper: Build a query that catches artefacts by consentRequestId AND by
+// artefactId directly. Self-referencing ghost artefacts (artefactId ===
+// consentRequestId) are only reachable by artefactId, so we need $or.
+// ============================================================================
+const buildBroadArtefactQuery = (
+  consentRequestId: string | undefined,
+  artefactIds: string[],
+): any => {
+  const conditions: any[] = [];
+  if (consentRequestId) {
+    conditions.push({ consentRequestId });
+  }
+  if (artefactIds.length > 0) {
+    conditions.push({ artefactId: { $in: artefactIds } });
+  }
+  if (conditions.length === 0) {
+    // Fallback: should never happen, but return an impossible match
+    return { artefactId: "__impossible__" };
+  }
+  return conditions.length === 1 ? conditions[0] : { $or: conditions };
+};
+
+/**
+ * Resolve all artefact IDs that match a query, merging with any explicitly
+ * provided artefactIds. Deduplicates the result.
+ */
+const resolveArtefactIds = async (
+  query: any,
+  explicitIds: string[],
+): Promise<string[]> => {
+  const fromMain = await ConsentArtefactModel.find(query)
+    .select("artefactId")
+    .lean();
+  const fromPHR = await PHRConsentArtefactModel.find(query)
+    .select("artefactId")
+    .lean();
+  return [
+    ...new Set([
+      ...explicitIds,
+      ...fromMain.map((a: any) => a.artefactId),
+      ...fromPHR.map((a: any) => a.artefactId),
+    ]),
+  ];
+};
+
+// ============================================================================
 // 1. Handle HIP Notify (ABDM -> HIP)
 // ============================================================================
 
@@ -126,10 +172,12 @@ export const handleHipNotify = async (
 
     if (status === "GRANTED") {
       // For list UI: "Consent granted on" / "Consent expiry on"
-      updateData.grantedAt = new Date();
+      updateData.grantedAt = notification.timestamp
+        ? new Date(notification.timestamp)
+        : new Date();
 
       let usePHRCollection = false;
-      
+
       if (notification.consentDetail?.purpose?.code === "PATRQT") {
         usePHRCollection = true;
         console.log(
@@ -150,7 +198,7 @@ export const handleHipNotify = async (
           );
         }
       }
-      
+
       if (usePHRCollection) {
         console.log(
           `${LOG_PREFIX} Storing artefact(s) in phr_consent_artefacts (PHR pull record).`,
@@ -169,18 +217,19 @@ export const handleHipNotify = async (
         if (detailArtefactId) {
           const isPHRPull = detail.purpose?.code === "PATRQT";
           const finalUsePHRCollection = isPHRPull || usePHRCollection;
-          
+
           if (isPHRPull && !usePHRCollection) {
             console.log(
               `${LOG_PREFIX} Detected PHR pull record from purpose.code=PATRQT for artefact ${detailArtefactId}. Using PHR collection.`,
             );
           }
-          
+
           const artefact = await storeArtefactDetails(
             detail,
             status,
-            consentRequestId || detailArtefactId,
+            consentRequestId || undefined, // Never pass detailArtefactId as fallback — storeArtefactDetails resolves it
             finalUsePHRCollection,
+            updateData.grantedAt, // pass notification timestamp for accurate audit trail
           );
           if (artefact) {
             updateData.consentArtefacts = [detailArtefactId];
@@ -204,10 +253,27 @@ export const handleHipNotify = async (
                 to: new Date(detail.permission.dateRange.to),
               };
             }
+
+            // Build consolidated approved object
+            const approved: any = {};
+            if (detail.permission?.dateRange) {
+              approved.dateRange = {
+                from: new Date(detail.permission.dateRange.from),
+                to: new Date(detail.permission.dateRange.to),
+              };
+            }
+            if (detail.hiTypes) approved.hiTypes = detail.hiTypes;
+            if (detail.permission?.accessMode)
+              approved.accessMode = detail.permission.accessMode;
+            if (detail.permission?.dataEraseAt)
+              approved.dataEraseAt = new Date(detail.permission.dataEraseAt);
+            approved.expiryDate = updateData.consentExpiryOn || null;
+            updateData.approved = approved;
+
             console.log(
               `${LOG_PREFIX} Stored inline consentDetail for artefact ${detailArtefactId}`,
             );
-            
+
             const hasCareContexts =
               (detail.careContexts &&
                 Array.isArray(detail.careContexts) &&
@@ -246,7 +312,7 @@ export const handleHipNotify = async (
             break;
           }
         }
-        
+
         const ArtefactModel = finalUsePHRCollection
           ? PHRConsentArtefactModel
           : ConsentArtefactModel;
@@ -277,50 +343,59 @@ export const handleHipNotify = async (
             callbackAuthToken,
           );
         }
-        
+
         usePHRCollection = finalUsePHRCollection;
       }
 
       // ======== AUTO-TRIGGER: Fetch health data (only for HIMS consents; PHR app calls fetch itself) ========
+      // Only auto-trigger if we have a local ConsentRequest — this prevents triggering data fetch
+      // for external/unknown consents that arrive via HIP notify but were initiated elsewhere.
       if (artefactIds.length > 0 && !usePHRCollection) {
-        const anyInPHR = await PHRConsentArtefactModel.findOne({
-          artefactId: { $in: artefactIds },
-        });
-        if (!anyInPHR) {
-          triggerHiuDataFetchAsync(artefactIds);
-        } else {
+        const localConsentRequest = consentRequestId
+          ? await ConsentRequestModel.findOne({
+              $or: [
+                { consentRequestId },
+                { consentArtefacts: { $in: artefactIds } },
+              ],
+            })
+              .select("_id")
+              .lean()
+          : null;
+
+        if (!localConsentRequest) {
           console.log(
-            `${LOG_PREFIX} Skipping AUTO-TRIGGER: At least one artefact exists in PHR collection.`,
+            `${LOG_PREFIX} Skipping AUTO-TRIGGER: no local ConsentRequest found for request ${consentRequestId}. Artefact may be from an external consent.`,
           );
+        } else {
+          const anyInPHR = await PHRConsentArtefactModel.findOne({
+            artefactId: { $in: artefactIds },
+          });
+          if (!anyInPHR) {
+            triggerHiuDataFetchAsync(artefactIds);
+          } else {
+            console.log(
+              `${LOG_PREFIX} Skipping AUTO-TRIGGER: At least one artefact exists in PHR collection.`,
+            );
+          }
         }
       }
     }
 
     if (status === "REVOKED") {
-      const query = consentRequestId
-        ? { consentRequestId }
-        : { artefactId: { $in: artefactIds } };
-      // Resolve artefact IDs for this revoke (for health data removal)
-      let idsToRevoke: string[] = [...artefactIds];
-      if (idsToRevoke.length === 0 && consentRequestId) {
-        const fromMain = await ConsentArtefactModel.find(query)
-          .select("artefactId")
-          .lean();
-        const fromPHR = await PHRConsentArtefactModel.find(query)
-          .select("artefactId")
-          .lean();
-        idsToRevoke = [
-          ...new Set([
-            ...fromMain.map((a: any) => a.artefactId),
-            ...fromPHR.map((a: any) => a.artefactId),
-          ]),
-        ];
-      }
-      const result = await ConsentArtefactModel.updateMany(query, {
-        $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: new Date() },
+      // Build a broad query that catches artefacts by consentRequestId AND by artefactId directly.
+      // Ghost/self-referencing artefacts (artefactId === consentRequestId) are only reachable by artefactId.
+      const revokedAt = notification.timestamp
+        ? new Date(notification.timestamp)
+        : new Date();
+
+      const broadQuery = buildBroadArtefactQuery(consentRequestId, artefactIds);
+      const idsToRevoke = await resolveArtefactIds(broadQuery, artefactIds);
+
+      const result = await ConsentArtefactModel.updateMany(broadQuery, {
+        $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
       });
-      const phrResult = await PHRConsentArtefactModel.updateMany(query, {
-        $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: new Date() },
+      const phrResult = await PHRConsentArtefactModel.updateMany(broadQuery, {
+        $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
       });
       if (dbLookupId) {
         await ConsentRequestModel.updateOne(
@@ -330,15 +405,16 @@ export const handleHipNotify = async (
               { consentArtefacts: dbLookupId },
             ],
           },
-          { $set: { status: "REVOKED", revokedAt: new Date() } },
+          { $set: { status: "REVOKED", revokedAt } },
         );
       }
+      // Delete external health records for ALL resolved artefacts
       if (idsToRevoke.length > 0) {
         const deleteResult = await ExternalHealthRecordModel.deleteMany({
           consentArtefactId: { $in: idsToRevoke },
         });
         console.log(
-          `${LOG_PREFIX} Revoked artefacts (main: ${result.modifiedCount}, PHR: ${phrResult.modifiedCount}); removed ${deleteResult.deletedCount} external health records`,
+          `${LOG_PREFIX} Revoked artefacts (main: ${result.modifiedCount}, PHR: ${phrResult.modifiedCount}); removed ${deleteResult.deletedCount} external health records for ${idsToRevoke.length} artefact(s)`,
         );
       } else {
         console.log(
@@ -348,41 +424,49 @@ export const handleHipNotify = async (
     }
 
     if (status === "EXPIRED") {
-      const query = consentRequestId
-        ? { consentRequestId }
-        : { artefactId: { $in: artefactIds } };
-      let idsToExpire: string[] = [...artefactIds];
-      if (idsToExpire.length === 0 && consentRequestId) {
-        const fromMain = await ConsentArtefactModel.find(query)
-          .select("artefactId")
-          .lean();
-        const fromPHR = await PHRConsentArtefactModel.find(query)
-          .select("artefactId")
-          .lean();
-        idsToExpire = [
-          ...new Set([
-            ...fromMain.map((a: any) => a.artefactId),
-            ...fromPHR.map((a: any) => a.artefactId),
-          ]),
-        ];
-      }
-      await ConsentArtefactModel.updateMany(query, {
+      const broadQuery = buildBroadArtefactQuery(consentRequestId, artefactIds);
+      const idsToExpire = await resolveArtefactIds(broadQuery, artefactIds);
+
+      await ConsentArtefactModel.updateMany(broadQuery, {
+        $set: { status: ConsentArtefactStatus.EXPIRED },
+      });
+      await PHRConsentArtefactModel.updateMany(broadQuery, {
         $set: { status: ConsentArtefactStatus.EXPIRED },
       });
       if (idsToExpire.length > 0) {
-        await ExternalHealthRecordModel.deleteMany({
+        const expiredResult = await ExternalHealthRecordModel.deleteMany({
           consentArtefactId: { $in: idsToExpire },
         });
+        console.log(
+          `${LOG_PREFIX} Expired artefacts; removed ${expiredResult.deletedCount} external health records for ${idsToExpire.length} artefact(s)`,
+        );
       }
     }
 
     if (status === "DENIED") {
-      const query = consentRequestId
-        ? { consentRequestId }
-        : { artefactId: { $in: artefactIds } };
-      await ConsentArtefactModel.updateMany(query, {
-        $set: { status: ConsentArtefactStatus.DENIED, deniedAt: new Date() },
+      const deniedAt = notification.timestamp
+        ? new Date(notification.timestamp)
+        : new Date();
+
+      const broadQuery = buildBroadArtefactQuery(consentRequestId, artefactIds);
+      const idsToDeny = await resolveArtefactIds(broadQuery, artefactIds);
+
+      await ConsentArtefactModel.updateMany(broadQuery, {
+        $set: { status: ConsentArtefactStatus.DENIED, deniedAt },
       });
+      await PHRConsentArtefactModel.updateMany(broadQuery, {
+        $set: { status: ConsentArtefactStatus.DENIED, deniedAt },
+      });
+      if (idsToDeny.length > 0) {
+        const deleteResult = await ExternalHealthRecordModel.deleteMany({
+          consentArtefactId: { $in: idsToDeny },
+        });
+        if (deleteResult.deletedCount > 0) {
+          console.log(
+            `${LOG_PREFIX} DENIED: removed ${deleteResult.deletedCount} external health records for ${idsToDeny.length} artefact(s)`,
+          );
+        }
+      }
       if (dbLookupId) {
         await ConsentRequestModel.updateOne(
           {
@@ -391,7 +475,7 @@ export const handleHipNotify = async (
               { consentArtefacts: dbLookupId },
             ],
           },
-          { $set: { status: "DENIED", deniedAt: new Date() } },
+          { $set: { status: "DENIED", deniedAt } },
         );
       }
     }
@@ -522,6 +606,23 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         if (isPHRPull) {
           console.log(
             `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - PHR pull record (purpose.code=PATRQT). PHR consents don't use AUTO-TRIGGER.`,
+          );
+          continue;
+        }
+
+        // Skip self-referencing ghost artefacts (artefactId === consentRequestId)
+        // AND unlinked artefacts (consentRequestId is null/empty — no known consent request).
+        // These were created without a real consent request and will cause an
+        // infinite fetch loop (fetch → new ghost artefact → fetch → …).
+        if (artefact.artefactId === artefact.consentRequestId) {
+          console.warn(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Self-referencing ghost artefact (artefactId === consentRequestId). No real consent request.`,
+          );
+          continue;
+        }
+        if (!artefact.consentRequestId) {
+          console.warn(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Unlinked artefact (consentRequestId is null). No real consent request.`,
           );
           continue;
         }
@@ -818,6 +919,7 @@ export const storeArtefactDetails = async (
   consentStatus: string,
   consentRequestId?: string,
   usePHRCollection?: boolean,
+  eventTimestamp?: Date,
 ): Promise<IConsentArtefact | null> => {
   try {
     const artefactId = consentDetail.consentId || consentDetail.id;
@@ -857,12 +959,45 @@ export const storeArtefactDetails = async (
       return null;
     }
 
+    // Resolve the consentRequestId to link this artefact to.
+    // When ABDM sends inline consentDetail, it may not include a separate consentRequestId.
+    // Falling back to artefactId creates self-referencing records that break REVOKE/DENY cascading.
+    // Instead, try to find the original ConsentRequest for this patient+HIP pair.
+    let resolvedConsentRequestId = consentRequestId;
+    if (!resolvedConsentRequestId || resolvedConsentRequestId === artefactId) {
+      const patientAbha = consentDetail.patient?.id;
+      if (patientAbha) {
+        const originalReq = await ConsentRequestModel.findOne({
+          patientAbhaId: patientAbha,
+          status: { $in: ["GRANTED", "REQUESTED", "APPROVED"] },
+        })
+          .sort({ createdAt: -1 })
+          .select("consentRequestId")
+          .lean();
+        if (originalReq?.consentRequestId) {
+          resolvedConsentRequestId = originalReq.consentRequestId;
+          console.log(
+            `${LOG_PREFIX} Resolved consentRequestId from patient ${patientAbha}: ${resolvedConsentRequestId} (was self-ref ${artefactId})`,
+          );
+        } else {
+          // No matching consent request found — do NOT self-reference.
+          // Store with null consentRequestId; broadQuery ($or by artefactId) still catches it for REVOKE.
+          resolvedConsentRequestId = undefined;
+          console.warn(
+            `${LOG_PREFIX} No ConsentRequest found for patient ${patientAbha}. Setting consentRequestId to null (refusing self-ref).`,
+          );
+        }
+      } else {
+        resolvedConsentRequestId = undefined;
+      }
+    }
+
     const updateData: any = {
       artefactId,
-      consentRequestId: consentRequestId || artefactId,
+      consentRequestId: resolvedConsentRequestId,
       lastFetchedAt: new Date(),
       rawConsentDetail: consentDetail,
-      grantedAt: new Date(),
+      grantedAt: eventTimestamp || new Date(),
     };
 
     const consentReq = detailRequestId
@@ -1071,6 +1206,16 @@ export const storeArtefactDetails = async (
     const ArtefactModel = usePHRCollection
       ? PHRConsentArtefactModel
       : ConsentArtefactModel;
+
+    // FINAL GUARD: Never persist self-referencing consentRequestId.
+    // Even if upstream logic accidentally set it, catch it here before DB write.
+    if (updateData.consentRequestId && updateData.consentRequestId === artefactId) {
+      console.warn(
+        `${LOG_PREFIX} [GUARD] Caught self-referencing consentRequestId=${artefactId} before upsert. Setting to null.`,
+      );
+      updateData.consentRequestId = null;
+    }
+
     const artefact = await ArtefactModel.findOneAndUpdate(
       { artefactId },
       { $set: updateData },
@@ -1099,6 +1244,34 @@ export const storeArtefactDetails = async (
           to: artefact.permission.dateRange.to,
         };
       }
+
+      // Populate consolidated `approved` object
+      const approved: any = {};
+      if (
+        artefact.permission?.dateRange?.from &&
+        artefact.permission?.dateRange?.to
+      ) {
+        approved.dateRange = {
+          from: artefact.permission.dateRange.from,
+          to: artefact.permission.dateRange.to,
+        };
+      }
+      if (artefact.hiTypes && artefact.hiTypes.length > 0) {
+        approved.hiTypes = artefact.hiTypes;
+      }
+      if (artefact.permission?.accessMode) {
+        approved.accessMode = artefact.permission.accessMode;
+      }
+      if (artefact.permission?.dataEraseAt) {
+        approved.dataEraseAt = artefact.permission.dataEraseAt;
+      }
+      if (artefact.expiryDate) {
+        approved.expiryDate = artefact.expiryDate;
+      }
+      if (Object.keys(approved).length > 0) {
+        crUpdate.approved = approved;
+      }
+
       if (Object.keys(crUpdate).length > 0) {
         await ConsentRequestModel.updateOne(
           {
@@ -1193,8 +1366,12 @@ export const validateConsentForDataPush = async (
         `${LOG_PREFIX} Consent ${consentId} has expired (expiryDate: ${artefact.expiryDate}). Blocking data push.`,
       );
 
-      // Auto-update status to EXPIRED
+      // Auto-update status to EXPIRED in both collections
       await ConsentArtefactModel.updateOne(
+        { artefactId: consentId },
+        { $set: { status: ConsentArtefactStatus.EXPIRED } },
+      );
+      await PHRConsentArtefactModel.updateOne(
         { artefactId: consentId },
         { $set: { status: ConsentArtefactStatus.EXPIRED } },
       );
@@ -1245,6 +1422,32 @@ export const initiateConsentRequest = async (
   const abdmToken = await AbdmTokenService.getToken();
   const requestId = generateUID();
 
+  // --- Validate & Clamp dataEraseAt BEFORE building the ABDM payload ---
+  // so ABDM and our DB always have the same dates.
+  const MAX_EXPIRY_YEARS = 5;
+  const maxDate = new Date();
+  maxDate.setFullYear(maxDate.getFullYear() + MAX_EXPIRY_YEARS);
+
+  let finalDataEraseAt = new Date(params.dataEraseAt);
+  if (isNaN(finalDataEraseAt.getTime())) {
+    finalDataEraseAt = maxDate; // default to max if unparseable
+  } else if (finalDataEraseAt > maxDate) {
+    console.warn(
+      `${LOG_PREFIX} Requested dataEraseAt (${finalDataEraseAt.toISOString()}) exceeds ${MAX_EXPIRY_YEARS} years. Clamping to ${maxDate.toISOString()}.`,
+    );
+    finalDataEraseAt = maxDate;
+  }
+
+  // Normalize date strings to full ISO 8601 datetime (ABDM requires time component)
+  const toISODateTime = (v: string): string => {
+    const d = new Date(v);
+    if (isNaN(d.getTime())) throw new Error(`Invalid date value: ${v}`);
+    return d.toISOString();
+  };
+  const isoDateFrom = toISODateTime(params.dateFrom);
+  const isoDateTo = toISODateTime(params.dateTo);
+  const isoDataEraseAt = finalDataEraseAt.toISOString();
+
   const payload = {
     consent: {
       purpose: {
@@ -1272,10 +1475,10 @@ export const initiateConsentRequest = async (
       permission: {
         accessMode: "VIEW",
         dateRange: {
-          from: params.dateFrom,
-          to: params.dateTo,
+          from: isoDateFrom,
+          to: isoDateTo,
         },
-        dataEraseAt: params.dataEraseAt,
+        dataEraseAt: isoDataEraseAt,
         frequency: {
           unit: "HOUR",
           value: 0,
@@ -1293,16 +1496,20 @@ export const initiateConsentRequest = async (
   if (params.patientData) {
     try {
       const data = params.patientData;
-      const cleanAbhaNumber = data.healthIdNumber ? data.healthIdNumber.replace(/-/g, "") : undefined;
-      const formattedAbhaNumber = cleanAbhaNumber && cleanAbhaNumber.length === 14
-        ? `${cleanAbhaNumber.slice(0, 2)}-${cleanAbhaNumber.slice(2, 6)}-${cleanAbhaNumber.slice(6, 10)}-${cleanAbhaNumber.slice(10, 14)}`
+      const cleanAbhaNumber = data.healthIdNumber
+        ? data.healthIdNumber.replace(/-/g, "")
         : undefined;
+      const formattedAbhaNumber =
+        cleanAbhaNumber && cleanAbhaNumber.length === 14
+          ? `${cleanAbhaNumber.slice(0, 2)}-${cleanAbhaNumber.slice(2, 6)}-${cleanAbhaNumber.slice(6, 10)}-${cleanAbhaNumber.slice(10, 14)}`
+          : undefined;
 
       const filter = [];
       if (formattedAbhaNumber) filter.push({ ABHANumber: formattedAbhaNumber });
       if (cleanAbhaNumber) filter.push({ ABHANumber: cleanAbhaNumber });
       if (data.abhaAddress) filter.push({ abhaaddress: data.abhaAddress });
-      if (params.abhaId) filter.push({ abhaaddress: params.abhaId }, { uhid: params.abhaId });
+      if (params.abhaId)
+        filter.push({ abhaaddress: params.abhaId }, { uhid: params.abhaId });
 
       let patientName = data.fullName;
       let f_name = patientName;
@@ -1315,7 +1522,7 @@ export const initiateConsentRequest = async (
 
       if (filter.length > 0) {
         let existingPatient = await PatientModel.findOne({ $or: filter });
-        
+
         let updatePayload: any = {};
         if (data.fullName) updatePayload.name = data.fullName;
         if (f_name) updatePayload.f_name = f_name;
@@ -1326,14 +1533,21 @@ export const initiateConsentRequest = async (
         if (data.status) updatePayload.status = data.status;
 
         if (existingPatient) {
-          await PatientModel.updateOne({ _id: existingPatient._id }, { $set: updatePayload });
-          console.log(`${LOG_PREFIX} Updated existing patient profile for ABHA ID: ${params.abhaId}`);
+          await PatientModel.updateOne(
+            { _id: existingPatient._id },
+            { $set: updatePayload },
+          );
+          console.log(
+            `${LOG_PREFIX} Updated existing patient profile for ABHA ID: ${params.abhaId}`,
+          );
         } else {
           await PatientModel.create({
             ...updatePayload,
             gender: "Unknown", // Default as ABDM profile may not provide this in this step
           });
-          console.log(`${LOG_PREFIX} Created new patient profile for ABHA ID: ${params.abhaId}`);
+          console.log(
+            `${LOG_PREFIX} Created new patient profile for ABHA ID: ${params.abhaId}`,
+          );
         }
       }
     } catch (err: any) {
@@ -1350,7 +1564,7 @@ export const initiateConsentRequest = async (
         "REQUEST-ID": requestId,
         TIMESTAMP: new Date().toISOString(),
         "X-CM-ID": X_CM_ID,
-        "X-HIP-ID": facilityId,
+        ...(X_HIU_ID ? { "X-HIU-ID": X_HIU_ID } : { "X-HIP-ID": facilityId }),
         Authorization: abdmToken,
       },
     },
@@ -1364,27 +1578,20 @@ export const initiateConsentRequest = async (
   // Merge provided patientData with lookup Details for ConsentRequest
   let finalPatientDetails: Record<string, any> = { ...patientDetails };
   let authMethods: string[] | undefined = undefined;
-  
+
   if (params.patientData) {
-     if (params.patientData.fullName) finalPatientDetails.patientName = params.patientData.fullName;
-     if (params.patientData.healthIdNumber) finalPatientDetails.abhaNumber = params.patientData.healthIdNumber;
-     if (params.patientData.abhaAddress) finalPatientDetails.abhaAddress = params.patientData.abhaAddress;
-     if (params.patientData.mobile) finalPatientDetails.mobile = params.patientData.mobile;
-     if (params.patientData.authMethods) authMethods = params.patientData.authMethods;
+    if (params.patientData.fullName)
+      finalPatientDetails.patientName = params.patientData.fullName;
+    if (params.patientData.healthIdNumber)
+      finalPatientDetails.abhaNumber = params.patientData.healthIdNumber;
+    if (params.patientData.abhaAddress)
+      finalPatientDetails.abhaAddress = params.patientData.abhaAddress;
+    if (params.patientData.mobile)
+      finalPatientDetails.mobile = params.patientData.mobile;
+    if (params.patientData.authMethods)
+      authMethods = params.patientData.authMethods;
   }
-
-  // --- Validate & Clamp dataEraseAt ---
-  const MAX_EXPIRY_YEARS = 5;
-  const maxDate = new Date();
-  maxDate.setFullYear(maxDate.getFullYear() + MAX_EXPIRY_YEARS);
-
-  let finalDataEraseAt = new Date(params.dataEraseAt);
-  if (finalDataEraseAt > maxDate) {
-    console.warn(
-      `${LOG_PREFIX} Requested dataEraseAt (${finalDataEraseAt.toISOString()}) exceeds ${MAX_EXPIRY_YEARS} years. Clamping to ${maxDate.toISOString()}.`,
-    );
-    finalDataEraseAt = maxDate;
-  }
+  // finalDataEraseAt, isoDateFrom, isoDateTo are already computed above (before API call)
 
   await ConsentRequestModel.create({
     requestId,
@@ -1395,7 +1602,7 @@ export const initiateConsentRequest = async (
     authMethods,
     facilityName,
     hiuId: params.hiuId,
-    requestPurpose: params.requestPurpose,
+    requestPurpose: params.requestPurpose || "HIMS",
     requester: {
       name: params.requesterName || facilityName,
       identifier: {
@@ -1413,8 +1620,8 @@ export const initiateConsentRequest = async (
     permission: {
       accessMode: "VIEW",
       dateRange: {
-        from: new Date(params.dateFrom),
-        to: new Date(params.dateTo),
+        from: new Date(isoDateFrom),
+        to: new Date(isoDateTo),
       },
       dataEraseAt: finalDataEraseAt,
       frequency: { unit: "HOUR", value: 0, repeats: 0 },
@@ -1486,7 +1693,7 @@ export const checkConsentStatus = async (
         "REQUEST-ID": requestId,
         TIMESTAMP: new Date().toISOString(),
         "X-CM-ID": X_CM_ID,
-        "X-HIP-ID": facilityId,
+        ...(X_HIU_ID ? { "X-HIU-ID": X_HIU_ID } : { "X-HIP-ID": facilityId }),
         Authorization: abdmToken,
       },
     },

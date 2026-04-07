@@ -151,18 +151,10 @@ export const getConsentStatus = async (req: Request, res: Response) => {
 
     const result = await ConsentService.checkConsentStatus(consentRequestId);
 
-    if (
-      result.data?.consentRequest?.status === "GRANTED" &&
-      result.data?.consentRequest?.consentArtefacts?.length > 0
-    ) {
-      const artefactIds = result.data.consentRequest.consentArtefacts.map(
-        (a: any) => a.id,
-      );
-      console.log(
-        `${LOG_PREFIX} Consent status is GRANTED on check. Triggering data fetch for artefacts: ${artefactIds.join(", ")}`,
-      );
-      ConsentService.triggerHiuDataFetchAsync(artefactIds);
-    }
+    // NOTE: Auto-trigger removed from status check. Data fetch should ONLY happen
+    // via ABDM callbacks (HIP notify / on-fetch). Triggering on manual status
+    // check created ghost artefacts and an infinite data fetch loop.
+    // The on-notify and on-fetch callbacks already handle the GRANTED → fetch flow.
 
     return res.status(200).json({
       status: "success",
