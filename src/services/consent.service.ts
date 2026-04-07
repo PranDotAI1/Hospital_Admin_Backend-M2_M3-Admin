@@ -692,7 +692,9 @@ const createArtefactStub = async (
   consentRequestId: string,
   usePHRCollection?: boolean,
 ): Promise<void> => {
-  if (!artefactId || artefactId === consentRequestId) {
+  // PHR consents are legitimately self-referencing (no local ConsentRequest).
+  // Only reject self-ref stubs for the main collection.
+  if (!usePHRCollection && (!artefactId || artefactId === consentRequestId)) {
     console.warn(
       `${LOG_PREFIX} Skipping stub creation: artefactId must not equal consentRequestId (${artefactId})`,
     );
@@ -960,11 +962,20 @@ export const storeArtefactDetails = async (
     }
 
     // Resolve the consentRequestId to link this artefact to.
-    // When ABDM sends inline consentDetail, it may not include a separate consentRequestId.
-    // Falling back to artefactId creates self-referencing records that break REVOKE/DENY cascading.
-    // Instead, try to find the original ConsentRequest for this patient+HIP pair.
+    // For PHR consents (usePHRCollection=true), self-referencing is EXPECTED and CORRECT —
+    // they're initiated by the patient's PHR app, so no local ConsentRequest exists.
+    // Only resolve for the MAIN collection where self-referencing breaks REVOKE/DENY cascading.
     let resolvedConsentRequestId = consentRequestId;
-    if (!resolvedConsentRequestId || resolvedConsentRequestId === artefactId) {
+    if (usePHRCollection) {
+      // PHR consents: keep self-referencing consentRequestId as-is
+      resolvedConsentRequestId = detailRequestId || artefactId;
+      console.log(
+        `${LOG_PREFIX} PHR consent: keeping consentRequestId=${resolvedConsentRequestId} (self-ref is expected for patient-initiated consents).`,
+      );
+    } else if (
+      !resolvedConsentRequestId ||
+      resolvedConsentRequestId === artefactId
+    ) {
       const patientAbha = consentDetail.patient?.id;
       if (patientAbha) {
         const originalReq = await ConsentRequestModel.findOne({
@@ -1207,9 +1218,10 @@ export const storeArtefactDetails = async (
       ? PHRConsentArtefactModel
       : ConsentArtefactModel;
 
-    // FINAL GUARD: Never persist self-referencing consentRequestId.
-    // Even if upstream logic accidentally set it, catch it here before DB write.
+    // FINAL GUARD: Never persist self-referencing consentRequestId for MAIN collection.
+    // PHR consents (usePHRCollection=true) are legitimately self-referencing — skip this guard.
     if (
+      !usePHRCollection &&
       updateData.consentRequestId &&
       updateData.consentRequestId === artefactId
     ) {
@@ -1524,7 +1536,11 @@ export const initiateConsentRequest = async (
       }
 
       if (filter.length > 0) {
-        let existingPatient = await PatientModel.findOne({ $or: filter });
+        let existingPatient = await PatientModel.findOne({
+          $or: filter,
+          isMerged: { $ne: true },
+          status: { $ne: "merged" },
+        });
 
         let updatePayload: any = {};
         if (data.fullName) updatePayload.name = data.fullName;

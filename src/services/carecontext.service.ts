@@ -710,6 +710,17 @@ const triggerLinkingActions = (
     return;
   }
 
+  // Don't retry FAILED contexts on every clinical save — they need manual intervention
+  // or a new link token to arrive via callback.
+  if (context.linkingStatus === CareContextStatus.FAILED) {
+    console.log(
+      "CareContext: Skipping triggerLinkingActions for FAILED context",
+      context.careContextReference,
+      `(${context.linkAttempts} attempts)`,
+    );
+    return;
+  }
+
   if (
     context.linkingStatus === CareContextStatus.LINKED ||
     context.linkingStatus === CareContextStatus.NOTIFIED
@@ -860,7 +871,9 @@ export const linkCareContext = async (
     if (!abhaNumber14 || abhaNumber14.length !== 14) {
       console.error(
         "CareContext: Invalid ABHA number for linking (need 14 digits), got:",
-        patient.ABHANumber ? "***" : "missing",
+        patient.ABHANumber
+          ? `"${patient.ABHANumber}" → "${abhaNumber14}"`
+          : "missing",
       );
       careContext.linkingStatus = CareContextStatus.PENDING;
       careContext.linkError = {
@@ -869,9 +882,24 @@ export const linkCareContext = async (
       await careContext.save();
       return false;
     }
+
+    const normalizedAbhaAddr = normalizeAbhaAddress(patient.abhaaddress);
+
+    console.log(
+      "CareContext: linkCareContext payload debug:",
+      JSON.stringify({
+        abhaNumber14,
+        abhaAddress: normalizedAbhaAddr,
+        storedABHANumber: patient.ABHANumber,
+        tokenAbhaAddress: patient.abdmLinkToken?.abhaAddress,
+        careContextRef: careContext.careContextReference,
+        hiType: careContext.hiType || careContext.hiTypes?.[0],
+      }),
+    );
+
     const payload = {
       abhaNumber: abhaNumber14,
-      abhaAddress: normalizeAbhaAddress(patient.abhaaddress),
+      abhaAddress: normalizedAbhaAddr,
       patient: [
         {
           // Patient referenceNumber = HIP's internal patient ID (UHID)
@@ -925,12 +953,41 @@ export const linkCareContext = async (
     return false;
   } catch (error: any) {
     const errData = error.response?.data;
-    const errMsg = errData?.message ?? error.message ?? "";
-    const isMismatch =
-      String(errData?.code || "").includes("9999") ||
-      /mismatch.*link token/i.test(errMsg);
+    const errObj = errData?.error || errData || {};
+    const errCode = String(errObj?.code || errData?.code || "");
+    const errMsg = String(
+      errObj?.message || errData?.message || error.message || "",
+    );
 
     console.error("CareContext: Link error", errData || error.message);
+
+    // "Duplicate HIP link request" — ABDM already received this link request.
+    // This does NOT guarantee it was successfully linked (ABDM-1006 on notify proves otherwise).
+    // Treat as a soft no-op: don't increment attempts, don't clear token, don't mark LINKED.
+    const isDuplicate = /duplicate.*link/i.test(errMsg);
+    if (isDuplicate) {
+      console.log(
+        "CareContext: ABDM says duplicate link request for",
+        careContextId,
+        "— leaving status as-is; link may still be pending at ABDM.",
+      );
+      // Decrement linkAttempts since this wasn't a real attempt
+      await CareContextModel.updateOne(
+        { _id: careContextId },
+        {
+          $inc: { linkAttempts: -1 },
+          $set: {
+            linkError: {
+              message: "Duplicate link request — awaiting ABDM callback",
+            },
+          },
+        },
+      );
+      return false;
+    }
+
+    const isMismatch =
+      errCode.includes("9999") && /mismatch.*link token/i.test(errMsg);
 
     const ctx = await CareContextModel.findById(careContextId);
     if (isMismatch && ctx?.patientId) {
@@ -1090,6 +1147,15 @@ export const notifyContext = async (
       );
     }
 
+    // When SEPARATE_CARECONTEXT_PER_HITYPE is on, each CC represents exactly one hiType.
+    // Only send [resolvedHiType] so ABDM/ABHA shows a single type per CC.
+    // Old legacy CCs may have accumulated multiple entries in hiTypes[] — ignore them.
+    const notifyHiTypes: string[] = SEPARATE_CARECONTEXT_PER_HITYPE
+      ? [resolvedHiType]
+      : Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
+        ? careContext.hiTypes
+        : [resolvedHiType];
+
     const payload = {
       notification: {
         patient: {
@@ -1099,11 +1165,7 @@ export const notifyContext = async (
           patientReference: patient.uhid || patient._id.toString(),
           careContextReference: careContext.careContextReference,
         },
-        // Send ALL hiTypes so PHR shows all record types for this visit
-        hiTypes:
-          Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
-            ? careContext.hiTypes
-            : [resolvedHiType],
+        hiTypes: notifyHiTypes,
         date: new Date().toISOString(),
         hip: {
           id: facilityId,
@@ -1221,6 +1283,11 @@ export const handleContextNotifyCallback = async (
 
   if (isNotLinkedError) {
     try {
+      // Reset linkAttempts so the forced re-link isn't blocked by MAX_LINK_ATTEMPTS
+      await CareContextModel.updateOne(
+        { _id: careContext._id },
+        { $set: { linkAttempts: 0, linkingStatus: CareContextStatus.PENDING } },
+      );
       const abdmToken = await AbdmTokenService.getToken();
       await linkCareContext(careContext._id, abdmToken, true);
       console.warn(
@@ -1438,19 +1505,17 @@ export const detectHiTypesForVisit = async (
     hiTypes.add("Prescription");
   }
 
-  // OPConsultation should be present only when OP consultation clinical data exists.
-  // Do not auto-add it for every visit, otherwise unrelated contexts (e.g. DiagnosticReport)
-  // get mislabeled as "Prescription, OPConsultation" in downstream views.
+  // OPConsultation should be present only when SOAP notes exist.
+  // Assessment data (symptoms, medicalHistory, surgicalHistory) is supplementary —
+  // it gets included in the OPConsultation FHIR bundle when SOAP notes exist, but
+  // should NOT by itself trigger an OPConsultation CareContext. Otherwise, saving
+  // vitals or documents pollutes the CC with an unwanted OPConsultation hiType.
   if (
-    (soapNotes &&
-      (soapNotes.subjective ||
-        soapNotes.objective ||
-        soapNotes.assessment ||
-        soapNotes.plan)) ||
-    (assessment &&
-      (assessment.symptomsComplaints ||
-        (assessment.medicalHistory?.length ?? 0) > 0 ||
-        (assessment.surgicalHistory?.length ?? 0) > 0))
+    soapNotes &&
+    (soapNotes.subjective ||
+      soapNotes.objective ||
+      soapNotes.assessment ||
+      soapNotes.plan)
   ) {
     hiTypes.add("OPConsultation");
   }

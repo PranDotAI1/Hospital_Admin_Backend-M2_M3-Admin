@@ -896,6 +896,7 @@ const buildPrescriptionBundle = async (
 
   const sections: any[] = [];
   const medRequestRefs: any[] = [];
+  let prescriptionHtml = "";
 
   const chiefComplaint = visit.complaint || "General OPD consultation";
   const conditionUUID = generateUUID();
@@ -907,7 +908,7 @@ const buildPrescriptionBundle = async (
     practitionerUUID,
   );
   bundleEntries.push(condition);
-  medRequestRefs.push({ reference: `urn:uuid:${conditionUUID}` });
+  // Condition is linked via reasonReference inside each MedicationRequest — not added to section entries
 
   const meds = optionalData?.prescription?.medications;
   if (meds && meds.length > 0) {
@@ -925,7 +926,10 @@ const buildPrescriptionBundle = async (
         chiefComplaint,
       );
       bundleEntries.push(medResource);
-      medRequestRefs.push({ reference: `urn:uuid:${medId}` });
+      medRequestRefs.push({
+        reference: `urn:uuid:${medId}`,
+        type: "MedicationRequest",
+      });
     });
 
     const medTable = meds
@@ -951,7 +955,7 @@ const buildPrescriptionBundle = async (
       })
       .join("");
 
-    const prescriptionHtml =
+    prescriptionHtml =
       `<p><strong>Consultation:</strong> ${escapeHtml(dept)} - ${visitDateStr} - ${escapeHtml(doctor)}</p>` +
       (patient.ongoingMedications
         ? `<p><strong>Ongoing medications:</strong> ${escapeHtml(patient.ongoingMedications)}</p>`
@@ -961,97 +965,98 @@ const buildPrescriptionBundle = async (
         ? `<p><strong>Advice:</strong> ${escapeHtml(optionalData.prescription.advice)}</p>`
         : "");
 
-    // Wire PDF reference into section entries BEFORE pushing (matches fhir.bundle.service.ts pattern)
-    medRequestRefs.push({ reference: `urn:uuid:${prescDocId}` });
-    sections.push({
-      title: "Prescription",
-      code: {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: "440545006",
-            display: "Prescription record",
-          },
-        ],
-      },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml">${prescriptionHtml}</div>`,
-      },
-      entry: medRequestRefs,
-    });
+    // prescriptionHtml will be used for both XHTML narrative and HTML template
   } else {
-    const fallbackHtml =
+    prescriptionHtml =
       `<p><strong>Consultation:</strong> ${escapeHtml(dept)} - ${visitDateStr} - ${escapeHtml(doctor)}</p>` +
       (patient.ongoingMedications
         ? `<p><strong>Ongoing medications:</strong> ${escapeHtml(patient.ongoingMedications)}</p>`
         : "") +
       `<p>No digital prescription records available for this visit.</p>`;
-    const fallbackEntry: any[] = [];
-    if (patient.ongoingMedications) {
-      fallbackEntry.push({ reference: `urn:uuid:${prescDocId}` });
-    }
-    sections.push({
-      title: "Prescription",
-      code: {
-        coding: [
-          {
-            system: "http://snomed.info/sct",
-            code: "440545006",
-            display: "Prescription record",
-          },
-        ],
-      },
-      text: {
-        status: "generated",
-        div: `<div xmlns="http://www.w3.org/1999/xhtml">${fallbackHtml}</div>`,
-      },
-      ...(fallbackEntry.length > 0 ? { entry: fallbackEntry } : {}),
-    });
   }
 
-  // Batch PDF generation (mirrors fhir.bundle.service.ts pattern)
+  // Generate Binary resource — PDF if available, else HTML fallback
+  const prescHtml = getPrescriptionTemplate(
+    patient,
+    visit,
+    meds || [],
+    optionalData?.prescription?.advice,
+  );
+  const binaryId = prescDocId;
+  let binaryCreated = false;
   const hasPrescriptionData =
     (meds && meds.length > 0) || !!patient.ongoingMedications;
+
   if (browser && hasPrescriptionData) {
     try {
-      const buffers = await generateMultiplePdfs(
-        [
-          getPrescriptionTemplate(
-            patient,
-            visit,
-            meds || [],
-            optionalData?.prescription?.advice,
-          ),
-        ],
-        browser,
-      );
+      const buffers = await generateMultiplePdfs([prescHtml], browser);
       if (buffers[0]) {
-        bundleEntries.push(
-          buildPdfDocumentReference(
-            prescDocId,
-            patientUUID,
-            "Prescription PDF",
-            "440545006",
-            "Prescription record",
-            bundleDate,
-            buffers[0].toString("base64"),
-          ),
+        bundleEntries.push({
+          fullUrl: `urn:uuid:${binaryId}`,
+          resource: {
+            resourceType: "Binary",
+            id: binaryId,
+            meta: {
+              profile: [
+                "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Binary",
+              ],
+            },
+            contentType: "application/pdf",
+            data: buffers[0].toString("base64"),
+          },
+        });
+        binaryCreated = true;
+      } else {
+        console.warn(
+          "[Builders] Prescription PDF buffer was empty, using HTML fallback",
         );
       }
     } catch (err) {
-      console.error("[Builders] Prescription PDF generation failed:", err);
+      console.error(
+        "[Builders] Prescription PDF generation failed, using HTML fallback:",
+        err,
+      );
     }
   }
 
-  // Dangling reference cleanup — removes refs to resources that weren't added (e.g. failed PDF)
-  const availableIds = new Set(bundleEntries.map((e: any) => e.fullUrl));
-  sections.forEach((section) => {
-    if (section.entry) {
-      section.entry = section.entry.filter((e: any) =>
-        availableIds.has(e.reference),
-      );
-    }
+  // Fallback: create Binary with HTML content if PDF wasn't generated
+  if (!binaryCreated) {
+    const base64Html = Buffer.from(prescHtml, "utf-8").toString("base64");
+    bundleEntries.push({
+      fullUrl: `urn:uuid:${binaryId}`,
+      resource: {
+        resourceType: "Binary",
+        id: binaryId,
+        meta: {
+          profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Binary"],
+        },
+        contentType: "text/html",
+        data: base64Html,
+      },
+    });
+  }
+
+  // Single section per PrescriptionRecord profile (section: 1..1)
+  // Entries: MedicationRequest refs + Binary ref (per ABDM entry slicing)
+  const sectionEntries: any[] = [...medRequestRefs];
+  sectionEntries.push({ reference: `urn:uuid:${binaryId}`, type: "Binary" });
+
+  sections.push({
+    title: "Prescription record",
+    code: {
+      coding: [
+        {
+          system: "http://snomed.info/sct",
+          code: "440545006",
+          display: "Prescription record",
+        },
+      ],
+    },
+    text: {
+      status: "generated",
+      div: `<div xmlns="http://www.w3.org/1999/xhtml">${prescriptionHtml}</div>`,
+    },
+    entry: sectionEntries,
   });
 
   return {

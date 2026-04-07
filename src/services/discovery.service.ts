@@ -303,7 +303,8 @@ export const discoverPatient = async (
       }
       if (reqName) {
         const pName =
-          patient.name || `${patient.f_name || ""} ${patient.l_name || ""}`.trim();
+          patient.name ||
+          `${patient.f_name || ""} ${patient.l_name || ""}`.trim();
         if (pName && isNamePhoneticallySimilar(reqName, pName))
           demographicScore += 1;
       }
@@ -352,13 +353,17 @@ export const extractAbhaFromProfile = (
   let abhaAddress: string | undefined = profile.id?.trim();
   if (!abhaAddress && (profile.verifiedIdentifiers || []).length > 0) {
     const v = (profile.verifiedIdentifiers || []).find((id) =>
-      ["ABHA_ADDRESS", "abhaAddress", "healthId", "NDHM_HEALTH_ID"].includes(id.type),
+      ["ABHA_ADDRESS", "abhaAddress", "healthId", "NDHM_HEALTH_ID"].includes(
+        id.type,
+      ),
     );
     if (v?.value?.trim()) abhaAddress = v.value.trim();
   }
   if (!abhaAddress && (profile.unverifiedIdentifiers || []).length > 0) {
     const u = (profile.unverifiedIdentifiers || []).find((id) =>
-      ["ABHA_ADDRESS", "abhaAddress", "healthId", "NDHM_HEALTH_ID"].includes(id.type),
+      ["ABHA_ADDRESS", "abhaAddress", "healthId", "NDHM_HEALTH_ID"].includes(
+        id.type,
+      ),
     );
     if (u?.value?.trim()) abhaAddress = u.value.trim();
   }
@@ -369,9 +374,14 @@ export const extractAbhaFromProfile = (
     ...(profile.unverifiedIdentifiers || []),
   ];
   const abhaNumberTypes = [
-    "ABHA_NUMBER", "abha_number", "HEALTH_NUMBER",
-    "healthNumber", "HEALTH_ID_NUMBER", "healthIdNumber",
-    "abhaNumber", "ABHANumber",
+    "ABHA_NUMBER",
+    "abha_number",
+    "HEALTH_NUMBER",
+    "healthNumber",
+    "HEALTH_ID_NUMBER",
+    "healthIdNumber",
+    "abhaNumber",
+    "ABHANumber",
   ];
   const numId = allIds.find(
     (id) =>
@@ -476,6 +486,13 @@ export const identifyPatientForLink = async (
 };
 
 import { LinkOTPModel } from "../models/LinkOTP";
+import { TwilioOtpService } from "./twilio.otp.service";
+
+const USE_TWILIO = !!(
+  process.env.TWILIO_ACCOUNT_SID &&
+  process.env.TWILIO_AUTH_TOKEN &&
+  process.env.TWILIO_FROM_NUMBER
+);
 
 export const generateLinkOTP = async (
   transactionId: string,
@@ -485,8 +502,12 @@ export const generateLinkOTP = async (
   abhaAddress?: string,
   abhaNumber?: string,
 ): Promise<string> => {
-  const otp = "123456"; // Math.floor(100000 + Math.random() * 900000).toString();
+  // Generate a cryptographically random 6-digit OTP
+  const otp = USE_TWILIO
+    ? TwilioOtpService.generateOTP()
+    : Math.floor(100000 + Math.random() * 900000).toString();
 
+  // Store OTP in DB first (so it's available for verification even if SMS delivery is slow)
   await LinkOTPModel.create({
     transactionId,
     otp,
@@ -498,9 +519,22 @@ export const generateLinkOTP = async (
     expiresAt: new Date(Date.now() + 10 * 60 * 1000),
   });
 
-  console.log(
-    `Discovery: OTP ${otp} generated for transaction ${transactionId}, mobile ${mobile}`,
-  );
+  if (USE_TWILIO) {
+    const result = await TwilioOtpService.sendOTP(mobile, otp);
+    if (!result.success) {
+      console.error(
+        `Discovery: SMS delivery failed for transaction ${transactionId}, mobile ${mobile}: ${result.error}. OTP ${otp} stored in DB (verify number or upgrade Twilio account).`,
+      );
+    } else {
+      console.log(
+        `Discovery: OTP sent via Twilio for transaction ${transactionId}, mobile ${mobile}`,
+      );
+    }
+  } else {
+    console.warn(
+      `Discovery: Twilio not configured. OTP ${otp} for transaction ${transactionId}, mobile ${mobile} (dev mode — SMS not sent)`,
+    );
+  }
 
   return otp;
 };

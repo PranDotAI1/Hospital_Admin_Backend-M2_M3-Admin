@@ -73,50 +73,9 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
 PHRConsentArtefactSchema.index({ patientAbhaAddress: 1, status: 1 });
 // artefactId: unique: true on field already creates index; no duplicate schema.index
 
-// ============================================================================
-// GUARD: Prevent self-referencing ghost artefacts at the DB level.
-// ============================================================================
-PHRConsentArtefactSchema.pre("save", function (next) {
-  if (
-    this.artefactId &&
-    this.consentRequestId &&
-    this.artefactId === this.consentRequestId
-  ) {
-    console.warn(
-      `[PHRConsentArtefact][GUARD] Blocked self-referencing save: artefactId=${this.artefactId}. Setting consentRequestId to null.`,
-    );
-    this.consentRequestId = null as any;
-  }
-  next();
-});
-
-PHRConsentArtefactSchema.pre("findOneAndUpdate", function (next) {
-  const update = this.getUpdate() as any;
-  const setData = update?.$set || update;
-  if (
-    setData &&
-    setData.artefactId &&
-    setData.consentRequestId &&
-    setData.artefactId === setData.consentRequestId
-  ) {
-    console.warn(
-      `[PHRConsentArtefact][GUARD] Blocked self-referencing update: artefactId=${setData.artefactId}. Setting consentRequestId to null.`,
-    );
-    setData.consentRequestId = null;
-  }
-  if (
-    update?.$setOnInsert &&
-    update.$setOnInsert.artefactId &&
-    update.$setOnInsert.consentRequestId &&
-    update.$setOnInsert.artefactId === update.$setOnInsert.consentRequestId
-  ) {
-    console.warn(
-      `[PHRConsentArtefact][GUARD] Blocked self-referencing upsert: artefactId=${update.$setOnInsert.artefactId}. Setting consentRequestId to null.`,
-    );
-    update.$setOnInsert.consentRequestId = null;
-  }
-  next();
-});
+// NOTE: NO self-referencing guard here. PHR consents (purpose.code=PATRQT) are initiated
+// by the patient's PHR app, not by our system — there is no local ConsentRequest.
+// So artefactId === consentRequestId is EXPECTED and CORRECT for PHR consents.
 
 export const PHRConsentArtefactModel = model<IConsentArtefact>(
   "PHRConsentArtefact",

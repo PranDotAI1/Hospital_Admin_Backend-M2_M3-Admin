@@ -19,16 +19,19 @@ export const generatePdfFromHtml = async (
     const page = await browser.newPage();
 
     // Set content; use domcontentloaded to avoid long timeouts (networkidle0 can hang on external resources)
-    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.setContent(html, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
 
     const pdfBuffer = await page.pdf({
       format: "A4",
-      printBackground: true, // Print background colors/images
+      printBackground: true,
       margin: {
-        top: "1cm",
-        bottom: "1cm",
-        left: "1cm",
-        right: "1cm",
+        top: "0",
+        bottom: "0",
+        left: "0",
+        right: "0",
       },
     });
 
@@ -73,16 +76,14 @@ export const generateMultiplePdfs = async (
       htmls.map(async (html) => {
         const page = await browser!.newPage();
         try {
-          await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
+          await page.setContent(html, {
+            waitUntil: "domcontentloaded",
+            timeout: 60000,
+          });
           const buffer = await page.pdf({
             format: "A4",
             printBackground: true,
-            margin: {
-              top: "1cm",
-              bottom: "1cm",
-              left: "1cm",
-              right: "1cm",
-            },
+            margin: { top: "0", bottom: "0", left: "0", right: "0" },
           });
           return Buffer.from(buffer);
         } catch (pageError) {
