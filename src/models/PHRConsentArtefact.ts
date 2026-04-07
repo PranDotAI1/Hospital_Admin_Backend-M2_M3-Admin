@@ -1,4 +1,3 @@
-
 import {
   ConsentArtefactStatus,
   IConsentArtefact,

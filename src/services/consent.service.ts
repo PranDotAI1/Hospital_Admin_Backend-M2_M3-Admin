@@ -1209,7 +1209,10 @@ export const storeArtefactDetails = async (
 
     // FINAL GUARD: Never persist self-referencing consentRequestId.
     // Even if upstream logic accidentally set it, catch it here before DB write.
-    if (updateData.consentRequestId && updateData.consentRequestId === artefactId) {
+    if (
+      updateData.consentRequestId &&
+      updateData.consentRequestId === artefactId
+    ) {
       console.warn(
         `${LOG_PREFIX} [GUARD] Caught self-referencing consentRequestId=${artefactId} before upsert. Setting to null.`,
       );
