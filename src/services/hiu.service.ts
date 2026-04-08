@@ -37,7 +37,11 @@ export const requestHealthInformation = async (
   consentArtefactId: string,
   dateRange: { from: Date; to: Date },
   options?: { storeAsExternalRecord?: boolean },
-): Promise<{ requestId: string; status: number; existingRecordCount: number }> => {
+): Promise<{
+  requestId: string;
+  status: number;
+  existingRecordCount: number;
+}> => {
   try {
     let consent = await ConsentArtefactModel.findOne({
       artefactId: consentArtefactId,
@@ -343,7 +347,7 @@ export const handleHiuTransfer = async (
     artefactId: hiuRequest.consentArtefactId,
   }).lean();
   let artefactSource = "main";
-  
+
   if (!consentArtefact) {
     consentArtefact = await PHRConsentArtefactModel.findOne({
       artefactId: hiuRequest.consentArtefactId,
@@ -389,6 +393,40 @@ export const handleHiuTransfer = async (
     return;
   }
 
+  // Reject self-referencing ghost artefacts (artefactId === consentRequestId)
+  // AND unlinked artefacts (consentRequestId is null/empty).
+  // These are artefacts that were created without a real ConsentRequest and break
+  // the REVOKE cascade. Data must not be stored against them.
+  const isGhostOrUnlinked =
+    (consentArtefact.artefactId &&
+      consentArtefact.consentRequestId &&
+      consentArtefact.artefactId === consentArtefact.consentRequestId) ||
+    !consentArtefact.consentRequestId;
+
+  if (isGhostOrUnlinked) {
+    const reason = !consentArtefact.consentRequestId
+      ? "Unlinked artefact (no consentRequestId)"
+      : "Self-referencing ghost artefact (artefactId === consentRequestId)";
+    console.warn(
+      `${LOG_PREFIX} [SECURITY] Consent ${hiuRequest.consentArtefactId}: ${reason}. Skipping storage.`,
+    );
+    await HIURequestModel.updateOne(
+      { transactionId },
+      {
+        status: HIURequestStatus.FAILED,
+        $push: {
+          callbacks: {
+            type: "transfer",
+            body: {
+              error: `${reason} — no valid consent link`,
+            },
+          },
+        },
+      },
+    );
+    return;
+  }
+
   const allowedCareContexts = new Set(
     consentArtefact?.careContexts?.map((cc) => cc.careContextReference) || [],
   );
@@ -396,7 +434,7 @@ export const handleHiuTransfer = async (
   console.log(
     `${LOG_PREFIX} Validating against ${allowedCareContexts.size} allowed care contexts for consent ${hiuRequest.consentArtefactId} (found in ${artefactSource} collection)`,
   );
-  
+
   if (allowedCareContexts.size === 0) {
     console.warn(
       `${LOG_PREFIX} ⚠️ Artefact found but has 0 care contexts! Artefact source: ${artefactSource}, requestPurpose: ${(consentArtefact as any).requestPurpose || "unknown"}`,
@@ -408,15 +446,18 @@ export const handleHiuTransfer = async (
     try {
       // --- VALIDATION: Check if this Care Context is allowed ---
       const ccRef = entry.careContextReference;
-      
+
       if (allowedCareContexts.size > 0 && !allowedCareContexts.has(ccRef)) {
         console.warn(
           `${LOG_PREFIX} [SECURITY] Care Context ${ccRef} is NOT in allowed list for consent ${hiuRequest.consentArtefactId}. DROPPING RECORD.`,
         );
         continue;
       }
-      
-      if (allowedCareContexts.size === 0 && hiuRequest.storeAsExternalRecord === true) {
+
+      if (
+        allowedCareContexts.size === 0 &&
+        hiuRequest.storeAsExternalRecord === true
+      ) {
         console.warn(
           `${LOG_PREFIX} ⚠️ Artefact has 0 care contexts but storeAsExternalRecord=true. Allowing storage for ${ccRef} (ABDM sent it, so it's valid).`,
         );
@@ -462,14 +503,14 @@ export const handleHiuTransfer = async (
           hipId === X_HIP_ID ||
           (facilityId && hipId.includes(facilityId)) ||
           (X_HIP_ID && hipId.includes(X_HIP_ID));
-        
+
         if (SKIP_OWN_FACILITY && isOurFacility) {
           console.log(
             `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: source HIP is our facility (${hipId}). SKIP_OWN_FACILITY is enabled.`,
           );
           continue;
         }
-        
+
         if (isOurFacility) {
           console.log(
             `${LOG_PREFIX} Storing ExternalHealthRecord from our own facility (${hipId}). SKIP_OWN_FACILITY is disabled.`,
@@ -690,7 +731,7 @@ export const retryFailedConsents = async (): Promise<{
     status: { $in: ["GRANTED", "ACTIVE"] },
     expiryDate: { $gt: new Date() }, // Not expired
   })
-    .select("artefactId patientAbhaAddress rawConsentDetail")
+    .select("artefactId consentRequestId patientAbhaAddress rawConsentDetail")
     .lean();
 
   console.log(
@@ -735,7 +776,20 @@ export const retryFailedConsents = async (): Promise<{
 
     try {
       console.log(`${LOG_PREFIX} Retrying consent ${consent.artefactId}...`);
-      await requestHealthInformation(consent.artefactId, dateRange);
+      // Skip self-referencing ghost artefacts
+      if (consent.artefactId === (consent as any).consentRequestId) {
+        console.warn(
+          `${LOG_PREFIX} Skipping self-referencing ghost artefact ${consent.artefactId} during retry`,
+        );
+        results.push({
+          consentId: consent.artefactId,
+          status: "SKIPPED_GHOST",
+        });
+        continue;
+      }
+      await requestHealthInformation(consent.artefactId, dateRange, {
+        storeAsExternalRecord: true,
+      });
       retriedCount++;
       results.push({ consentId: consent.artefactId, status: "RETRIED" });
     } catch (error: any) {

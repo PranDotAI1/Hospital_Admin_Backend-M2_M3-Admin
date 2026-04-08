@@ -20,10 +20,11 @@ import { VisitSoapNotesModel } from "../models/VisitSoapNotes";
 import { VisitDischargeSummaryModel } from "../models/VisitDischargeSummary";
 import { VisitAssessmentModel } from "../models/VisitAssessment";
 import { VisitDayCareBilling } from "../models/VisitDayCareBilling";
-import {
-  FhirBundleService,
-  ICombinedBundleOptionalData,
-} from "./fhir.bundle.service";
+import { LabReportModel } from "../models/LabReport";
+import { LabTestTemplateModel } from "../models/LabTestTemplate";
+import * as fs from "fs";
+import { ICombinedBundleOptionalData } from "./fhir.bundle.service";
+import { generateFhirBundle } from "./fhir.bundle.builders";
 
 import {
   buildDataPushPayload,
@@ -327,7 +328,7 @@ const findContextsByAbhaAndDateRange = async (
  * Load ALL clinical data for this care context's visit from our DB.
  * Per-HI-type filtering is handled downstream by FHIR bundle service (allowedHiTypes param).
  */
-const getOptionalDataForCareContext = async (
+export const getOptionalDataForCareContext = async (
   careContext: ICareContext,
   _consentedHiTypes?: string[],
 ): Promise<ICombinedBundleOptionalData | undefined> => {
@@ -348,6 +349,8 @@ const getOptionalDataForCareContext = async (
   promises.push(VisitAssessmentModel.findOne({ visitId }).lean());
   // 5: Billing
   promises.push(VisitDayCareBilling.findOne({ visitId }).lean());
+  // 6: Structured Lab Reports (new centralized model — one doc per visit)
+  promises.push(LabReportModel.findOne({ visitId }).lean());
 
   const [
     prescription,
@@ -356,11 +359,13 @@ const getOptionalDataForCareContext = async (
     dischargeSummary,
     assessment,
     billing,
+    structuredLabs,
   ] = await Promise.all(promises);
 
   const hasAny =
     (prescription?.medications?.length ?? 0) > 0 ||
     (labReport?.reports?.length ?? 0) > 0 ||
+    (structuredLabs?.tests?.length ?? 0) > 0 ||
     (soapNotes &&
       (soapNotes.subjective ||
         soapNotes.objective ||
@@ -442,6 +447,30 @@ const getOptionalDataForCareContext = async (
         }
       : undefined,
     billing: billing as any,
+    // NEW: Structured lab reports — expand tests[] from the centralized record
+    structuredLabReports: await (async () => {
+      if (!structuredLabs?.tests?.length) return undefined;
+      // Enrich with displayName from templates
+      const testTypes = structuredLabs.tests.map((t: any) => t.testType);
+      const templates = await LabTestTemplateModel.find({
+        testType: { $in: testTypes },
+      })
+        .select("testType displayName")
+        .lean();
+      const tplMap = new Map(templates.map((t) => [t.testType, t.displayName]));
+      return structuredLabs.tests.map((t: any) => ({
+        testType: t.testType,
+        displayName: tplMap.get(t.testType) || t.testType,
+        sampleId: t.sampleId,
+        reportDate: t.reportDate,
+        analystName: t.analystName,
+        observations: t.observations,
+        status: t.status,
+        loincCode: t.loincCode,
+        loincDisplay: t.loincDisplay,
+        parameters: t.parameters || [],
+      }));
+    })(),
   };
 };
 
@@ -619,16 +648,15 @@ const pushHealthData = async (
     let allPushed = true;
     for (const hiType of applicableHiTypes) {
       try {
-        const hiTypeFilter = [hiType];
         console.log(
           `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} [${hiType}]`,
         );
-        const fhirBundle = await FhirBundleService.generateCombinedBundleForCareContext(
+        const fhirBundle = await generateFhirBundle(
+          hiType,
           patient,
           visit as any,
           careContext,
           optionalData,
-          hiTypeFilter,
           browser,
         );
         const fhirBundleJson = JSON.stringify(fhirBundle);
@@ -703,7 +731,11 @@ const pushHealthData = async (
           `${LOG_PREFIX} Push failed for ${careContext.careContextReference} [${hiType}]:`,
           pushErr.response?.status,
           pushErr.response?.statusText || pushErr.message,
+          JSON.stringify(pushErr.response?.data || {})
         );
+        try {
+          fs.appendFileSync('abdm_errors.log', `${new Date().toISOString()} [${hiType}]: ${JSON.stringify(pushErr.response?.data || pushErr.message)}\n`);
+        } catch(e){}
         allPushed = false;
       }
     }

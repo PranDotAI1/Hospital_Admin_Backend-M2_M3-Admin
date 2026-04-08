@@ -650,7 +650,8 @@ export const recordAssessment = async (req: Request, res: Response) => {
 
     const files = (req.files as Express.Multer.File[]) || [];
     const validFiles = files.filter(
-      (file) => file.size > 0 && file.originalname && file.originalname.trim() !== ""
+      (file) =>
+        file.size > 0 && file.originalname && file.originalname.trim() !== "",
     );
     const newUploads = validFiles.map((file) => ({
       fileName: file.originalname,
@@ -684,7 +685,14 @@ export const recordAssessment = async (req: Request, res: Response) => {
       { upsert: true, new: true },
     );
 
-    // Determine HI Types based on what data was provided
+    // Determine HI Types based on what data was provided in THIS request.
+    // The frontend sends the full assessment form on every save, so we must
+    // only create CareContexts for the sections that actually contain data —
+    // NOT re-create OPConsultation just because previously-saved symptoms
+    // are still present in the body.
+    // OPConsultation CCs are created by recordSoapNotes; assessment data
+    // (symptoms, medicalHistory, surgicalHistory) is supplementary and gets
+    // included in the OPConsultation FHIR bundle automatically.
     const hiTypes: HIType[] = [];
 
     if (body?.vitals && Object.keys(body.vitals).length > 0) {
@@ -696,17 +704,6 @@ export const recordAssessment = async (req: Request, res: Response) => {
     const immData = immunization || (body?.immunization as any);
     if (hasImmunizationEvidence(immData)) {
       hiTypes.push("ImmunizationRecord");
-    }
-
-    if (
-      body?.symptomsComplaints ||
-      (body?.medicalHistory && body.medicalHistory.length > 0) ||
-      (body?.surgicalHistory && body.surgicalHistory.length > 0) ||
-      body?.physicalActivity ||
-      body?.lifestyle ||
-      body?.womenHealth
-    ) {
-      hiTypes.push("OPConsultation");
     }
 
     if (newUploads.length > 0) {

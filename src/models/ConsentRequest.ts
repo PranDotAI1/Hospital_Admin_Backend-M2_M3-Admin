@@ -43,6 +43,7 @@ export interface IConsentRequest extends Document {
 
   hiTypes: string[];
 
+  /** What was originally requested — maps to the ABDM consent/init payload. */
   permission: {
     accessMode: string;
     dateRange: {
@@ -59,14 +60,29 @@ export interface IConsentRequest extends Document {
 
   consentArtefacts: string[];
 
-  /** Why we initiated this consent: HIMS = for our hospital to fetch and hold; PHR = for patient's PHR (pull records). Used to avoid using PHR consents for HIMS external records. */
-  requestPurpose?: "HIMS" | "PHR";
+  /** HIMS = for our hospital to fetch and hold; PHR = for patient's PHR (pull records). Defaults to HIMS. */
+  requestPurpose: "HIMS" | "PHR";
+
+  /** Consolidated approved consent details — populated when ABDM returns the artefact (GRANTED). */
+  approved?: {
+    dateRange?: {
+      from: Date;
+      to: Date;
+    };
+    hiTypes?: string[];
+    accessMode?: string;
+    dataEraseAt?: Date;
+    expiryDate?: Date;
+  };
 
   grantedAt?: Date;
 
+  /** @deprecated Use approved.expiryDate instead */
   consentExpiryOn?: Date;
 
+  /** @deprecated Use approved.hiTypes instead */
   approvedHiTypes?: string[];
+  /** @deprecated Use approved.dateRange instead */
   approvedDateRange?: {
     from: Date;
     to: Date;
@@ -139,7 +155,20 @@ const ConsentRequestSchema = new Schema<IConsentRequest>(
       },
     },
     consentArtefacts: [{ type: String }],
-    requestPurpose: { type: String, enum: ["HIMS", "PHR"] },
+    requestPurpose: { type: String, enum: ["HIMS", "PHR"], default: "HIMS" },
+
+    // Consolidated approved consent details from ABDM artefact
+    approved: {
+      dateRange: {
+        from: { type: Date },
+        to: { type: Date },
+      },
+      hiTypes: [{ type: String }],
+      accessMode: { type: String },
+      dataEraseAt: { type: Date },
+      expiryDate: { type: Date },
+    },
+
     grantedAt: { type: Date },
     consentExpiryOn: { type: Date },
     approvedHiTypes: [{ type: String }],

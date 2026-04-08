@@ -103,4 +103,7 @@ export const LINK_TOKEN_REQUEST_COOLDOWN_HOURS = 24;
 /** Whether to update patient name from ABDM discovery flow data (set true to enable) */
 export const DISCOVERY_UPDATE_PATIENT_NAME = true;
 
+export const SEPARATE_CARECONTEXT_PER_HITYPE: boolean =
+  process.env.SEPARATE_CARECONTEXT_PER_HITYPE !== "false";
+
 export { ENDPOINTS } from "./endpoints";

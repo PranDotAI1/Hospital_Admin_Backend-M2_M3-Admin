@@ -1,4 +1,3 @@
-
 import {
   ConsentArtefactStatus,
   IConsentArtefact,
@@ -17,8 +16,9 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
     },
     consentRequestId: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
+      default: null,
     },
     status: {
       type: String,
@@ -72,6 +72,10 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
 
 PHRConsentArtefactSchema.index({ patientAbhaAddress: 1, status: 1 });
 // artefactId: unique: true on field already creates index; no duplicate schema.index
+
+// NOTE: NO self-referencing guard here. PHR consents (purpose.code=PATRQT) are initiated
+// by the patient's PHR app, not by our system — there is no local ConsentRequest.
+// So artefactId === consentRequestId is EXPECTED and CORRECT for PHR consents.
 
 export const PHRConsentArtefactModel = model<IConsentArtefact>(
   "PHRConsentArtefact",

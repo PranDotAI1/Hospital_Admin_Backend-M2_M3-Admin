@@ -245,7 +245,9 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
       visitDate: new Date(),
       counterId: context,
       abhaAddress: abhaAddress,
-      abhaNumber: formatAbhaForStorage(patient?.abhaNumber || profile?.abhaNumber),
+      abhaNumber: formatAbhaForStorage(
+        patient?.abhaNumber || profile?.abhaNumber,
+      ),
       name:
         patient?.name ||
         `${patient?.firstName || ""} ${patient?.lastName || ""}`.trim(),
@@ -510,12 +512,18 @@ export const completeRegistration = async (req: Request, res: Response) => {
     }
 
     // 2. Resolve Doctor
-    const rawDoc = manualFields.doctorId || manualFields.doctorName || manualFields.consultingDoctorId || manualFields.consultingDoctor;
+    const rawDoc =
+      manualFields.doctorId ||
+      manualFields.doctorName ||
+      manualFields.consultingDoctorId ||
+      manualFields.consultingDoctor;
     if (rawDoc) {
       if (Types.ObjectId.isValid(rawDoc)) {
         doctorId = new Types.ObjectId(rawDoc);
         const doc = await DoctorModel.findById(doctorId).lean();
-        doctorName = doc ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim() : undefined;
+        doctorName = doc
+          ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim()
+          : undefined;
       } else {
         doctorName = sanitizeString(rawDoc, 100);
       }
@@ -533,7 +541,10 @@ export const completeRegistration = async (req: Request, res: Response) => {
     const visitType = sanitizeString(manualFields.visitType, 100);
     if (visitType) updateData.visitType = visitType;
 
-    const description = sanitizeString(manualFields.description || manualFields.complaint, 1000);
+    const description = sanitizeString(
+      manualFields.description || manualFields.complaint,
+      1000,
+    );
     if (description) {
       updateData.description = description;
       updateData.complaint = description; // Sync with complaint for backward compatibility
@@ -653,9 +664,20 @@ export const completeRegistration = async (req: Request, res: Response) => {
           addressString = parts.join(", ");
         }
 
-        const existingPatient = await PatientModel.findOne({
+        // Look up by ABHANumber first, then fall back to abhaaddress
+        let existingPatient = await PatientModel.findOne({
           ABHANumber: scanShareVisit.abhaNumber,
+          isMerged: { $ne: true },
+          status: { $ne: "merged" },
         });
+
+        if (!existingPatient && scanShareVisit.abhaAddress) {
+          existingPatient = await PatientModel.findOne({
+            abhaaddress: scanShareVisit.abhaAddress,
+            isMerged: { $ne: true },
+            status: { $ne: "merged" },
+          });
+        }
 
         const visitInsurance = updatedVisit.insurance;
         const hasNewInsurance =
@@ -747,12 +769,10 @@ export const completeRegistration = async (req: Request, res: Response) => {
           console.log("New patient record created:", newPatient._id);
         }
 
-
         // Link the visit back to the patient record
         await ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
           $set: { patientId: patientId },
         });
-
       } catch (patientError: any) {
         console.error("Error updating patient record:", {
           message: patientError.message,

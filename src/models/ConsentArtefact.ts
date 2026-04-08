@@ -115,8 +115,9 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
     },
     consentRequestId: {
       type: String,
-      required: true,
+      required: false, // May be null for artefacts received without a local ConsentRequest
       trim: true,
+      default: null,
     },
     status: {
       type: String,
@@ -181,6 +182,71 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
 ConsentArtefactSchema.index({ patientAbhaAddress: 1, status: 1 });
 ConsentArtefactSchema.index({ consentRequestId: 1, status: 1 });
 ConsentArtefactSchema.index({ expiryDate: 1 }, { sparse: true });
+
+// ============================================================================
+// GUARD: Prevent self-referencing ghost artefacts (artefactId === consentRequestId)
+// at the database level. This is the last line of defense.
+// ============================================================================
+ConsentArtefactSchema.pre("save", function (next) {
+  if (
+    this.artefactId &&
+    this.consentRequestId &&
+    this.artefactId === this.consentRequestId
+  ) {
+    console.warn(
+      `[ConsentArtefact][GUARD] Blocked self-referencing save: artefactId=${this.artefactId}. Setting consentRequestId to null.`,
+    );
+    this.consentRequestId = null as any;
+  }
+  next();
+});
+
+ConsentArtefactSchema.pre("findOneAndUpdate", function (next) {
+  const update = this.getUpdate() as any;
+  const setData = update?.$set || update;
+  if (
+    setData &&
+    setData.artefactId &&
+    setData.consentRequestId &&
+    setData.artefactId === setData.consentRequestId
+  ) {
+    console.warn(
+      `[ConsentArtefact][GUARD] Blocked self-referencing update: artefactId=${setData.artefactId}. Setting consentRequestId to null.`,
+    );
+    setData.consentRequestId = null;
+  }
+  // Also check $setOnInsert for upserts
+  if (
+    update?.$setOnInsert &&
+    update.$setOnInsert.artefactId &&
+    update.$setOnInsert.consentRequestId &&
+    update.$setOnInsert.artefactId === update.$setOnInsert.consentRequestId
+  ) {
+    console.warn(
+      `[ConsentArtefact][GUARD] Blocked self-referencing upsert: artefactId=${update.$setOnInsert.artefactId}. Setting consentRequestId to null.`,
+    );
+    update.$setOnInsert.consentRequestId = null;
+  }
+  next();
+});
+
+ConsentArtefactSchema.pre("updateMany", function (next) {
+  // updateMany doesn't create new docs, but guard anyway
+  const update = this.getUpdate() as any;
+  const setData = update?.$set;
+  if (
+    setData &&
+    setData.artefactId &&
+    setData.consentRequestId &&
+    setData.artefactId === setData.consentRequestId
+  ) {
+    console.warn(
+      `[ConsentArtefact][GUARD] Blocked self-referencing updateMany. Setting consentRequestId to null.`,
+    );
+    setData.consentRequestId = null;
+  }
+  next();
+});
 
 export const ConsentArtefactModel = model<IConsentArtefact>(
   "ConsentArtefact",

@@ -193,7 +193,7 @@ CareContextSchema.pre("validate", function (next) {
     // hiType set but hiTypes empty → seed hiTypes
     doc.hiTypes = [doc.hiType];
   } else if (
-    (!doc.hiType) &&
+    !doc.hiType &&
     Array.isArray(doc.hiTypes) &&
     doc.hiTypes.length > 0
   ) {
@@ -202,15 +202,21 @@ CareContextSchema.pre("validate", function (next) {
   }
 
   // Ensure hiType is always present in hiTypes
-  if (doc.hiType && Array.isArray(doc.hiTypes) && !doc.hiTypes.includes(doc.hiType)) {
+  if (
+    doc.hiType &&
+    Array.isArray(doc.hiTypes) &&
+    !doc.hiTypes.includes(doc.hiType)
+  ) {
     doc.hiTypes.unshift(doc.hiType);
   }
 
   return next();
 });
 
-// One CareContext per visit (all HI types merged into one context).
-CareContextSchema.index({ patientId: 1, visitId: 1 }, { unique: true, sparse: true });
+CareContextSchema.index(
+  { patientId: 1, visitId: 1, hiType: 1 },
+  { unique: true, sparse: true },
+);
 CareContextSchema.index({ abhaAddress: 1, linkingStatus: 1 });
 CareContextSchema.index({ linkRequestId: 1 }, { sparse: true });
 CareContextSchema.index({ notifyRequestId: 1 }, { sparse: true });
