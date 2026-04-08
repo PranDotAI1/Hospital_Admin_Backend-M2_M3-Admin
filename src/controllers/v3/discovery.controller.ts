@@ -19,18 +19,41 @@ import {
 } from "../../utils/constant";
 import { AbdmTokenService } from "../../services/abdm.token.service";
 
-const applyNameSplit = (updateData: Record<string, unknown>, fullName: string) => {
-  const parts = fullName.trim().split(/\s+/);
-  if (parts.length > 0) {
-    updateData.f_name = parts[0];
-    if (parts.length > 1) {
-      updateData.l_name = parts[parts.length - 1];
-      updateData.m_name = parts.length > 2 ? parts.slice(1, -1).join(" ") : "";
-    } else {
-      updateData.l_name = "";
-      updateData.m_name = "";
-    }
+// In-memory cache for ABHA data extracted during discover, keyed by transactionId.
+// Link/init doesn't carry ABHA number in its body (only abhaAddress), so we need
+// to retrieve it from the discover step via the shared transactionId.
+const discoveryAbhaCache = new Map<
+  string,
+  { abhaAddress?: string; abhaNumber?: string; ts: number }
+>();
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+const cacheDiscoveryAbha = (
+  txnId: string,
+  abhaAddress?: string,
+  abhaNumber?: string,
+) => {
+  if (!txnId) return;
+  discoveryAbhaCache.set(txnId, { abhaAddress, abhaNumber, ts: Date.now() });
+  // Evict stale entries (fire-and-forget, max 100 checked per call)
+  let checked = 0;
+  for (const [key, val] of discoveryAbhaCache) {
+    if (++checked > 100) break;
+    if (Date.now() - val.ts > CACHE_TTL_MS) discoveryAbhaCache.delete(key);
   }
+};
+
+const getCachedDiscoveryAbha = (
+  txnId: string,
+): { abhaAddress?: string; abhaNumber?: string } | undefined => {
+  if (!txnId) return undefined;
+  const entry = discoveryAbhaCache.get(txnId);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts > CACHE_TTL_MS) {
+    discoveryAbhaCache.delete(txnId);
+    return undefined;
+  }
+  return { abhaAddress: entry.abhaAddress, abhaNumber: entry.abhaNumber };
 };
 
 export const onDiscover = async (req: Request, res: Response) => {
@@ -98,70 +121,6 @@ export const onDiscover = async (req: Request, res: Response) => {
       }
 
       if (results && results.length > 0) {
-        // --- Persist ABHA data and name from discover request onto matched patients ---
-        try {
-          const discoverProfile = {
-            id: patient.id,
-            verifiedIdentifiers: patient.verifiedIdentifiers || [],
-            unverifiedIdentifiers: patient.unverifiedIdentifiers || [],
-          } as import("../../services/discovery.service").LinkInitProfile;
-
-          const { abhaAddress, abhaNumber } = extractAbhaFromProfile(discoverProfile);
-          const discoveryName = patient.name?.trim();
-
-          console.log(
-            "Discovery: onDiscover extracted — abhaAddress:",
-            abhaAddress || "(none)",
-            "abhaNumber:",
-            abhaNumber || "(none)",
-            "name:",
-            discoveryName || "(none)",
-          );
-
-          if (abhaAddress || abhaNumber || discoveryName) {
-            for (const result of results) {
-              const refNum = result.referenceNumber;
-              // Find the patient by UHID or _id (referenceNumber)
-              const matchedPatient = await PatientModel.findOne({
-                $or: [
-                  { uhid: refNum },
-                  ...(refNum.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: refNum }] : []),
-                ],
-              });
-              if (matchedPatient) {
-                const updateData: Record<string, unknown> = {};
-                if (abhaAddress && abhaAddress !== (matchedPatient as any).abhaaddress) {
-                  updateData.abhaaddress = abhaAddress;
-                }
-                if (abhaNumber && abhaNumber !== (matchedPatient as any).ABHANumber) {
-                  updateData.ABHANumber = abhaNumber;
-                }
-                if (DISCOVERY_UPDATE_PATIENT_NAME && discoveryName) {
-                  updateData.name = discoveryName;
-                  applyNameSplit(updateData, discoveryName);
-                }
-                if (Object.keys(updateData).length > 0) {
-                  updateData.abhaLinkedAt = new Date();
-                  await PatientModel.updateOne(
-                    { _id: matchedPatient._id },
-                    { $set: updateData },
-                  );
-                  console.log(
-                    "Discovery: onDiscover persisted ABHA data on patient",
-                    matchedPatient.uhid || matchedPatient._id,
-                    JSON.stringify(updateData),
-                  );
-                }
-              }
-            }
-          }
-        } catch (persistErr: any) {
-          console.warn(
-            "Discovery: onDiscover ABHA persist failed (non-blocking):",
-            persistErr?.message,
-          );
-        }
-
         const allMatchedBy = new Set<string>();
         results.forEach((r) => r.matchedBy.forEach((t) => allMatchedBy.add(t)));
         onDiscoverPayload.matchedBy = Array.from(allMatchedBy);
@@ -186,6 +145,36 @@ export const onDiscover = async (req: Request, res: Response) => {
 
         if (patientResults.length > 0) {
           onDiscoverPayload.patient = patientResults;
+
+          // NOTE: ABHA data is NOT persisted here. Discovery is read-only per ABDM spec.
+          // ABHA address/number will be saved only after OTP verification in link/confirm.
+          // Cache the ABHA data so link/init can retrieve the ABHA number (not in its body).
+          try {
+            const discoverProfile = {
+              id: patient.id,
+              verifiedIdentifiers: patient.verifiedIdentifiers || [],
+              unverifiedIdentifiers: patient.unverifiedIdentifiers || [],
+            } as import("../../services/discovery.service").LinkInitProfile;
+            const { abhaAddress: cachedAddr, abhaNumber: cachedNum } =
+              extractAbhaFromProfile(discoverProfile);
+            if (txnIdFromRequest) {
+              cacheDiscoveryAbha(txnIdFromRequest, cachedAddr, cachedNum);
+            }
+            console.log(
+              "Discovery: onDiscover matched",
+              patientResults.length,
+              "patient(s) with care contexts — cached ABHA:",
+              cachedAddr || "(none)",
+              cachedNum || "(none)",
+              "(persist deferred to link/confirm)",
+            );
+          } catch (_) {
+            console.log(
+              "Discovery: onDiscover matched",
+              patientResults.length,
+              "patient(s) with care contexts (ABHA persist deferred to link/confirm)",
+            );
+          }
         } else {
           onDiscoverPayload.error = {
             code: 1000,
@@ -293,9 +282,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
 
       const bodyAbha = req.body.abhaAddress ?? req.body.abha_address;
 
-      const verifiedIds = [
-        ...(patientData.verifiedIdentifiers ?? []),
-      ];
+      const verifiedIds = [...(patientData.verifiedIdentifiers ?? [])];
 
       const profile = {
         referenceNumber: patientData.referenceNumber,
@@ -310,10 +297,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
         unverifiedIdentifiers: patientData.unverifiedIdentifiers ?? [],
       } as LinkInitProfile;
 
-      console.log(
-        "Discovery: onLinkInit profile —",
-        JSON.stringify(profile),
-      );
+      console.log("Discovery: onLinkInit profile —", JSON.stringify(profile));
 
       const dbPatient = await DiscoveryService.identifyPatientForLink(profile);
 
@@ -332,62 +316,29 @@ export const onLinkInit = async (req: Request, res: Response) => {
           message: "Patient not found",
         };
       } else {
-        const { abhaAddress, abhaNumber } = extractAbhaFromProfile(profile);
-        const updateData: Record<string, unknown> = {};
+        const { abhaAddress, abhaNumber: abhaNumFromProfile } =
+          extractAbhaFromProfile(profile);
 
-        if (abhaAddress && abhaAddress !== (dbPatient as any).abhaaddress) {
-          updateData.abhaaddress = abhaAddress;
-        }
-        if (abhaNumber && abhaNumber !== (dbPatient as any).ABHANumber) {
-          updateData.ABHANumber = abhaNumber;
-        }
+        // Link/init body from ABDM typically only has abhaAddress, not ABHA number.
+        // Retrieve ABHA number from the discover step's cached data (same transactionId).
+        const cached = getCachedDiscoveryAbha(txnId);
+        const abhaNumber = abhaNumFromProfile || cached?.abhaNumber;
 
-        // Update patient name from discovery data
-        const discoveryName = profile.name?.trim();
-        if (DISCOVERY_UPDATE_PATIENT_NAME && discoveryName) {
-          updateData.name = discoveryName;
-          applyNameSplit(updateData, discoveryName);
-        }
-
-        if (Object.keys(updateData).length > 0) {
-          updateData.abhaLinkedAt = new Date();
-          await PatientModel.updateOne(
-            { _id: dbPatient._id },
-            { $set: updateData },
-          );
-          console.log(
-            "Discovery: onLinkInit persisted on patient",
-            dbPatient.uhid || dbPatient._id,
-            JSON.stringify(updateData),
-          );
-          if (careContextRefs?.length && abhaAddress) {
-            await CareContextModel.updateMany(
-              {
-                patientId: dbPatient._id,
-                careContextReference: { $in: careContextRefs },
-              },
-              { $set: { abhaAddress } },
-            );
-          }
-          const refreshedPatient = await PatientModel.findById(
-            dbPatient._id,
-          ).lean();
-          if (
-            refreshedPatient &&
-            !CareContextService.isLinkTokenValid(refreshedPatient as any)
-          ) {
-            setImmediate(() => {
-              CareContextService.requestLinkToken(
-                refreshedPatient as any,
-              ).catch((err) =>
-                console.warn(
-                  "Discovery: link token request (post-ABHA persist) failed:",
-                  err?.message,
-                ),
-              );
-            });
-          }
-        }
+        // NOTE: ABHA data is NOT persisted here. Link/init only sends OTP.
+        // ABHA address/number will be saved only after OTP verification in link/confirm.
+        console.log(
+          "Discovery: onLinkInit identified patient",
+          dbPatient.uhid || dbPatient._id,
+          "— abhaAddress:",
+          abhaAddress || "(none)",
+          "abhaNumber:",
+          abhaNumber || "(none)",
+          abhaNumFromProfile
+            ? "(from profile)"
+            : cached?.abhaNumber
+              ? "(from discover cache)"
+              : "(not available)",
+        );
 
         const otp = await DiscoveryService.generateLinkOTP(
           transactionId,
@@ -508,7 +459,8 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           message: "Invalid or expired OTP",
         };
       } else {
-        const { patientId, careContextRefs, abhaAddress, abhaNumber } = verification;
+        const { patientId, careContextRefs, abhaAddress, abhaNumber } =
+          verification;
 
         const patient = await PatientModel.findById(patientId);
         if (!patient) {
@@ -530,7 +482,8 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           if (DISCOVERY_UPDATE_PATIENT_NAME) {
             const storedName = (patient as any).name?.trim();
             if (!storedName) {
-              const fullName = `${(patient as any).f_name || ''} ${(patient as any).l_name || ''}`.trim();
+              const fullName =
+                `${(patient as any).f_name || ""} ${(patient as any).l_name || ""}`.trim();
               if (fullName) {
                 abhaUpdateData.name = fullName;
                 console.log(
@@ -630,7 +583,9 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           }
 
           // Request link token if patient doesn't have one (for future HIP-initiated linking)
-          const refreshedPatient = await PatientModel.findById(patient._id).lean();
+          const refreshedPatient = await PatientModel.findById(
+            patient._id,
+          ).lean();
           if (
             refreshedPatient &&
             (refreshedPatient as any).abhaaddress &&

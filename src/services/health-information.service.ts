@@ -570,9 +570,12 @@ const pushHealthData = async (
     } as any;
 
     // Determine which HI types to push: intersection of CareContext.hiTypes and consent
-    const contextHiTypes = Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
-      ? careContext.hiTypes
-      : careContext.hiType ? [careContext.hiType] : [];
+    const contextHiTypes =
+      Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
+        ? careContext.hiTypes
+        : careContext.hiType
+          ? [careContext.hiType]
+          : [];
 
     if (contextHiTypes.length === 0) {
       console.warn(
@@ -581,9 +584,10 @@ const pushHealthData = async (
       return false;
     }
 
-    const applicableHiTypes = consentedHiTypes && consentedHiTypes.length > 0
-      ? contextHiTypes.filter((t) => consentedHiTypes.includes(t))
-      : contextHiTypes;
+    const applicableHiTypes =
+      consentedHiTypes && consentedHiTypes.length > 0
+        ? contextHiTypes.filter((t) => consentedHiTypes.includes(t))
+        : contextHiTypes;
 
     if (applicableHiTypes.length === 0) {
       console.log(
@@ -710,7 +714,9 @@ const pushHealthData = async (
         );
 
         const requestId = generateUID();
-        console.log(`${LOG_PREFIX} Pushing [${hiType}] data to: ${dataPushUrl}`);
+        console.log(
+          `${LOG_PREFIX} Pushing [${hiType}] data to: ${dataPushUrl}`,
+        );
 
         const response = await axios.post(dataPushUrl, payload, {
           headers: {
@@ -731,11 +737,14 @@ const pushHealthData = async (
           `${LOG_PREFIX} Push failed for ${careContext.careContextReference} [${hiType}]:`,
           pushErr.response?.status,
           pushErr.response?.statusText || pushErr.message,
-          JSON.stringify(pushErr.response?.data || {})
+          JSON.stringify(pushErr.response?.data || {}),
         );
         try {
-          fs.appendFileSync('abdm_errors.log', `${new Date().toISOString()} [${hiType}]: ${JSON.stringify(pushErr.response?.data || pushErr.message)}\n`);
-        } catch(e){}
+          fs.appendFileSync(
+            "abdm_errors.log",
+            `${new Date().toISOString()} [${hiType}]: ${JSON.stringify(pushErr.response?.data || pushErr.message)}\n`,
+          );
+        } catch (e) {}
         allPushed = false;
       }
     }
@@ -745,11 +754,15 @@ const pushHealthData = async (
       { _id: careContext._id },
       {
         $set: {
-          dataTransferStatus: allPushed ? DataTransferStatus.TRANSFERRED : DataTransferStatus.FAILED,
+          dataTransferStatus: allPushed
+            ? DataTransferStatus.TRANSFERRED
+            : DataTransferStatus.FAILED,
           dataTransferredAt: new Date(),
           transactionId,
           dataPushUrl,
-          dataTransferError: allPushed ? null : { message: "One or more bundle pushes failed" },
+          dataTransferError: allPushed
+            ? null
+            : { message: "One or more bundle pushes failed" },
         },
       },
     );
@@ -913,13 +926,13 @@ const processHealthInfoRequest = async (
   // Check if this transactionId is already being processed to avoid duplicate data pushes.
   const existingProcessing = await CareContextModel.findOne({
     transactionId: transactionId,
-    dataTransferStatus: { 
+    dataTransferStatus: {
       $in: [
-        DataTransferStatus.ACKNOWLEDGED, 
-        DataTransferStatus.TRANSFERRED, 
-        DataTransferStatus.FAILED
-      ] 
-    }
+        DataTransferStatus.ACKNOWLEDGED,
+        DataTransferStatus.TRANSFERRED,
+        DataTransferStatus.FAILED,
+      ],
+    },
   }).lean();
 
   if (existingProcessing) {
@@ -958,21 +971,11 @@ const processHealthInfoRequest = async (
 
   let careContexts: ICareContext[] = [];
   try {
-    // Step 0: Validate consent artefact
+    // Step 0: Validate consent artefact — MUST be GRANTED to serve data
     const artefact = await ConsentService.validateConsentForDataPush(consentId);
 
     if (artefact === null) {
-      // Artefact not found or not yet fetched -- this is OK, ABDM may send
-      // health-info/request before the artefact on-fetch callback arrives.
-      // We proceed but log a warning.
-      console.warn(
-        `${LOG_PREFIX} No valid artefact found for consent ${consentId}. Proceeding with care context lookup.`,
-      );
-    }
-
-    // If artefact was explicitly blocked (REVOKED/EXPIRED returns null),
-    // we need to check if it was found but invalid
-    if (artefact === null) {
+      // Check if artefact exists but is not GRANTED (REVOKED / EXPIRED / DENIED)
       let existingArtefact = await ConsentArtefactModel.findOne({
         artefactId: consentId,
       });
@@ -987,14 +990,23 @@ const processHealthInfoRequest = async (
         existingArtefact.status !== ConsentArtefactStatus.GRANTED
       ) {
         console.error(
-          `${LOG_PREFIX} Consent ${consentId} is ${existingArtefact.status}. Cannot fulfill request.`,
+          `${LOG_PREFIX} Consent ${consentId} is ${existingArtefact.status}. Blocking data push.`,
         );
-
-        // Acknowledge anyway
         await acknowledgeHealthInfoRequest(request, requestId, abdmToken);
+        releaseLock();
+        clearTimeout(lockTimeout);
+        return;
+      }
 
-        // Cannot send transfer notification with empty statusResponses (ABDM requires non-empty).
-        // Request is acknowledged; ABDM will handle timeout/retry if needed.
+      if (!existingArtefact) {
+        // Artefact not in our DB at all. Block by default — never serve data
+        // without a verified GRANTED artefact.
+        console.error(
+          `${LOG_PREFIX} No consent artefact found for ${consentId}. Blocking data push (consent must exist and be GRANTED).`,
+        );
+        await acknowledgeHealthInfoRequest(request, requestId, abdmToken);
+        releaseLock();
+        clearTimeout(lockTimeout);
         return;
       }
     }

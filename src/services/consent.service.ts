@@ -48,11 +48,13 @@ const buildBroadArtefactQuery = (
 
 /**
  * Resolve all artefact IDs that match a query, merging with any explicitly
- * provided artefactIds. Deduplicates the result.
+ * provided artefactIds AND any IDs listed in the parent ConsentRequest's
+ * consentArtefacts array. Deduplicates the result.
  */
 const resolveArtefactIds = async (
   query: any,
   explicitIds: string[],
+  consentRequestId?: string,
 ): Promise<string[]> => {
   const fromMain = await ConsentArtefactModel.find(query)
     .select("artefactId")
@@ -60,11 +62,30 @@ const resolveArtefactIds = async (
   const fromPHR = await PHRConsentArtefactModel.find(query)
     .select("artefactId")
     .lean();
+
+  // Also pull artefact IDs stored on the ConsentRequest itself — these may
+  // reference artefacts whose consentRequestId field was resolved incorrectly
+  // during storage, so the broadQuery above wouldn't catch them.
+  let fromConsentRequest: string[] = [];
+  if (consentRequestId) {
+    const cr = await ConsentRequestModel.findOne({
+      $or: [{ consentRequestId }, { consentArtefacts: { $in: explicitIds } }],
+    })
+      .select("consentArtefacts")
+      .lean();
+    if (cr?.consentArtefacts && Array.isArray(cr.consentArtefacts)) {
+      fromConsentRequest = cr.consentArtefacts.filter(
+        (id: string) => id && typeof id === "string",
+      );
+    }
+  }
+
   return [
     ...new Set([
       ...explicitIds,
       ...fromMain.map((a: any) => a.artefactId),
       ...fromPHR.map((a: any) => a.artefactId),
+      ...fromConsentRequest,
     ]),
   ];
 };
@@ -389,14 +410,28 @@ export const handleHipNotify = async (
         : new Date();
 
       const broadQuery = buildBroadArtefactQuery(consentRequestId, artefactIds);
-      const idsToRevoke = await resolveArtefactIds(broadQuery, artefactIds);
+      const idsToRevoke = await resolveArtefactIds(
+        broadQuery,
+        artefactIds,
+        consentRequestId,
+      );
 
-      const result = await ConsentArtefactModel.updateMany(broadQuery, {
+      // Use the full resolved set (includes artefacts from ConsentRequest.consentArtefacts
+      // that may have wrong consentRequestId stored on the artefact document)
+      const fullRevokeQuery =
+        idsToRevoke.length > 0
+          ? { $or: [broadQuery, { artefactId: { $in: idsToRevoke } }] }
+          : broadQuery;
+
+      const result = await ConsentArtefactModel.updateMany(fullRevokeQuery, {
         $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
       });
-      const phrResult = await PHRConsentArtefactModel.updateMany(broadQuery, {
-        $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
-      });
+      const phrResult = await PHRConsentArtefactModel.updateMany(
+        fullRevokeQuery,
+        {
+          $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
+        },
+      );
       if (dbLookupId) {
         await ConsentRequestModel.updateOne(
           {
@@ -425,12 +460,21 @@ export const handleHipNotify = async (
 
     if (status === "EXPIRED") {
       const broadQuery = buildBroadArtefactQuery(consentRequestId, artefactIds);
-      const idsToExpire = await resolveArtefactIds(broadQuery, artefactIds);
+      const idsToExpire = await resolveArtefactIds(
+        broadQuery,
+        artefactIds,
+        consentRequestId,
+      );
 
-      await ConsentArtefactModel.updateMany(broadQuery, {
+      const fullExpireQuery =
+        idsToExpire.length > 0
+          ? { $or: [broadQuery, { artefactId: { $in: idsToExpire } }] }
+          : broadQuery;
+
+      await ConsentArtefactModel.updateMany(fullExpireQuery, {
         $set: { status: ConsentArtefactStatus.EXPIRED },
       });
-      await PHRConsentArtefactModel.updateMany(broadQuery, {
+      await PHRConsentArtefactModel.updateMany(fullExpireQuery, {
         $set: { status: ConsentArtefactStatus.EXPIRED },
       });
       if (idsToExpire.length > 0) {
@@ -449,12 +493,21 @@ export const handleHipNotify = async (
         : new Date();
 
       const broadQuery = buildBroadArtefactQuery(consentRequestId, artefactIds);
-      const idsToDeny = await resolveArtefactIds(broadQuery, artefactIds);
+      const idsToDeny = await resolveArtefactIds(
+        broadQuery,
+        artefactIds,
+        consentRequestId,
+      );
 
-      await ConsentArtefactModel.updateMany(broadQuery, {
+      const fullDenyQuery =
+        idsToDeny.length > 0
+          ? { $or: [broadQuery, { artefactId: { $in: idsToDeny } }] }
+          : broadQuery;
+
+      await ConsentArtefactModel.updateMany(fullDenyQuery, {
         $set: { status: ConsentArtefactStatus.DENIED, deniedAt },
       });
-      await PHRConsentArtefactModel.updateMany(broadQuery, {
+      await PHRConsentArtefactModel.updateMany(fullDenyQuery, {
         $set: { status: ConsentArtefactStatus.DENIED, deniedAt },
       });
       if (idsToDeny.length > 0) {
@@ -1560,12 +1613,12 @@ export const initiateConsentRequest = async (
             `${LOG_PREFIX} Updated existing patient profile for ABHA ID: ${params.abhaId}`,
           );
         } else {
-          await PatientModel.create({
-            ...updatePayload,
-            gender: "Unknown", // Default as ABDM profile may not provide this in this step
-          });
-          console.log(
-            `${LOG_PREFIX} Created new patient profile for ABHA ID: ${params.abhaId}`,
+          // Do NOT auto-create a new patient here. Ghost patients with no UHID,
+          // gender "Unknown", and a claimed ABHA address cause duplicate-key
+          // errors in the discovery/linking flow and pollute the patient list.
+          // Patients must be registered through the normal registration flow.
+          console.warn(
+            `${LOG_PREFIX} No existing patient found for ABHA ID: ${params.abhaId} — skipping auto-creation`,
           );
         }
       }

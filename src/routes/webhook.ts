@@ -114,6 +114,8 @@ webook.post("/api/v3/hiu/consent/request/on-init", handleConsentOnInit);
 // This now sends the required on-notify ACK back to ABDM
 webook.post("/api/v3/consent/request/hip/notify", handleConsentHipNotify);
 webook.post("/api/v3/hiu/consent/request/notify", handleConsentHipNotify);
+// Alias: ABDM may send HIU consent notifications (including REVOKED) to on-notify path
+webook.post("/api/v3/hiu/consent/request/on-notify", handleConsentHipNotify);
 
 // Consent Fetch callback: ABDM returns full artefact details
 webook.post("/:requestid/api/v3/hiu/consent/on-fetch", handleConsentOnFetch);

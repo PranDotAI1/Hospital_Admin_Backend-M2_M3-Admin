@@ -2,6 +2,12 @@ import { IPatient } from "../models/Patient";
 import { IScanShareVisit } from "../models/ScanShareVisit";
 import { facilityName } from "./constant";
 
+// ── Fallback values shown when visit data is missing ──────────────────────────
+const FALLBACK_DOCTOR = "Sharma";
+const FALLBACK_DEPT = "General Medicine";
+const FALLBACK_QUAL = "MBBS, MD";
+const FALLBACK_LICENSE = "MCI/NMC Reg.";
+
 const VITAL_DISPLAY_NAMES: Record<string, string> = {
   pulse: "Pulse",
   spo2: "SpO\u2082",
@@ -127,6 +133,20 @@ const css = `
     color: #1a3c5e;
   }
   .pfield-full { flex-basis: 100%; }
+  .physician-info { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
+  .pdept-tag {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: #2471a3;
+    background: #EFF6FF;
+    border: 1px solid #BFDBFE;
+    border-radius: 20px;
+    padding: 2px 10px;
+  }
+  .blood-group-val {
+    font-weight: 700;
+    color: #991B1B;
+  }
 
   /* ── Content Area ── */
   .content { padding: 20px 32px 12px; }
@@ -279,7 +299,9 @@ const css = `
   .sig-space { height: 32px; }
   .sig-line  { border-bottom: 1px solid #1a3c5e; margin-bottom: 4px; }
   .sig-name  { font-size: 11px; font-weight: 700; color: #1a3c5e; }
+  .sig-dept  { font-size: 9.5px; color: #2471a3; font-weight: 600; margin-top: 1px; }
   .sig-role  { font-size: 9.5px; color: #7F9BAF; margin-top: 1px; }
+  .sig-qual  { font-size: 9px; color: #A0AEC0; margin-top: 1px; }
   .doc-stamp { font-size: 9px; color: #A0AEC0; line-height: 1.8; text-align: right; }
 
   /* ── Sub-section heading ── */
@@ -343,8 +365,10 @@ const patientCard = (patient: IPatient, visit: IScanShareVisit): string => {
   const uhid = patient?.uhid || "";
   const abhaNumber = visit.abhaNumber || patient.ABHANumber || "";
   const abhaAddress = visit.abhaAddress || patient.abhaaddress || "";
-  const doctor = visit.doctorName || "";
-  const dept = visit.department || "";
+  const doctor = visit.doctorName || FALLBACK_DOCTOR;
+  const dept = visit.department || FALLBACK_DEPT;
+  const dob = patient.dob ? fmtDate(patient.dob) : "";
+  const bloodGrp = patient.bloodGroup || "";
   const visitDate = visit.visitDate
     ? fmtDate(new Date(visit.visitDate))
     : fmtDate(new Date());
@@ -357,6 +381,14 @@ const patientCard = (patient: IPatient, visit: IScanShareVisit): string => {
   if (age || gender)
     fields.push(
       `<div class="pfield"><span class="plabel">Age / Gender</span><span class="pvalue">${[age, gender].filter(Boolean).join(" / ")}</span></div>`,
+    );
+  if (dob)
+    fields.push(
+      `<div class="pfield"><span class="plabel">Date of Birth</span><span class="pvalue">${dob}</span></div>`,
+    );
+  if (bloodGrp)
+    fields.push(
+      `<div class="pfield"><span class="plabel">Blood Group</span><span class="pvalue blood-group-val">${bloodGrp}</span></div>`,
     );
   if (uhid)
     fields.push(
@@ -377,10 +409,12 @@ const patientCard = (patient: IPatient, visit: IScanShareVisit): string => {
     fields.push(
       `<div class="pfield"><span class="plabel">ABHA Address</span><span class="pvalue">${abhaAddress}</span></div>`,
     );
-  if (doctor)
-    fields.push(
-      `<div class="pfield pfield-full"><span class="plabel">Consulting Physician</span><span class="pvalue">Dr. ${doctor}${dept ? ` &middot; ${dept}` : ""}</span></div>`,
-    );
+  fields.push(
+    `<div class="pfield"><span class="plabel">Consulting Physician</span><div class="physician-info"><span class="pvalue">Dr. ${doctor}</span><span class="pdept-tag">${dept}</span></div></div>`,
+  );
+  fields.push(
+    `<div class="pfield"><span class="plabel">Reg No</span><span class="pvalue">${visit.doctorLicenseNumber || FALLBACK_LICENSE}</span></div>`,
+  );
 
   return `
   <div class="patient-card">
@@ -482,7 +516,9 @@ export const getPrescriptionTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">Dr. ${visit.doctorName || "Practitioner"}</div>
+        <div class="sig-name">Dr. ${visit.doctorName || FALLBACK_DOCTOR}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Prescribing Physician</div>
       </div>
     </div>
@@ -544,7 +580,9 @@ export const getDiagnosticReportTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">Dr. ${visit.doctorName || "Practitioner"}</div>
+        <div class="sig-name">Dr. ${visit.doctorName || FALLBACK_DOCTOR}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Consulting Physician</div>
       </div>
       <div class="doc-stamp">Generated: ${fmtDateTime(new Date())}</div>
@@ -695,7 +733,9 @@ export const getDischargeSummaryTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">${ds.doctorSignature || `Dr. ${visit.doctorName || "Practitioner"}`}</div>
+        <div class="sig-name">${ds.doctorSignature || `Dr. ${visit.doctorName || FALLBACK_DOCTOR}`}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Consulting Physician</div>
       </div>
     </div>
@@ -763,7 +803,9 @@ export const getOPConsultationTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">Dr. ${visit.doctorName || "Practitioner"}</div>
+        <div class="sig-name">Dr. ${visit.doctorName || FALLBACK_DOCTOR}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Consulting Physician</div>
       </div>
     </div>
@@ -879,7 +921,9 @@ export const getVitalsTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">Dr. ${visit.doctorName || "Practitioner"}</div>
+        <div class="sig-name">Dr. ${visit.doctorName || FALLBACK_DOCTOR}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Consulting Physician</div>
       </div>
     </div>
@@ -962,7 +1006,9 @@ export const getImmunizationTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">Dr. ${visit.doctorName || "Practitioner"}</div>
+        <div class="sig-name">Dr. ${visit.doctorName || FALLBACK_DOCTOR}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Consulting Physician</div>
       </div>
     </div>
@@ -1160,7 +1206,9 @@ export const getStructuredLabReportTemplate = (
       <div class="sig-block">
         <div class="sig-space"></div>
         <div class="sig-line"></div>
-        <div class="sig-name">Dr. ${visit.doctorName || "Practitioner"}</div>
+        <div class="sig-name">Dr. ${visit.doctorName || FALLBACK_DOCTOR}</div>
+        <div class="sig-dept">${visit.department || FALLBACK_DEPT}</div>
+        <div class="sig-qual">${visit.doctorQualification || FALLBACK_QUAL} &nbsp;|&nbsp; Reg. No: ${visit.doctorLicenseNumber || FALLBACK_LICENSE}</div>
         <div class="sig-role">Consulting Physician</div>
       </div>
       <div class="doc-stamp">Generated: ${fmtDateTime(new Date())}</div>

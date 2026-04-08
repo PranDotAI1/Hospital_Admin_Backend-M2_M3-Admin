@@ -1,7 +1,10 @@
-import http from 'http'; // Ensure you import the 'http' module
-import app from '../app';
-import dotenv from 'dotenv';
-import { setBridgeUrlOnStartup } from '../services/startup.service';
+import http from "http"; // Ensure you import the 'http' module
+import app from "../app";
+import dotenv from "dotenv";
+import {
+  setBridgeUrlOnStartup,
+  purgeRevokedExternalRecords,
+} from "../services/startup.service";
 
 dotenv.config();
 
@@ -53,6 +56,9 @@ function onListening(): void {
 
   // Automatically configure the ABDM bridge URL on every server start
   setBridgeUrlOnStartup();
+
+  // Purge any external health records left behind by missed revocation callbacks
+  purgeRevokedExternalRecords();
 }
 
 function gracefulShutdown(signal: string): void {

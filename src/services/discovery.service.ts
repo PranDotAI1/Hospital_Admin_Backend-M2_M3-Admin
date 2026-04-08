@@ -219,7 +219,13 @@ export const discoverPatient = async (
           await buildDiscoveryResult(item.patient, Array.from(item.matchedBy)),
         );
       }
-      return results;
+      // Only return ABHA-matched results if at least one has care contexts.
+      // Otherwise fall through to mobile/demographic search so the real
+      // patient (with care contexts) can be discovered.
+      const withCareContexts = results.filter((r) => r.careContexts.length > 0);
+      if (withCareContexts.length > 0) return withCareContexts;
+      // Clear resultsMap so mobile search starts fresh
+      resultsMap.clear();
     }
   }
 
@@ -486,13 +492,7 @@ export const identifyPatientForLink = async (
 };
 
 import { LinkOTPModel } from "../models/LinkOTP";
-import { TwilioOtpService } from "./twilio.otp.service";
-
-const USE_TWILIO = !!(
-  process.env.TWILIO_ACCOUNT_SID &&
-  process.env.TWILIO_AUTH_TOKEN &&
-  process.env.TWILIO_FROM_NUMBER
-);
+import { generateOTP, sendOTPUnified } from "./twilio.otp.service";
 
 export const generateLinkOTP = async (
   transactionId: string,
@@ -502,10 +502,7 @@ export const generateLinkOTP = async (
   abhaAddress?: string,
   abhaNumber?: string,
 ): Promise<string> => {
-  // Generate a cryptographically random 6-digit OTP
-  const otp = USE_TWILIO
-    ? TwilioOtpService.generateOTP()
-    : Math.floor(100000 + Math.random() * 900000).toString();
+  const otp = generateOTP();
 
   // Store OTP in DB first (so it's available for verification even if SMS delivery is slow)
   await LinkOTPModel.create({
@@ -519,20 +516,14 @@ export const generateLinkOTP = async (
     expiresAt: new Date(Date.now() + 10 * 60 * 1000),
   });
 
-  if (USE_TWILIO) {
-    const result = await TwilioOtpService.sendOTP(mobile, otp);
-    if (!result.success) {
-      console.error(
-        `Discovery: SMS delivery failed for transaction ${transactionId}, mobile ${mobile}: ${result.error}. OTP ${otp} stored in DB (verify number or upgrade Twilio account).`,
-      );
-    } else {
-      console.log(
-        `Discovery: OTP sent via Twilio for transaction ${transactionId}, mobile ${mobile}`,
-      );
-    }
+  const result = await sendOTPUnified(mobile, otp);
+  if (!result.success) {
+    console.error(
+      `Discovery: SMS delivery failed for transaction ${transactionId}, mobile ${mobile}: ${result.error}. OTP ${otp} stored in DB.`,
+    );
   } else {
-    console.warn(
-      `Discovery: Twilio not configured. OTP ${otp} for transaction ${transactionId}, mobile ${mobile} (dev mode — SMS not sent)`,
+    console.log(
+      `Discovery: OTP sent for transaction ${transactionId}, mobile ${mobile} (provider: ${(process.env.SMS_PROVIDER || "twilio").toLowerCase()})`,
     );
   }
 

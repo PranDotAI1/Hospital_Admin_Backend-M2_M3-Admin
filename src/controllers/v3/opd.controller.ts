@@ -630,6 +630,10 @@ export const completeRegistration = async (req: Request, res: Response) => {
         doctorName = doc
           ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim()
           : undefined;
+        if (doc?.licenseNumber)
+          updateData.doctorLicenseNumber = doc.licenseNumber;
+        if (doc?.qualification)
+          updateData.doctorQualification = doc.qualification;
       } else {
         doctorName = sanitizeString(rawDoc, 100);
       }
