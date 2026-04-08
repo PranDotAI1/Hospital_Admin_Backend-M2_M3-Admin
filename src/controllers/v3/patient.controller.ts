@@ -1299,6 +1299,70 @@ export const addVisit = async (req: Request, res: Response) => {
   }
 };
 
+export const checkAbhaNumber = async (req: Request, res: Response) => {
+  try {
+    const { abhaNumber, mobile } = req.body;
+
+    if (!abhaNumber) {
+      return res.status(STATUS_CODE.ERROR).json({
+        status: "error",
+        message: "abhaNumber is required",
+      });
+    }
+
+    const normalizedAbha = normalizeAbha(abhaNumber);
+    const formattedAbha = formatAbhaForStorage(abhaNumber);
+
+    const patient = await PatientModel.findOne({
+      $or: [
+        { ABHANumber: abhaNumber },
+        ...(normalizedAbha && normalizedAbha !== abhaNumber ? [{ ABHANumber: normalizedAbha }] : []),
+        ...(formattedAbha && formattedAbha !== abhaNumber ? [{ ABHANumber: formattedAbha }] : []),
+      ],
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    }).lean();
+
+    if (!patient) {
+      return res.status(STATUS_CODE.SUCCESS).json({
+        status: "success",
+        exists: false,
+        message: "ABHA number not found",
+      });
+    }
+
+    if (mobile && patient.mobile !== mobile) {
+      return res.status(STATUS_CODE.SUCCESS).json({
+        status: "success",
+        exists: true,
+        mobile: patient.mobile,
+        mobileMatch: false,
+        message: "The mobile number is different",
+      });
+    }
+
+    return res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      exists: true,
+      mobileMatch: mobile ? true : undefined,
+      message: "ABHA number exists",
+      data: {
+        uhid: patient.uhid,
+        _id: patient._id,
+        name: patient.name,
+        mobile: patient.mobile,
+        abhaLinked: !!(patient.ABHANumber || patient.abhaaddress),
+      },
+    });
+  } catch (error: any) {
+    console.error("Check ABHA Number error:", error);
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to check ABHA number",
+    });
+  }
+};
+
 export const checkExistingPatients = async (req: Request, res: Response) => {
   try {
     const body = req.body;
