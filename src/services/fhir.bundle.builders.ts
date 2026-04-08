@@ -2174,15 +2174,18 @@ const buildImmunizationRecordBundle = async (
   const bundleId = generateUUID();
   const patientUUID = generateUUID();
   const orgUUID = generateUUID();
+  const practitionerUUID = generateUUID();
   const compositionUUID = generateUUID();
   const immDocId = generateUUID();
   const patientName =
     patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
   const visitDateStr = toSafeLocaleDateString(visit.visitDate);
+  const doctor = visit.doctorName || "Doctor";
 
   const bundleEntries: any[] = [];
   bundleEntries.push(buildPatientResource(patient, patientUUID));
   bundleEntries.push(buildOrganizationResource(orgUUID));
+  bundleEntries.push(buildPractitionerResource(doctor, practitionerUUID));
 
   const sections: any[] = [];
   const immunization = optionalData?.assessment?.immunization;
@@ -2407,7 +2410,7 @@ const buildImmunizationRecordBundle = async (
           },
           subject: { reference: `urn:uuid:${patientUUID}` },
           date: new Date().toISOString(),
-          author: [{ reference: `urn:uuid:${orgUUID}` }],
+          author: [{ reference: `urn:uuid:${practitionerUUID}` }],
           title: `Immunization Record - ${patientName} - ${visitDateStr}`,
           custodian: { reference: `urn:uuid:${orgUUID}` },
           section: sections,
