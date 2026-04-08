@@ -8,7 +8,10 @@ export const connectDB = async (): Promise<mongoose.Connection> => {
         return mongoose.connection;
     }
     try {
-        const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/pran_ai';
+        const mongoURI = process.env.MONGO_URI;
+        if (!mongoURI) {
+            throw new Error('MONGO_URI environment variable is not defined');
+        }
         const connection = await mongoose.connect(mongoURI, {
           maxPoolSize: 10,
           minPoolSize: 2,
