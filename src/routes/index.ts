@@ -193,7 +193,11 @@ router.post("/patient/check-abha", checkToken, checkAbhaNumber);
 router.get("/patient/search", checkToken, searchPatients);
 router.post("/patient/:id/visit", checkToken, addVisit);
 router.patch("/patient/:id", checkToken, updatePatient);
-router.patch("/patient/:id/update-and-visit", checkToken, updatePatientAndAddVisit);
+router.patch(
+  "/patient/:id/update-and-visit",
+  checkToken,
+  updatePatientAndAddVisit,
+);
 router.post("/patient/:id/link-abha", checkToken, linkAbha);
 router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);
 router.get("/patient/:id", checkToken, getPatient);
