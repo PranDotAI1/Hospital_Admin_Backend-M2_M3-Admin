@@ -78,7 +78,7 @@ export const sendOTP = async (
     const message = await client.messages.create({
       to,
       from,
-      body: `${otp} is your OTP for linking health records with ${facility} via ABDM. Valid for 10 minutes. Do not share this code.`,
+      body: `${otp} is your OTP for linking health records with ${facility}. Valid for 10 minutes. Do not share this code.`,
     });
 
     console.log(
@@ -125,7 +125,7 @@ export const sendOTPviaFast2SMS = async (
         ? digits.slice(2)
         : digits.slice(-10);
 
-    const message = `${otp} is your OTP for linking health records with ${facility} via ABDM. Valid for 10 minutes. Do not share this code.`;
+    const message = `${otp} is your OTP for linking health records with ${facility}. Valid for 10 minutes. Do not share this code.`;
 
     console.log(
       `${F2S_LOG_PREFIX} Sending OTP SMS to ****${localNumber.slice(-4)}`,
