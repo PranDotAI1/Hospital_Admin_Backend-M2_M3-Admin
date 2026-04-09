@@ -228,7 +228,7 @@ const PatientSchema = new Schema<IPatient>(
   },
 );
 
-PatientSchema.index({ ABHANumber: 1 }, { unique: true, sparse: true });
+PatientSchema.index({ ABHANumber: 1 }, { sparse: true });
 PatientSchema.index({ abhaaddress: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ mobile: 1 });
 PatientSchema.index({ uhid: 1 }, { unique: true, sparse: true });

@@ -280,112 +280,6 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
       context,
     );
 
-    // --- Patient upsert: create or update patient record on scan ---
-    const scanAbhaNumber = scanShareVisitData.abhaNumber;
-    const scanAbhaAddress = scanShareVisitData.abhaAddress;
-
-    if (scanAbhaNumber || scanAbhaAddress) {
-      try {
-        const visitRef: IPatientVisitRef = {
-          visitId: scanShareVisit._id as Types.ObjectId,
-          tokenNumber: scanShareVisit.tokenNumber,
-          visitDate: scanShareVisit.visitDate,
-          visitStatus: scanShareVisit.visitStatus,
-        };
-
-        const fullName = scanShareVisitData.name || "";
-        const nameParts = fullName.trim().split(/\s+/);
-        const firstName = nameParts[0] || "";
-        const middleName =
-          nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : undefined;
-        const lastName =
-          nameParts.length > 1 ? nameParts[nameParts.length - 1] : undefined;
-
-        let addressString = "";
-        const addr = scanShareVisitData.address;
-        if (addr) {
-          const parts = [
-            addr.line,
-            addr.district,
-            addr.state,
-            addr.pincode,
-          ].filter(Boolean);
-          addressString = parts.join(", ");
-        }
-
-        // Look up by abhaAddress only (abha address is unique per patient identity)
-        let existingPatient = scanAbhaAddress
-          ? await PatientModel.findOne({
-              abhaaddress: scanAbhaAddress,
-              isMerged: { $ne: true },
-              status: { $ne: "merged" },
-            })
-          : null;
-
-        let patientId: Types.ObjectId;
-
-        if (existingPatient) {
-          await PatientModel.findByIdAndUpdate(existingPatient._id, {
-            $push: {
-              visits: { $each: [visitRef], $sort: { visitDate: -1 } },
-            },
-            $set: {
-              lastVisitDate: scanShareVisit.visitDate,
-              ...(fullName && { name: fullName }),
-              ...(scanShareVisitData.mobile && {
-                mobile: scanShareVisitData.mobile,
-              }),
-              ...(scanShareVisitData.dob && { dob: scanShareVisitData.dob }),
-              ...(scanShareVisitData.gender && {
-                gender: scanShareVisitData.gender,
-              }),
-              ...(addressString && { address: addressString }),
-              ...(addr?.pincode && { pincode: addr.pincode }),
-              ...(scanAbhaNumber && { ABHANumber: scanAbhaNumber }),
-              ...(scanShareVisitData.aadhaarNumber && {
-                aadhaarNumber: scanShareVisitData.aadhaarNumber,
-              }),
-            },
-            $inc: { totalVisits: 1 },
-          });
-          patientId = existingPatient._id as Types.ObjectId;
-          console.log("Patient record updated on scan:", existingPatient._id);
-        } else {
-          const newPatient = await PatientModel.create({
-            f_name: firstName || "Unknown",
-            m_name: middleName,
-            l_name: lastName,
-            name: fullName || "Unknown",
-            mobile: scanShareVisitData.mobile || "0000000000",
-            dob: scanShareVisitData.dob || "1900-01-01",
-            address: addressString,
-            ABHANumber: scanAbhaNumber || undefined,
-            abhaaddress: scanAbhaAddress || undefined,
-            gender: scanShareVisitData.gender,
-            status: "active",
-            pincode: addr?.pincode,
-            aadhaarNumber: scanShareVisitData.aadhaarNumber,
-            visits: [visitRef],
-            lastVisitDate: scanShareVisit.visitDate,
-            totalVisits: 1,
-          });
-          patientId = newPatient._id as Types.ObjectId;
-          console.log("New patient created on scan:", newPatient._id);
-        }
-
-        // Link visit back to patient
-        await ScanShareVisitModel.findByIdAndUpdate(scanShareVisit._id, {
-          $set: { patientId: patientId },
-        });
-      } catch (patientError: any) {
-        console.error("Error upserting patient on scan (non-blocking):", {
-          message: patientError.message,
-          abhaNumber: scanAbhaNumber,
-          abhaAddress: scanAbhaAddress,
-        });
-      }
-    }
-
     await callAbdmOnShare(
       abhaAddress,
       context,
@@ -793,13 +687,6 @@ export const completeRegistration = async (req: Request, res: Response) => {
         let patientId: Types.ObjectId;
 
         if (existingPatient) {
-          // Check if visit was already added by the webhook
-          const visitAlreadyLinked = (existingPatient.visits || []).some(
-            (v) =>
-              v.visitId &&
-              v.visitId.toString() === updatedVisit._id?.toString(),
-          );
-
           let shouldAddInsurance = false;
           if (hasNewInsurance) {
             const existingInsurances = existingPatient.insurance || [];
@@ -811,91 +698,40 @@ export const completeRegistration = async (req: Request, res: Response) => {
             shouldAddInsurance = !insuranceExists;
           }
 
-          if (visitAlreadyLinked) {
-            // Visit was already added by webhook — update it in place
-            const updateOps: any = {
-              $set: {
-                "visits.$[visitElem].visitStatus": visitRef.visitStatus,
-                "visits.$[visitElem].department": visitRef.department,
-                "visits.$[visitElem].departmentId": visitRef.departmentId,
-                "visits.$[visitElem].doctorName": visitRef.doctorName,
-                "visits.$[visitElem].doctorId": visitRef.doctorId,
-                "visits.$[visitElem].visitType": visitRef.visitType,
-                "visits.$[visitElem].description": visitRef.description,
-                "visits.$[visitElem].consultationFee": visitRef.consultationFee,
-                lastVisitDate: updatedVisit.visitDate,
-                ...(fullName && { name: fullName }),
-                ...(updatedVisit.mobile && { mobile: updatedVisit.mobile }),
-                ...(updatedVisit.dob && { dob: updatedVisit.dob }),
-                ...(updatedVisit.gender && { gender: updatedVisit.gender }),
-                ...(addressString && { address: addressString }),
-                ...(addr?.pincode && { pincode: addr.pincode }),
-                ...(scanShareVisit.abhaNumber && {
-                  ABHANumber: scanShareVisit.abhaNumber,
-                }),
-                ...(updatedVisit.aadhaarNumber && {
-                  aadhaarNumber: updatedVisit.aadhaarNumber,
-                }),
-              },
+          const updateOps: any = {
+            $push: {
+              visits: { $each: [visitRef], $sort: { visitDate: -1 } },
+            },
+            $set: {
+              lastVisitDate: updatedVisit.visitDate,
+              ...(fullName && { name: fullName }),
+              ...(updatedVisit.mobile && { mobile: updatedVisit.mobile }),
+              ...(updatedVisit.dob && { dob: updatedVisit.dob }),
+              ...(updatedVisit.gender && { gender: updatedVisit.gender }),
+              ...(addressString && { address: addressString }),
+              ...(addr?.pincode && { pincode: addr.pincode }),
+              ...(scanShareVisit.abhaNumber && {
+                ABHANumber: scanShareVisit.abhaNumber,
+              }),
+              ...(updatedVisit.aadhaarNumber && {
+                aadhaarNumber: updatedVisit.aadhaarNumber,
+              }),
+              ...(existingPatient.abdmLinkToken?.token && {
+                abdmLinkToken: existingPatient.abdmLinkToken,
+              }),
+            },
+            $inc: { totalVisits: 1 },
+          };
+
+          if (shouldAddInsurance) {
+            updateOps.$push.insurance = {
+              provider: visitInsurance?.provider,
+              policyNumber: visitInsurance?.policyNumber,
+              addedOn: new Date(),
             };
-
-            if (shouldAddInsurance) {
-              updateOps.$push = {
-                insurance: {
-                  provider: visitInsurance?.provider,
-                  policyNumber: visitInsurance?.policyNumber,
-                  addedOn: new Date(),
-                },
-              };
-            }
-
-            await PatientModel.findByIdAndUpdate(
-              existingPatient._id,
-              updateOps,
-              {
-                arrayFilters: [{ "visitElem.visitId": updatedVisit._id }],
-              },
-            );
-          } else {
-            // Visit not yet in patient — push it (fallback for older visits)
-            const updateOps: any = {
-              $push: {
-                visits: { $each: [visitRef], $sort: { visitDate: -1 } },
-              },
-              $set: {
-                lastVisitDate: updatedVisit.visitDate,
-                ...(fullName && { name: fullName }),
-                ...(updatedVisit.mobile && { mobile: updatedVisit.mobile }),
-                ...(updatedVisit.dob && { dob: updatedVisit.dob }),
-                ...(updatedVisit.gender && { gender: updatedVisit.gender }),
-                ...(addressString && { address: addressString }),
-                ...(addr?.pincode && { pincode: addr.pincode }),
-                ...(scanShareVisit.abhaNumber && {
-                  ABHANumber: scanShareVisit.abhaNumber,
-                }),
-                ...(updatedVisit.aadhaarNumber && {
-                  aadhaarNumber: updatedVisit.aadhaarNumber,
-                }),
-                ...(existingPatient.abdmLinkToken?.token && {
-                  abdmLinkToken: existingPatient.abdmLinkToken,
-                }),
-              },
-              $inc: { totalVisits: 1 },
-            };
-
-            if (shouldAddInsurance) {
-              updateOps.$push.insurance = {
-                provider: visitInsurance?.provider,
-                policyNumber: visitInsurance?.policyNumber,
-                addedOn: new Date(),
-              };
-            }
-
-            await PatientModel.findByIdAndUpdate(
-              existingPatient._id,
-              updateOps,
-            );
           }
+
+          await PatientModel.findByIdAndUpdate(existingPatient._id, updateOps);
 
           patientId = existingPatient._id as Types.ObjectId;
           console.log("Patient record updated:", existingPatient._id);
@@ -936,11 +772,9 @@ export const completeRegistration = async (req: Request, res: Response) => {
         }
 
         // Link the visit back to the patient record
-        if (!scanShareVisit.patientId) {
-          await ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
-            $set: { patientId: patientId },
-          });
-        }
+        await ScanShareVisitModel.findByIdAndUpdate(updatedVisit._id, {
+          $set: { patientId: patientId },
+        });
       } catch (patientError: any) {
         console.error("Error updating patient record:", {
           message: patientError.message,

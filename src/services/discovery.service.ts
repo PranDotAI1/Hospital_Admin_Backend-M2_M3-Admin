@@ -462,6 +462,8 @@ export const identifyPatientForLink = async (
   const mobileNorm = normalizeMobile(mobile);
   const byMobile = await PatientModel.find({
     $or: [{ mobile }, { mobile: mobileNorm }],
+    isMerged: { $ne: true },
+    status: { $ne: "merged" },
   }).lean();
   if (byMobile.length === 0) return null;
   if (byMobile.length === 1) return byMobile[0] as unknown as IPatient;
@@ -483,6 +485,11 @@ export const identifyPatientForLink = async (
       const pName = p.name || `${p.f_name || ""} ${p.l_name || ""}`.trim();
       if (pName && isNamePhoneticallySimilar(name, pName)) score += 3;
     }
+    // Prefer patients WITHOUT ABHA address — they are the ones being linked
+    // for the first time. Patients already linked should not be re-identified.
+    const hasAbha = !!(p as any).abhaaddress?.trim();
+    if (!hasAbha) score += 5;
+
     if (score > bestScore) {
       bestScore = score;
       best = p;

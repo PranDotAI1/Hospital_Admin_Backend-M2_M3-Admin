@@ -134,13 +134,23 @@ export const registerPatient = async (req: Request, res: Response) => {
 
     // Safety: if we found a match by ABHA address, also verify the ABHA numbers match
     //         (compare normalized forms: XX-XXXX-XXXX-XXXX ↔ XXXXXXXXXXXXXX)
-    if (existingWithAbhaAddress && abhaNumber && existingWithAbhaAddress.ABHANumber) {
+    if (
+      existingWithAbhaAddress &&
+      abhaNumber &&
+      existingWithAbhaAddress.ABHANumber
+    ) {
       const payloadAbhaNorm = normalizeAbha(abhaNumber);
-      const existingAbhaNorm = normalizeAbha(existingWithAbhaAddress.ABHANumber);
-      if (payloadAbhaNorm && existingAbhaNorm && payloadAbhaNorm !== existingAbhaNorm) {
+      const existingAbhaNorm = normalizeAbha(
+        existingWithAbhaAddress.ABHANumber,
+      );
+      if (
+        payloadAbhaNorm &&
+        existingAbhaNorm &&
+        payloadAbhaNorm !== existingAbhaNorm
+      ) {
         console.warn(
           `registerPatient: ABHA address match but ABHA number mismatch! ` +
-          `Payload=${abhaNumber} vs Existing=${existingWithAbhaAddress.ABHANumber}. Skipping merge.`,
+            `Payload=${abhaNumber} vs Existing=${existingWithAbhaAddress.ABHANumber}. Skipping merge.`,
         );
         existingWithAbhaAddress = null; // Don't merge — create new patient instead
       }
@@ -168,7 +178,8 @@ export const registerPatient = async (req: Request, res: Response) => {
         const doc = await DoctorModel.findById(docId).lean();
         if (doc) {
           visitInfo.doctorId = docId;
-          visitInfo.doctorName = `${doc.firstName || ""} ${doc.lastName || ""}`.trim();
+          visitInfo.doctorName =
+            `${doc.firstName || ""} ${doc.lastName || ""}`.trim();
         }
       }
       if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
@@ -245,7 +256,8 @@ export const registerPatient = async (req: Request, res: Response) => {
       const doc = await DoctorModel.findById(docId).lean();
       if (doc) {
         visitInfo.doctorId = docId;
-        visitInfo.doctorName = `${doc.firstName || ""} ${doc.lastName || ""}`.trim();
+        visitInfo.doctorName =
+          `${doc.firstName || ""} ${doc.lastName || ""}`.trim();
       }
     }
     if (body.departmentId && Types.ObjectId.isValid(body.departmentId)) {
@@ -367,17 +379,6 @@ export const linkAbha = async (req: Request, res: Response) => {
         status: "error",
         message: "Patient already has ABHA linked",
         existingAbhaNumber: patient.ABHANumber,
-      });
-    }
-
-    const existingAbhaPatient = await PatientModel.findOne({
-      ABHANumber: abhaNumber,
-    });
-    if (existingAbhaPatient) {
-      return res.status(STATUS_CODE.ERROR).json({
-        status: "error",
-        message: "This ABHA number is already linked to another patient",
-        existingUhid: existingAbhaPatient.uhid,
       });
     }
 
@@ -816,9 +817,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
         profileDetails.abhaAddress ?? (profileDetails as any).abha_address;
       if (abhaAddr) {
         updateData.abhaaddress = abhaAddr;
-        // Clear the stale link token — it was issued for the previous ABHA address.
-        // A fresh token will be requested for the new ABHA address before linking CareContexts.
-        updateData.$unset = { ...(updateData.$unset || {}), abdmLinkToken: 1 };
       }
       if (profileDetails.profilePhoto)
         updateData.profilePhoto = profileDetails.profilePhoto;
@@ -845,6 +843,15 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
 
       const masterPatient = sourcePatient;
       const victimPatient = targetPatient;
+
+      // Only clear the link token if master's ABHA address is actually changing
+      if (
+        updateData.abhaaddress &&
+        masterPatient.abhaaddress &&
+        updateData.abhaaddress !== masterPatient.abhaaddress
+      ) {
+        updateData.$unset = { ...(updateData.$unset || {}), abdmLinkToken: 1 };
+      }
 
       const safeConcat = (
         masterVal: string | undefined,
@@ -921,7 +928,14 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
         };
       }
 
-      // 2. Reassign Foreign Keys: VICTIM -> MASTER (OPTIMIZED: Parallel updates)
+      // 2. Capture victim's care context IDs BEFORE reassignment
+      const victimCareContextIds = await CareContextModel.find(
+        { patientId: victimPatient._id },
+        { _id: 1 },
+      ).lean();
+      const victimCcIds = victimCareContextIds.map((cc: any) => cc._id);
+
+      // Reassign Foreign Keys: VICTIM -> MASTER (OPTIMIZED: Parallel updates)
       const collections = [
         CareContextModel,
         ScanShareVisitModel,
@@ -1014,14 +1028,29 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
           .catch(() => {}),
       ]);
 
-      // 3. Mark VICTIM as Merged
+      // 3. Mark VICTIM as Merged and clear unique abhaaddress so MASTER can take it
       await PatientModel.findByIdAndUpdate(victimPatient._id, {
         $set: {
           status: "merged",
           isMerged: true,
           mergedToPatient: masterPatient._id,
         },
+        $unset: {
+          abhaaddress: 1,
+        },
       });
+
+      // 3b. Clear target abhaaddress from ANY other patient still holding it
+      //     (handles ghost/third-party holders missed by the $or lookup)
+      if (updateData.abhaaddress) {
+        await PatientModel.updateMany(
+          {
+            abhaaddress: updateData.abhaaddress,
+            _id: { $ne: masterPatient._id },
+          },
+          { $unset: { abhaaddress: 1 } },
+        );
+      }
 
       // 4. Update MASTER with new data
       const updatedMaster = await PatientModel.findByIdAndUpdate(
@@ -1035,49 +1064,99 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       session.endSession();
       session = undefined;
 
-      // 5. OPTIMIZED: Fast care context operations, then background linking
+      // 5. Handle ONLY the victim's reassigned care contexts + create missing ones for victim's visits
       let careContextsCreated = 0;
       if (updatedMaster?.abhaaddress) {
         try {
-          // STEP 1: FAST - Bulk update existing care contexts (including reassigned from victim)
-          const updatedCount =
-            await CareContextService.bulkUpdateCareContextsForPatient(
-              updatedMaster._id,
-              updatedMaster.abhaaddress,
+          // STEP 1: Update abhaAddress ONLY on victim's reassigned care contexts
+          if (victimCcIds.length > 0) {
+            const updatedCount = await CareContextModel.updateMany(
+              {
+                _id: { $in: victimCcIds },
+                linkingStatus: {
+                  $nin: [CareContextStatus.LINKED, CareContextStatus.NOTIFIED],
+                },
+              },
+              {
+                $set: {
+                  abhaAddress: updatedMaster.abhaaddress,
+                  patientReference:
+                    updatedMaster.uhid || updatedMaster._id.toString(),
+                },
+              },
             );
-          console.log(
-            `mergeAbhaPatient: Bulk updated ${updatedCount} existing CareContexts with ABHA`,
-          );
+            console.log(
+              `mergeAbhaPatient: Updated ABHA on ${updatedCount.modifiedCount} of ${victimCcIds.length} victim CareContexts`,
+            );
+          }
 
-          // STEP 2: FAST - Create missing care contexts WITHOUT linking
+          // STEP 2: Create missing care contexts for victim's visits that don't have one yet
+          //         (victim's visits were pushed into master, so createCareContextsForExistingVisits
+          //          will find visits without a care context and create them)
           const createResult =
             await CareContextService.createCareContextsForExistingVisits(
               updatedMaster._id,
               updatedMaster.abhaaddress,
-              false, // Don't link here - we'll link all pending in background
+              false,
             );
           careContextsCreated = createResult.created;
           console.log(
             `mergeAbhaPatient: Created ${careContextsCreated} new CareContexts`,
           );
 
-          // STEP 3: SLOW - Link all pending care contexts to ABDM (background)
-          const pid = updatedMaster._id;
-          const abha = updatedMaster.abhaaddress;
-          setImmediate(async () => {
-            try {
-              const linkedCount =
-                await CareContextService.linkPendingCareContexts(pid);
-              console.log(
-                `mergeAbhaPatient: Background - Linked ${linkedCount} CareContexts to ABDM`,
-              );
-            } catch (bgErr: any) {
-              console.error(
-                "mergeAbhaPatient: Background linking error:",
-                bgErr.message,
-              );
-            }
-          });
+          // STEP 3: Link only the victim's reassigned PENDING care contexts + newly created ones
+          //         Do NOT touch master's existing care contexts
+          const pendingVictimCcs =
+            victimCcIds.length > 0
+              ? await CareContextModel.find({
+                  _id: { $in: victimCcIds },
+                  linkingStatus: CareContextStatus.PENDING,
+                  linkAttempts: { $lt: 5 },
+                }).lean()
+              : [];
+
+          // Also find any newly created care contexts (created just now, no linking yet)
+          const newlyCreatedCcs =
+            careContextsCreated > 0
+              ? await CareContextModel.find({
+                  patientId: updatedMaster._id,
+                  linkingStatus: CareContextStatus.PENDING,
+                  _id: { $nin: victimCcIds },
+                  createdAt: { $gte: new Date(Date.now() - 60000) }, // created in last minute
+                }).lean()
+              : [];
+
+          const ccsToLink = [...pendingVictimCcs, ...newlyCreatedCcs];
+          if (ccsToLink.length > 0) {
+            const ccIdsToLink = ccsToLink.map((cc: any) => cc._id);
+            setImmediate(async () => {
+              try {
+                const { AbdmTokenService } =
+                  await import("../../services/abdm.token.service");
+                const abdmToken = await AbdmTokenService.getToken();
+                let linked = 0;
+                for (const ccId of ccIdsToLink) {
+                  const success = await CareContextService.linkCareContext(
+                    ccId,
+                    abdmToken,
+                  );
+                  if (success) linked++;
+                }
+                console.log(
+                  `mergeAbhaPatient: Background - Linked ${linked}/${ccIdsToLink.length} victim/new CareContexts to ABDM`,
+                );
+              } catch (bgErr: any) {
+                console.error(
+                  "mergeAbhaPatient: Background linking error:",
+                  bgErr.message,
+                );
+              }
+            });
+          } else {
+            console.log(
+              "mergeAbhaPatient: No victim/new CareContexts need linking",
+            );
+          }
         } catch (ccErr) {
           console.error("Merge: Care context creation error:", ccErr);
         }
@@ -1098,47 +1177,80 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
     session.endSession();
     session = undefined;
 
+    // Only clear the link token if target's ABHA address is actually changing
+    if (
+      updateData.abhaaddress &&
+      targetPatient.abhaaddress &&
+      updateData.abhaaddress !== targetPatient.abhaaddress
+    ) {
+      updateData.$unset = { ...(updateData.$unset || {}), abdmLinkToken: 1 };
+    }
+
+    // Clear target abhaaddress from any other patient holding it
+    if (updateData.abhaaddress) {
+      await PatientModel.updateMany(
+        {
+          abhaaddress: updateData.abhaaddress,
+          _id: { $ne: targetPatient._id },
+        },
+        { $unset: { abhaaddress: 1 } },
+      );
+    }
+
     const updatedTarget = await PatientModel.findByIdAndUpdate(
       targetPatient._id,
       updateData,
       { new: true },
     );
 
-    // OPTIMIZED: Fast care context operations, then background linking
+    // OPTIMIZED: Only update/link care contexts that aren't already linked
     let careContextsCreated = 0;
     if (updatedTarget?.abhaaddress) {
       try {
-        // STEP 1: FAST - Bulk update existing care contexts with ABHA
-        const updatedCount =
-          await CareContextService.bulkUpdateCareContextsForPatient(
-            updatedTarget._id,
-            updatedTarget.abhaaddress,
-          );
+        // STEP 1: Update abhaAddress only on non-linked care contexts
+        const updatedCount = await CareContextModel.updateMany(
+          {
+            patientId: updatedTarget._id,
+            linkingStatus: {
+              $nin: [CareContextStatus.LINKED, CareContextStatus.NOTIFIED],
+            },
+            $or: [
+              { abhaAddress: { $exists: false } },
+              { abhaAddress: { $ne: updatedTarget.abhaaddress } },
+            ],
+          },
+          {
+            $set: {
+              abhaAddress: updatedTarget.abhaaddress,
+              patientReference:
+                updatedTarget.uhid || updatedTarget._id.toString(),
+            },
+          },
+        );
         console.log(
-          `mergeAbhaPatient: Bulk updated ${updatedCount} existing CareContexts with ABHA`,
+          `mergeAbhaPatient: Updated ABHA on ${updatedCount.modifiedCount} non-linked CareContexts`,
         );
 
-        // STEP 2: FAST - Create missing care contexts WITHOUT linking
+        // STEP 2: Create missing care contexts WITHOUT linking
         const createResult =
           await CareContextService.createCareContextsForExistingVisits(
             updatedTarget._id,
             updatedTarget.abhaaddress,
-            false, // Don't link here - we'll link all pending in background
+            false,
           );
         careContextsCreated = createResult.created;
         console.log(
           `mergeAbhaPatient: Created ${careContextsCreated} new CareContexts`,
         );
 
-        // STEP 3: SLOW - Link all pending care contexts to ABDM (background)
+        // STEP 3: Link only PENDING care contexts in background
         const pid = updatedTarget._id;
-        const abha = updatedTarget.abhaaddress;
         setImmediate(async () => {
           try {
             const linkedCount =
               await CareContextService.linkPendingCareContexts(pid);
             console.log(
-              `mergeAbhaPatient: Background - Linked ${linkedCount} CareContexts to ABDM`,
+              `mergeAbhaPatient: Background - Linked ${linkedCount} PENDING CareContexts to ABDM`,
             );
           } catch (bgErr: any) {
             console.error(
@@ -1206,10 +1318,9 @@ export const addVisit = async (req: Request, res: Response) => {
       });
     }
 
-
     const visitType = sanitizeString(body.visitType, 100);
     const description = sanitizeString(body.description, 1000);
-    
+
     let departmentId: Types.ObjectId | undefined;
     let departmentName: string | undefined;
     let doctorId: Types.ObjectId | undefined;
@@ -1228,12 +1339,18 @@ export const addVisit = async (req: Request, res: Response) => {
     }
 
     // 2. Resolve Doctor
-    const rawDoc = body.doctorId || body.doctorName || body.consultingDoctorId || body.consultingDoctor;
+    const rawDoc =
+      body.doctorId ||
+      body.doctorName ||
+      body.consultingDoctorId ||
+      body.consultingDoctor;
     if (rawDoc) {
       if (Types.ObjectId.isValid(rawDoc)) {
         doctorId = new Types.ObjectId(rawDoc);
         const doc = await DoctorModel.findById(doctorId).lean();
-        doctorName = doc ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim() : undefined;
+        doctorName = doc
+          ? `${doc.firstName || ""} ${doc.lastName || ""}`.trim()
+          : undefined;
       } else {
         doctorName = sanitizeString(rawDoc, 100);
       }
@@ -1241,7 +1358,7 @@ export const addVisit = async (req: Request, res: Response) => {
 
     const visitDate = new Date();
     const visitId = new Types.ObjectId();
-    
+
     const visitInfo: IPatientVisitRef = {
       visitId,
       visitDate,
@@ -1271,7 +1388,7 @@ export const addVisit = async (req: Request, res: Response) => {
     const updatedPatient = await PatientModel.findByIdAndUpdate(
       patient._id,
       updatePayload,
-      { new: true }
+      { new: true },
     );
 
     if (!updatedPatient) {
@@ -1316,8 +1433,12 @@ export const checkAbhaNumber = async (req: Request, res: Response) => {
     const patient = await PatientModel.findOne({
       $or: [
         { ABHANumber: abhaNumber },
-        ...(normalizedAbha && normalizedAbha !== abhaNumber ? [{ ABHANumber: normalizedAbha }] : []),
-        ...(formattedAbha && formattedAbha !== abhaNumber ? [{ ABHANumber: formattedAbha }] : []),
+        ...(normalizedAbha && normalizedAbha !== abhaNumber
+          ? [{ ABHANumber: normalizedAbha }]
+          : []),
+        ...(formattedAbha && formattedAbha !== abhaNumber
+          ? [{ ABHANumber: formattedAbha }]
+          : []),
       ],
       isMerged: { $ne: true },
       status: { $ne: "merged" },
@@ -1559,9 +1680,7 @@ export const updatePatient = async (req: Request, res: Response) => {
         _id: updatedPatient._id,
         name: updatedPatient.name,
         mobile: updatedPatient.mobile,
-        abhaLinked: !!(
-          updatedPatient.ABHANumber || updatedPatient.abhaaddress
-        ),
+        abhaLinked: !!(updatedPatient.ABHANumber || updatedPatient.abhaaddress),
         patientData: updatedPatient,
       },
     });
@@ -1761,9 +1880,7 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
         _id: updatedPatient._id,
         name: updatedPatient.name,
         mobile: updatedPatient.mobile,
-        abhaLinked: !!(
-          updatedPatient.ABHANumber || updatedPatient.abhaaddress
-        ),
+        abhaLinked: !!(updatedPatient.ABHANumber || updatedPatient.abhaaddress),
         visit: visitInfo,
         patientData: updatedPatient,
       },

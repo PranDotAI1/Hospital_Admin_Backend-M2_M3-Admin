@@ -24,7 +24,13 @@ import { AbdmTokenService } from "../../services/abdm.token.service";
 // to retrieve it from the discover step via the shared transactionId.
 const discoveryAbhaCache = new Map<
   string,
-  { abhaAddress?: string; abhaNumber?: string; ts: number }
+  {
+    abhaAddress?: string;
+    abhaNumber?: string;
+    patientName?: string;
+    patientId?: string;
+    ts: number;
+  }
 >();
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -32,9 +38,18 @@ const cacheDiscoveryAbha = (
   txnId: string,
   abhaAddress?: string,
   abhaNumber?: string,
+  patientName?: string,
+  patientId?: string,
 ) => {
   if (!txnId) return;
-  discoveryAbhaCache.set(txnId, { abhaAddress, abhaNumber, ts: Date.now() });
+  const existing = discoveryAbhaCache.get(txnId);
+  discoveryAbhaCache.set(txnId, {
+    abhaAddress: abhaAddress ?? existing?.abhaAddress,
+    abhaNumber: abhaNumber ?? existing?.abhaNumber,
+    patientName: patientName ?? existing?.patientName,
+    patientId: patientId ?? existing?.patientId,
+    ts: Date.now(),
+  });
   // Evict stale entries (fire-and-forget, max 100 checked per call)
   let checked = 0;
   for (const [key, val] of discoveryAbhaCache) {
@@ -45,7 +60,14 @@ const cacheDiscoveryAbha = (
 
 const getCachedDiscoveryAbha = (
   txnId: string,
-): { abhaAddress?: string; abhaNumber?: string } | undefined => {
+):
+  | {
+      abhaAddress?: string;
+      abhaNumber?: string;
+      patientName?: string;
+      patientId?: string;
+    }
+  | undefined => {
   if (!txnId) return undefined;
   const entry = discoveryAbhaCache.get(txnId);
   if (!entry) return undefined;
@@ -53,7 +75,12 @@ const getCachedDiscoveryAbha = (
     discoveryAbhaCache.delete(txnId);
     return undefined;
   }
-  return { abhaAddress: entry.abhaAddress, abhaNumber: entry.abhaNumber };
+  return {
+    abhaAddress: entry.abhaAddress,
+    abhaNumber: entry.abhaNumber,
+    patientName: entry.patientName,
+    patientId: entry.patientId,
+  };
 };
 
 export const onDiscover = async (req: Request, res: Response) => {
@@ -157,8 +184,31 @@ export const onDiscover = async (req: Request, res: Response) => {
             } as import("../../services/discovery.service").LinkInitProfile;
             const { abhaAddress: cachedAddr, abhaNumber: cachedNum } =
               extractAbhaFromProfile(discoverProfile);
+            const cachedName = patient.name?.trim() || undefined;
             if (txnIdFromRequest) {
-              cacheDiscoveryAbha(txnIdFromRequest, cachedAddr, cachedNum);
+              // Cache the patient ID from discover so link/init can identify the
+              // EXACT same patient even if ABDM strips the referenceNumber.
+              let cachedPatientId: string | undefined;
+              if (patientResults.length === 1) {
+                const discoverUhid = patientResults[0].referenceNumber;
+                const discoverPatient = await PatientModel.findOne({
+                  uhid: discoverUhid,
+                  isMerged: { $ne: true },
+                  status: { $ne: "merged" },
+                })
+                  .select("_id")
+                  .lean();
+                if (discoverPatient) {
+                  cachedPatientId = discoverPatient._id.toString();
+                }
+              }
+              cacheDiscoveryAbha(
+                txnIdFromRequest,
+                cachedAddr,
+                cachedNum,
+                cachedName,
+                cachedPatientId,
+              );
             }
             console.log(
               "Discovery: onDiscover matched",
@@ -166,6 +216,8 @@ export const onDiscover = async (req: Request, res: Response) => {
               "patient(s) with care contexts — cached ABHA:",
               cachedAddr || "(none)",
               cachedNum || "(none)",
+              "name:",
+              cachedName || "(none)",
               "(persist deferred to link/confirm)",
             );
           } catch (_) {
@@ -299,7 +351,50 @@ export const onLinkInit = async (req: Request, res: Response) => {
 
       console.log("Discovery: onLinkInit profile —", JSON.stringify(profile));
 
-      const dbPatient = await DiscoveryService.identifyPatientForLink(profile);
+      // --- Multi-strategy patient identification ---
+      // Priority 1: Care context references (most reliable — they're OUR data returned from discover)
+      let dbPatient: import("../../models/Patient").IPatient | null = null;
+      if (careContextRefs.length > 0) {
+        const ccDoc = await CareContextModel.findOne({
+          careContextReference: { $in: careContextRefs },
+        }).lean();
+        if (ccDoc?.patientId) {
+          dbPatient = (await PatientModel.findById(
+            ccDoc.patientId,
+          ).lean()) as any;
+          if (dbPatient) {
+            console.log(
+              "Discovery: onLinkInit resolved patient via care context ref",
+              (dbPatient as any).uhid || ccDoc.patientId,
+            );
+          }
+        }
+      }
+      // Priority 2: Cached patientId from discover step (same transactionId)
+      if (!dbPatient && txnId) {
+        const cachedDiscover = getCachedDiscoveryAbha(txnId);
+        if (cachedDiscover?.patientId) {
+          dbPatient = (await PatientModel.findById(
+            cachedDiscover.patientId,
+          ).lean()) as any;
+          if (dbPatient) {
+            console.log(
+              "Discovery: onLinkInit resolved patient via discover cache",
+              (dbPatient as any).uhid || cachedDiscover.patientId,
+            );
+          }
+        }
+      }
+      // Priority 3: identifyPatientForLink (UHID / ABHA / mobile+demographics fallback)
+      if (!dbPatient) {
+        dbPatient = await DiscoveryService.identifyPatientForLink(profile);
+        if (dbPatient) {
+          console.log(
+            "Discovery: onLinkInit resolved patient via identifyPatientForLink",
+            (dbPatient as any).uhid || (dbPatient as any)._id,
+          );
+        }
+      }
 
       const onInitPayload: any = {
         transactionId: txnId,
@@ -323,6 +418,12 @@ export const onLinkInit = async (req: Request, res: Response) => {
         // Retrieve ABHA number from the discover step's cached data (same transactionId).
         const cached = getCachedDiscoveryAbha(txnId);
         const abhaNumber = abhaNumFromProfile || cached?.abhaNumber;
+
+        // Store the ABDM profile name in cache so link/confirm can use it
+        const abdmName = profile.name?.trim();
+        if (txnId && abdmName) {
+          cacheDiscoveryAbha(txnId, undefined, undefined, abdmName);
+        }
 
         // NOTE: ABHA data is NOT persisted here. Link/init only sends OTP.
         // ABHA address/number will be saved only after OTP verification in link/confirm.
@@ -469,42 +570,72 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
             message: "Patient not found",
           };
         } else {
-          // --- Persist ABHA address/number on patient upon successful link confirm ---
+          // --- Persist ABHA address/number and name on patient upon successful link confirm ---
           const abhaUpdateData: Record<string, unknown> = {};
-          if (abhaAddress && abhaAddress !== (patient as any).abhaaddress) {
+          if (
+            abhaAddress &&
+            abhaAddress.toLowerCase() !==
+              ((patient as any).abhaaddress || "").toLowerCase()
+          ) {
             abhaUpdateData.abhaaddress = abhaAddress;
           }
           if (abhaNumber && abhaNumber !== (patient as any).ABHANumber) {
             abhaUpdateData.ABHANumber = abhaNumber;
           }
-          // Ensure name field is populated — the ABDM name should have been stored
-          // during onLinkInit. If it was missed (e.g. name was empty), fallback to f_name/l_name.
+          // Update name from ABDM profile (cached from onDiscover where ABDM sends it)
           if (DISCOVERY_UPDATE_PATIENT_NAME) {
+            const cachedForConfirm = getCachedDiscoveryAbha(finalTransactionId);
+            const abdmName = cachedForConfirm?.patientName;
             const storedName = (patient as any).name?.trim();
-            if (!storedName) {
-              const fullName =
-                `${(patient as any).f_name || ""} ${(patient as any).l_name || ""}`.trim();
-              if (fullName) {
-                abhaUpdateData.name = fullName;
-                console.log(
-                  "Discovery: onLinkConfirm updating patient name (fallback from f_name/l_name):",
-                  fullName,
-                );
+            if (abdmName && abdmName !== storedName) {
+              abhaUpdateData.name = abdmName;
+              // Split into f_name / m_name / l_name
+              const parts = abdmName.trim().split(/\s+/);
+              if (parts.length === 1) {
+                abhaUpdateData.f_name = parts[0];
+                abhaUpdateData.m_name = "";
+                abhaUpdateData.l_name = "";
+              } else if (parts.length === 2) {
+                abhaUpdateData.f_name = parts[0];
+                abhaUpdateData.m_name = "";
+                abhaUpdateData.l_name = parts[1];
+              } else {
+                abhaUpdateData.f_name = parts[0];
+                abhaUpdateData.m_name = parts.slice(1, -1).join(" ");
+                abhaUpdateData.l_name = parts[parts.length - 1];
               }
+              console.log(
+                "Discovery: onLinkConfirm updating patient name from ABDM profile:",
+                abdmName,
+                "->",
+                {
+                  f_name: abhaUpdateData.f_name,
+                  m_name: abhaUpdateData.m_name,
+                  l_name: abhaUpdateData.l_name,
+                },
+              );
+            } else {
+              console.log(
+                "Discovery: onLinkConfirm name — cached:",
+                abdmName || "(none)",
+                "| stored:",
+                storedName || "(none)",
+                "| finalTransactionId:",
+                finalTransactionId,
+              );
             }
           }
-          if (Object.keys(abhaUpdateData).length > 0) {
-            abhaUpdateData.abhaLinkedAt = new Date();
-            await PatientModel.updateOne(
-              { _id: patient._id },
-              { $set: abhaUpdateData },
-            );
-            console.log(
-              "Discovery: Persisted ABHA data on patient at link confirm",
-              patient.uhid || patient._id,
-              abhaUpdateData,
-            );
-          }
+          // Always record abhaLinkedAt on successful OTP verification
+          abhaUpdateData.abhaLinkedAt = new Date();
+          await PatientModel.updateOne(
+            { _id: patient._id },
+            { $set: abhaUpdateData },
+          );
+          console.log(
+            "Discovery: Persisted ABHA data on patient at link confirm",
+            patient.uhid || patient._id,
+            abhaUpdateData,
+          );
 
           if (careContextRefs && careContextRefs.length > 0) {
             const ccUpdateData: Record<string, unknown> = {
