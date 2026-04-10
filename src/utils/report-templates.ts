@@ -6,7 +6,7 @@ import { facilityName } from "./constant";
 const FALLBACK_DOCTOR = "Sharma";
 const FALLBACK_DEPT = "General Medicine";
 const FALLBACK_QUAL = "MBBS, MD";
-const FALLBACK_LICENSE = "MCI/NMC Reg.";
+const FALLBACK_LICENSE = "MCI/NMC Reg. 1629";
 
 const VITAL_DISPLAY_NAMES: Record<string, string> = {
   pulse: "Pulse",
