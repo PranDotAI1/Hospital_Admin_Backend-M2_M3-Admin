@@ -2455,6 +2455,8 @@ const buildHealthDocumentRecordBundle = (
         fileName?: string;
         mimeType?: string;
         uploadDate?: Date | string;
+        fileData?: string | Buffer | { buffer: ArrayBuffer };
+        fileUrl?: string;
       }>
     | undefined;
 
@@ -2471,6 +2473,21 @@ const buildHealthDocumentRecordBundle = (
 
     // Create a DocumentReference resource for each uploaded document
     for (const doc of docUploads) {
+      // Resolve base64 data from fileData
+      let base64Data = "";
+      if (doc.fileData) {
+        if (typeof doc.fileData === "string") {
+          base64Data = doc.fileData;
+        } else if (Buffer.isBuffer(doc.fileData)) {
+          base64Data = doc.fileData.toString("base64");
+        } else if ((doc.fileData as any).buffer) {
+          base64Data = Buffer.from((doc.fileData as any).buffer).toString(
+            "base64",
+          );
+        }
+      }
+      if (!base64Data) continue; // Skip docs without actual content
+
       const docRefUUID = generateUUID();
       docRefUUIDs.push(docRefUUID);
       bundleEntries.push({
@@ -2484,12 +2501,13 @@ const buildHealthDocumentRecordBundle = (
             ],
           },
           status: "current",
+          docStatus: "final",
           type: {
             coding: [
               {
                 system: "http://snomed.info/sct",
-                code: "371530004",
-                display: "Clinical consultation report",
+                code: "419891008",
+                display: "Record artifact",
               },
             ],
           },
@@ -2503,6 +2521,7 @@ const buildHealthDocumentRecordBundle = (
             {
               attachment: {
                 contentType: doc.mimeType || "application/octet-stream",
+                data: base64Data,
                 title: doc.fileName || "document",
               },
             },
@@ -2521,8 +2540,8 @@ const buildHealthDocumentRecordBundle = (
         coding: [
           {
             system: "http://snomed.info/sct",
-            code: "371530004",
-            display: "Clinical consultation report",
+            code: "419891008",
+            display: "Record artifact",
           },
         ],
       },
@@ -2542,8 +2561,8 @@ const buildHealthDocumentRecordBundle = (
         coding: [
           {
             system: "http://snomed.info/sct",
-            code: "371530004",
-            display: "Clinical consultation report",
+            code: "419891008",
+            display: "Record artifact",
           },
         ],
       },
@@ -2580,8 +2599,8 @@ const buildHealthDocumentRecordBundle = (
             coding: [
               {
                 system: "http://snomed.info/sct",
-                code: "371530004",
-                display: "Clinical consultation report",
+                code: "419891008",
+                display: "Record artifact",
               },
             ],
           },

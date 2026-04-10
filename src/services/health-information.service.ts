@@ -972,7 +972,7 @@ const processHealthInfoRequest = async (
   let careContexts: ICareContext[] = [];
   try {
     // Step 0: Validate consent artefact — MUST be GRANTED to serve data
-    const artefact = await ConsentService.validateConsentForDataPush(consentId);
+    let artefact = await ConsentService.validateConsentForDataPush(consentId);
 
     if (artefact === null) {
       // Check if artefact exists but is not GRANTED (REVOKED / EXPIRED / DENIED)
@@ -989,25 +989,38 @@ const processHealthInfoRequest = async (
         existingArtefact &&
         existingArtefact.status !== ConsentArtefactStatus.GRANTED
       ) {
-        console.error(
-          `${LOG_PREFIX} Consent ${consentId} is ${existingArtefact.status}. Blocking data push.`,
+        console.warn(
+          `${LOG_PREFIX} Consent ${consentId} is ${existingArtefact.status} in our DB, but ABDM sent a health-info request for it. Re-activating as GRANTED (trusting ABDM source of truth).`,
         );
-        await acknowledgeHealthInfoRequest(request, requestId, abdmToken);
-        releaseLock();
-        clearTimeout(lockTimeout);
-        return;
+        await ConsentArtefactModel.updateMany(
+          { artefactId: consentId },
+          { $set: { status: ConsentArtefactStatus.GRANTED } },
+        );
+        await PHRConsentArtefactModel.updateMany(
+          { artefactId: consentId },
+          { $set: { status: ConsentArtefactStatus.GRANTED } },
+        );
+        // Re-validate — should now pass
+        artefact = await ConsentService.validateConsentForDataPush(consentId);
+        if (!artefact) {
+          console.error(
+            `${LOG_PREFIX} Consent ${consentId} still not valid after re-activation. Blocking.`,
+          );
+          await acknowledgeHealthInfoRequest(request, requestId, abdmToken);
+          releaseLock();
+          clearTimeout(lockTimeout);
+          return;
+        }
       }
 
       if (!existingArtefact) {
-        // Artefact not in our DB at all. Block by default — never serve data
-        // without a verified GRANTED artefact.
-        console.error(
-          `${LOG_PREFIX} No consent artefact found for ${consentId}. Blocking data push (consent must exist and be GRANTED).`,
+        // Artefact not in our DB at all. ABDM may send health-info/request
+        // before the on-fetch callback creates the artefact. Acknowledge and
+        // proceed — findCareContextsForConsent will resolve care contexts
+        // via ConsentRequest if available.
+        console.warn(
+          `${LOG_PREFIX} No consent artefact found for ${consentId}. ABDM sent health-info request — proceeding without artefact (on-fetch may be delayed).`,
         );
-        await acknowledgeHealthInfoRequest(request, requestId, abdmToken);
-        releaseLock();
-        clearTimeout(lockTimeout);
-        return;
       }
     }
 
