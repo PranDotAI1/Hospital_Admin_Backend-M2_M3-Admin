@@ -19,6 +19,7 @@ import webook from "./routes/webhook";
 import V4router from "./routes/v4";
 import { proxyRequest } from "./controllers/proxy.controller";
 import { apiLimiter } from "./middlewares/rate.limiter";
+import { version } from "os";
 
 const app = express();
 
@@ -72,6 +73,7 @@ app.get("/health", (_req: Request, res: Response) => {
     status: "ok",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
+    version: "1.0.0",
   });
 });
 
