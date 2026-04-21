@@ -3326,17 +3326,31 @@ const buildInvoiceRecordBundle = (
     let calculatedTotalNet = 0;
     const lineItems = billings.map((b: any, index: number) => {
       const qty = parseNum(b.unit) || 1;
-      const rateWithTax = parseNum(b.rate) || parseNum(b.amount) || 0;
-      const impliedTotalTax = (rateWithTax - rateWithTax / 1.05) * qty;
-      const rawCgst = parseNum(b.cgst) || impliedTotalTax / 2;
-      const rawSgst = parseNum(b.sgst) || impliedTotalTax / 2;
-      const cgst = parseFloat(rawCgst.toFixed(2));
-      const sgst = parseFloat(rawSgst.toFixed(2));
+      const rate = parseNum(b.rate) || 0;
+      const mrp = parseNum(b.mrp) || rate;
       const discount = parseNum(b.discount) || 0;
-      const itemGross = rateWithTax * qty;
-      const itemNet = itemGross - discount;
-      calculatedTotalGross += itemGross;
-      calculatedTotalNet += itemNet;
+      const cgstPct = parseNum(b.cgst) || 6;
+      const sgstPct = parseNum(b.sgst) || 6;
+
+      // Use pre-computed amounts if available (written by controller), else derive them
+      const taxableAmount =
+        b.taxableAmount !== undefined
+          ? parseNum(b.taxableAmount)
+          : parseFloat(Math.max(rate * qty - discount, 0).toFixed(2));
+      const cgstAmt =
+        b.cgstAmount !== undefined
+          ? parseNum(b.cgstAmount)
+          : parseFloat(((taxableAmount * cgstPct) / 100).toFixed(2));
+      const sgstAmt =
+        b.sgstAmount !== undefined
+          ? parseNum(b.sgstAmount)
+          : parseFloat(((taxableAmount * sgstPct) / 100).toFixed(2));
+      const lineGross = parseFloat(
+        (taxableAmount + cgstAmt + sgstAmt).toFixed(2),
+      );
+
+      calculatedTotalNet += taxableAmount;
+      calculatedTotalGross += lineGross;
 
       const priceComponents: any[] = [
         {
@@ -3351,7 +3365,8 @@ const buildInvoiceRecordBundle = (
               },
             ],
           },
-          amount: { value: rateWithTax, currency: "INR" },
+          factor: qty,
+          amount: { value: rate, currency: "INR" },
         },
         {
           type: "informational",
@@ -3365,7 +3380,7 @@ const buildInvoiceRecordBundle = (
               },
             ],
           },
-          amount: { value: rateWithTax, currency: "INR" },
+          amount: { value: mrp, currency: "INR" },
         },
         {
           type: "discount",
@@ -3389,11 +3404,12 @@ const buildInvoiceRecordBundle = (
                 system:
                   "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
                 code: "03",
-                display: "CGST",
+                display: `CGST`,
               },
             ],
           },
-          amount: { value: cgst, currency: "INR" },
+          factor: cgstPct / 100,
+          amount: { value: cgstAmt, currency: "INR" },
         },
         {
           type: "tax",
@@ -3403,18 +3419,26 @@ const buildInvoiceRecordBundle = (
                 system:
                   "https://nrces.in/ndhm/fhir/r4/CodeSystem/ndhm-price-components",
                 code: "04",
-                display: "SGST",
+                display: `SGST`,
               },
             ],
           },
-          amount: { value: sgst, currency: "INR" },
+          factor: sgstPct / 100,
+          amount: { value: sgstAmt, currency: "INR" },
         },
       ];
 
-      const tax = cgst + sgst;
-      let taxStr = `<br/><small>Incl. Tax: ${tax.toFixed(2)}</small>`;
-      if (discount > 0) taxStr += `<br/><small>Disc: -${discount}</small>`;
-      billingRows += `<tr><td style="padding: 4px;">${escapeHtml(b.particulars || "Service")}</td><td style="padding: 4px;">${qty}</td><td style="padding: 4px;">${rateWithTax.toFixed(2)} INR</td><td style="padding: 4px;">${itemNet.toFixed(2)} INR ${taxStr}</td></tr>`;
+      billingRows += `<tr>
+        <td style="padding:4px;">${escapeHtml(b.particulars || "Service")}</td>
+        <td style="padding:4px;text-align:center;">${qty}</td>
+        <td style="padding:4px;text-align:right;">${mrp.toFixed(2)}</td>
+        <td style="padding:4px;text-align:right;">${rate.toFixed(2)}</td>
+        <td style="padding:4px;text-align:right;">${discount.toFixed(2)}</td>
+        <td style="padding:4px;text-align:right;">${taxableAmount.toFixed(2)}</td>
+        <td style="padding:4px;text-align:right;">${cgstPct}% (${cgstAmt.toFixed(2)})</td>
+        <td style="padding:4px;text-align:right;">${sgstPct}% (${sgstAmt.toFixed(2)})</td>
+        <td style="padding:4px;text-align:right;font-weight:bold;">${lineGross.toFixed(2)}</td>
+      </tr>`;
 
       return {
         sequence: index + 1,
@@ -3430,12 +3454,30 @@ const buildInvoiceRecordBundle = (
     const invoiceResId = generateUUID();
     const invoiceHtml = `<div xmlns="http://www.w3.org/1999/xhtml">
       <p><b>Invoice</b></p>
-      <table border="1" style="border-collapse: collapse; width: 100%;">
-        <thead><tr><th style="padding: 4px;">Item</th><th style="padding: 4px;">Qty</th><th style="padding: 4px;">Rate</th><th style="padding: 4px;">Amount</th></tr></thead>
+      <table border="1" style="border-collapse:collapse;width:100%;font-size:12px;">
+        <thead>
+          <tr>
+            <th style="padding:4px;">Item</th>
+            <th style="padding:4px;">Qty</th>
+            <th style="padding:4px;">MRP (₹)</th>
+            <th style="padding:4px;">Rate (₹)</th>
+            <th style="padding:4px;">Discount (₹)</th>
+            <th style="padding:4px;">Taxable (₹)</th>
+            <th style="padding:4px;">CGST</th>
+            <th style="padding:4px;">SGST</th>
+            <th style="padding:4px;">Gross (₹)</th>
+          </tr>
+        </thead>
         <tbody>
           ${billingRows}
-          <tr><td colspan="3" style="padding: 4px;"><b>Total Gross</b></td><td style="padding: 4px;"><b>${calculatedTotalGross} INR</b></td></tr>
-          <tr><td colspan="3" style="padding: 4px;"><b>Total Net</b></td><td style="padding: 4px;"><b>${calculatedTotalNet} INR</b></td></tr>
+          <tr>
+            <td colspan="5" style="padding:4px;"><b>Total Net (pre-tax)</b></td>
+            <td colspan="4" style="padding:4px;"><b>₹ ${calculatedTotalNet.toFixed(2)}</b></td>
+          </tr>
+          <tr>
+            <td colspan="5" style="padding:4px;"><b>Total Gross (payable)</b></td>
+            <td colspan="4" style="padding:4px;"><b>₹ ${calculatedTotalGross.toFixed(2)}</b></td>
+          </tr>
         </tbody>
       </table>
     </div>`;
@@ -3483,12 +3525,36 @@ const buildInvoiceRecordBundle = (
 
     // Narrative section rows (summary view for section text)
     const narRows = billings
-      .map(
-        (item: any) =>
-          `<tr><td style="padding: 4px;">${escapeHtml(item.particulars)}</td><td style="padding: 4px;">${item.unit || 1}</td><td style="padding: 4px;">${item.rate ?? item.amount ?? 0} INR</td><td style="padding: 4px;">${item.amount ?? 0} INR</td></tr>`,
-      )
+      .map((item: any) => {
+        const qty = parseNum(item.unit) || 1;
+        const rate = parseNum(item.rate) || 0;
+        const mrp = parseNum(item.mrp) || rate;
+        const discount = parseNum(item.discount) || 0;
+        const taxable =
+          item.taxableAmount !== undefined
+            ? parseNum(item.taxableAmount)
+            : parseFloat(Math.max(rate * qty - discount, 0).toFixed(2));
+        const gross = parseNum(item.amount) || taxable;
+        return `<tr>
+            <td style="padding:4px;">${escapeHtml(item.particulars || "Service")}</td>
+            <td style="padding:4px;text-align:center;">${qty}</td>
+            <td style="padding:4px;text-align:right;">${mrp.toFixed(2)}</td>
+            <td style="padding:4px;text-align:right;">${rate.toFixed(2)}</td>
+            <td style="padding:4px;text-align:right;">${discount.toFixed(2)}</td>
+            <td style="padding:4px;text-align:right;">${taxable.toFixed(2)}</td>
+            <td style="padding:4px;text-align:right;font-weight:bold;">${gross.toFixed(2)}</td>
+          </tr>`;
+      })
       .join("");
-    const totalRow = `<tr><td colspan="3" style="padding: 4px;"><strong>Total</strong></td><td style="padding: 4px;"><strong>${optionalData.billing.totalAmount} INR</strong></td></tr>`;
+    const totalRow = `<tr>
+      <td colspan="5" style="padding:4px;"><strong>Total Net</strong></td>
+      <td style="padding:4px;"><strong>₹ ${calculatedTotalNet.toFixed(2)}</strong></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td colspan="5" style="padding:4px;"><strong>Total Gross</strong></td>
+      <td colspan="2" style="padding:4px;"><strong>₹ ${calculatedTotalGross.toFixed(2)}</strong></td>
+    </tr>`;
     billingRows = narRows + totalRow;
   } else {
     billingRows = `<tr><td colspan="4" style="padding: 4px;">No billing items recorded for this visit.</td></tr>`;
@@ -3496,8 +3562,18 @@ const buildInvoiceRecordBundle = (
 
   const sectionNarrativeDiv = `<div xmlns="http://www.w3.org/1999/xhtml">
     <p><strong>Invoice - ( Invoice )</strong></p>
-    <table border="1" style="border-collapse: collapse; width: 100%;">
-      <thead><tr><th style="padding: 4px;">Item Name</th><th style="padding: 4px;">Qty</th><th style="padding: 4px;">Rate</th><th style="padding: 4px;">Amount</th></tr></thead>
+    <table border="1" style="border-collapse:collapse;width:100%;font-size:12px;">
+      <thead>
+        <tr>
+          <th style="padding:4px;">Item Name</th>
+          <th style="padding:4px;">Qty</th>
+          <th style="padding:4px;">MRP (₹)</th>
+          <th style="padding:4px;">Rate (₹)</th>
+          <th style="padding:4px;">Discount (₹)</th>
+          <th style="padding:4px;">Taxable (₹)</th>
+          <th style="padding:4px;">Gross (₹)</th>
+        </tr>
+      </thead>
       <tbody>${billingRows}</tbody>
     </table>
   </div>`;

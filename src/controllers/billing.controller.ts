@@ -45,6 +45,62 @@ const resolvePatientAndVisitId = async (
   return null;
 };
 
+// Helper: Compute real-time billing calculations for each line item
+// and derive totalNet (pre-tax, post-discount) and totalGross (post-tax).
+// Formula per line:
+//   baseAmount    = rate × unit
+//   taxableAmount = max(baseAmount − discount, 0)
+//   cgstAmount    = taxableAmount × (cgst% / 100)
+//   sgstAmount    = taxableAmount × (sgst% / 100)
+//   amount        = taxableAmount + cgstAmount + sgstAmount
+const computeBillingCalculations = (billings: any[]) => {
+  let totalNet = 0;
+  let totalGross = 0;
+
+  const computed = billings.map((b: any) => {
+    const rate = parseFloat(b.rate) || 0;
+    const mrp = parseFloat(b.mrp) || rate; // default MRP = rate if not provided
+    const unit = parseFloat(b.unit) || 1;
+    const discount = parseFloat(b.discount) || 0;
+    const cgstPct = parseFloat(b.cgst) || 6;
+    const sgstPct = parseFloat(b.sgst) || 6;
+
+    const baseAmount = parseFloat((rate * unit).toFixed(2));
+    const taxableAmount = parseFloat(
+      Math.max(baseAmount - discount, 0).toFixed(2),
+    );
+    const cgstAmount = parseFloat(((taxableAmount * cgstPct) / 100).toFixed(2));
+    const sgstAmount = parseFloat(((taxableAmount * sgstPct) / 100).toFixed(2));
+    const lineGross = parseFloat(
+      (taxableAmount + cgstAmount + sgstAmount).toFixed(2),
+    );
+
+    totalNet += taxableAmount;
+    totalGross += lineGross;
+
+    return {
+      ...b,
+      mrp,
+      rate,
+      unit,
+      discount,
+      cgst: cgstPct,
+      sgst: sgstPct,
+      cgstAmount,
+      sgstAmount,
+      taxableAmount,
+      amount: lineGross,
+    };
+  });
+
+  return {
+    computedBillings: computed,
+    totalNet: parseFloat(totalNet.toFixed(2)),
+    totalGross: parseFloat(totalGross.toFixed(2)),
+    totalAmount: parseFloat(totalGross.toFixed(2)),
+  };
+};
+
 // Helper: Create CareContext for Invoice HI type
 const updateCareContext = async (
   patientId: Types.ObjectId | string,
@@ -100,12 +156,22 @@ export const DayCareBillingController = {
         });
       }
 
+      // Compute real-time billing calculations (server-side, not trusted from client)
+      const {
+        computedBillings,
+        totalNet,
+        totalGross,
+        totalAmount: computedTotal,
+      } = computeBillingCalculations(billings || []);
+
       const newBilling = new VisitDayCareBilling({
         patient: resolved.patientId,
         visitId: resolved.visitId,
         uhid: resolved.uhid || "UNKNOWN",
-        billings,
-        totalAmount,
+        billings: computedBillings,
+        totalAmount: computedTotal,
+        totalNet,
+        totalGross,
         date: date || new Date(),
         status: status || "Draft",
       });
@@ -207,6 +273,20 @@ export const DayCareBillingController = {
       delete updates.visitId;
       delete updates.patient;
 
+      // If billing lines are being updated, recompute all calculated fields
+      if (updates.billings && Array.isArray(updates.billings)) {
+        const {
+          computedBillings,
+          totalNet,
+          totalGross,
+          totalAmount: computedTotal,
+        } = computeBillingCalculations(updates.billings);
+        updates.billings = computedBillings;
+        updates.totalAmount = computedTotal;
+        updates.totalNet = totalNet;
+        updates.totalGross = totalGross;
+      }
+
       const billing = await VisitDayCareBilling.findByIdAndUpdate(id, updates, {
         new: true,
       });
@@ -240,7 +320,11 @@ export const DayCareBillingController = {
     try {
       const { visitId } = req.params;
 
-      if (!visitId || typeof visitId !== "string" || !Types.ObjectId.isValid(visitId)) {
+      if (
+        !visitId ||
+        typeof visitId !== "string" ||
+        !Types.ObjectId.isValid(visitId)
+      ) {
         return res
           .status(400)
           .json({ success: false, message: "Invalid Visit ID format" });
