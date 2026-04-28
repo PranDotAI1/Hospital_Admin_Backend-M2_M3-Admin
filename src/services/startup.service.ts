@@ -140,3 +140,45 @@ export const purgeRevokedExternalRecords = async () => {
     );
   }
 };
+
+/**
+ * Periodically purge external health records whose dataEraseAt timestamp has passed.
+ * Required by ABDM to ensure data minimization.
+ */
+export const startDataErasureCron = () => {
+  const ONE_HOUR = 60 * 60 * 1000;
+  
+  const purgeExpiredData = async () => {
+    try {
+      const now = new Date();
+      
+      const expiredMain = await ConsentArtefactModel.distinct("artefactId", {
+        "permission.dataEraseAt": { $lt: now }
+      });
+      const expiredPHR = await PHRConsentArtefactModel.distinct("artefactId", {
+        "permission.dataEraseAt": { $lt: now }
+      });
+      
+      const expiredIds = [...expiredMain, ...expiredPHR];
+      
+      if (expiredIds.length > 0) {
+        const result = await ExternalHealthRecordModel.deleteMany({
+          consentArtefactId: { $in: expiredIds }
+        });
+        
+        if (result.deletedCount > 0) {
+          console.log(`[DATA_ERASURE] Purged ${result.deletedCount} external records for ${expiredIds.length} expired consent(s) based on dataEraseAt`);
+        }
+      }
+    } catch (error: any) {
+      console.error("[DATA_ERASURE] Error during data erasure cron:", error.message);
+    }
+  };
+
+  // Run once on startup, then every hour
+  purgeExpiredData();
+  const timer = setInterval(purgeExpiredData, ONE_HOUR);
+  
+  // Make sure the timer doesn't block node process exit
+  timer.unref();
+};

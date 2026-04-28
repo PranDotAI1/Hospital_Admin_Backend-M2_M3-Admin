@@ -3,6 +3,7 @@ import {
   IConsentArtefact,
   ConsentCareContextSchema,
   ConsentPermissionSchema,
+  ArtefactSourceType,
 } from "./ConsentArtefact";
 import { Schema, model } from "mongoose";
 
@@ -11,7 +12,6 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
     artefactId: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
     },
     consentRequestId: {
@@ -57,6 +57,11 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
       },
     },
     signature: { type: String },
+    sourceType: {
+      type: String,
+      enum: Object.values(ArtefactSourceType),
+      default: ArtefactSourceType.CONSENT,
+    },
     grantedAt: { type: Date },
     revokedAt: { type: Date },
     deniedAt: { type: Date },
@@ -71,7 +76,13 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
 );
 
 PHRConsentArtefactSchema.index({ patientAbhaAddress: 1, status: 1 });
-// artefactId: unique: true on field already creates index; no duplicate schema.index
+PHRConsentArtefactSchema.index({ artefactId: 1 }); // Fast lookups for consent validation and data push
+
+// Compound index for idempotency
+PHRConsentArtefactSchema.index(
+  { artefactId: 1, consentRequestId: 1, sourceType: 1 },
+  { unique: true, sparse: true, name: "idx_phr_artefact_dedup_compound" },
+);
 
 // NOTE: NO self-referencing guard here. PHR consents (purpose.code=PATRQT) are initiated
 // by the patient's PHR app, not by our system — there is no local ConsentRequest.

@@ -234,6 +234,15 @@ export const handleHiuOnRequest = async (
         $push: { callbacks: { type: "on-request", body } },
       },
     );
+
+    // Bridge transactionId → requestId in Redis for instant HIU transfer lookup.
+    // This eliminates the retry loop when transfer arrives before on-request.
+    try {
+      const { bridgeTransactionId } = await import("./abdm.queue.service");
+      await bridgeTransactionId(transactionId, requestId);
+    } catch (_) {
+      // Redis unavailable — transfer handler will fall back to MongoDB retry
+    }
   } else {
     console.warn(
       `${LOG_PREFIX} On-request for ${requestId} had no transactionId in body. Keys: ${Object.keys(body).join(", ")}`,
@@ -251,12 +260,33 @@ export const handleHiuTransfer = async (
     `${LOG_PREFIX} Received data transfer for transaction ${transactionId}, entries: ${entries.length}`,
   );
 
-  // 1. Find HIU request - try transactionId first, then fallback to recent request by consent
-  let hiuRequest = await HIURequestModel.findOne({ transactionId });
-  if (hiuRequest) {
-    console.log(
-      `${LOG_PREFIX} Found HIU request by transactionId: ${hiuRequest.requestId}, storeAsExternalRecord: ${hiuRequest.storeAsExternalRecord}`,
-    );
+  // 0. Try Redis bridge first (instant, sub-ms) — populated by handleHiuOnRequest
+  let hiuRequest: import("../models/HIURequest").IHIURequest | null = null;
+  try {
+    const { lookupTransactionBridge } = await import("./abdm.queue.service");
+    const bridgedRequestId = await lookupTransactionBridge(transactionId);
+    if (bridgedRequestId) {
+      hiuRequest = await HIURequestModel.findOne({
+        requestId: bridgedRequestId,
+      });
+      if (hiuRequest) {
+        console.log(
+          `${LOG_PREFIX} Found HIU request via Redis bridge: ${hiuRequest.requestId}`,
+        );
+      }
+    }
+  } catch (_) {
+    // Redis unavailable — continue with MongoDB fallbacks
+  }
+
+  // 1. MongoDB lookup by transactionId
+  if (!hiuRequest) {
+    hiuRequest = await HIURequestModel.findOne({ transactionId });
+    if (hiuRequest) {
+      console.log(
+        `${LOG_PREFIX} Found HIU request by transactionId: ${hiuRequest.requestId}, storeAsExternalRecord: ${hiuRequest.storeAsExternalRecord}`,
+      );
+    }
   }
 
   if (!hiuRequest && consentArtefactId) {
@@ -291,17 +321,6 @@ export const handleHiuTransfer = async (
     );
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
-    // Debug: Log all recent HIU requests to see what's in the DB
-    const allRecentRequests = await HIURequestModel.find({
-      createdAt: { $gt: fiveMinutesAgo },
-    })
-      .select("requestId transactionId status createdAt")
-      .lean();
-    console.log(
-      `${LOG_PREFIX} Recent HIU requests in DB:`,
-      JSON.stringify(allRecentRequests, null, 2),
-    );
-
     // Query for requests where transactionId is null, undefined, or doesn't exist
     hiuRequest = await HIURequestModel.findOne({
       $or: [
@@ -331,9 +350,86 @@ export const handleHiuTransfer = async (
     }
   }
 
+  // --- RETRY WITH BACKOFF: Race condition fix ---
+  // ABDM can push the /transfer callback BEFORE the /on-request callback
+  // stores the transactionId on the HIURequest document.
+  // Wait and retry to give on-request time to complete.
+  // NOTE: This runs in the background (controller already sent 200), so retries don't add latency.
+  if (!hiuRequest) {
+    console.warn(
+      `${LOG_PREFIX} No HIU request found for transactionId: ${transactionId}. Retrying (on-request may not have arrived yet)...`,
+    );
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await new Promise((r) => setTimeout(r, 1000 * attempt)); // 1s, 2s, 3s (6s total max)
+
+      // Retry: Direct transactionId lookup (on-request may have stored it by now)
+      hiuRequest = await HIURequestModel.findOne({ transactionId });
+      if (hiuRequest) {
+        console.log(
+          `${LOG_PREFIX} Found HIU request on retry #${attempt} by transactionId: ${hiuRequest.requestId}`,
+        );
+        break;
+      }
+
+      // Retry: Consent-based fallback
+      if (consentArtefactId) {
+        hiuRequest = await HIURequestModel.findOne({
+          consentArtefactId,
+          status: {
+            $in: [
+              HIURequestStatus.INITIATED,
+              HIURequestStatus.REQUESTED,
+              HIURequestStatus.ACKNOWLEDGED,
+            ],
+          },
+        }).sort({ createdAt: -1 });
+        if (hiuRequest) {
+          await HIURequestModel.updateOne(
+            { _id: hiuRequest._id },
+            { $set: { transactionId } },
+          );
+          console.log(
+            `${LOG_PREFIX} Found HIU request on retry #${attempt} by consent: ${hiuRequest.requestId}`,
+          );
+          break;
+        }
+      }
+
+      // Retry: Recent request without transactionId
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+      hiuRequest = await HIURequestModel.findOne({
+        $or: [
+          { transactionId: { $exists: false } },
+          { transactionId: null },
+          { transactionId: "" },
+        ],
+        status: {
+          $in: [
+            HIURequestStatus.INITIATED,
+            HIURequestStatus.REQUESTED,
+            HIURequestStatus.ACKNOWLEDGED,
+          ],
+        },
+        createdAt: { $gt: tenMinutesAgo },
+      }).sort({ createdAt: -1 });
+
+      if (hiuRequest) {
+        await HIURequestModel.updateOne(
+          { _id: hiuRequest._id },
+          { $set: { transactionId, status: HIURequestStatus.ACKNOWLEDGED } },
+        );
+        console.log(
+          `${LOG_PREFIX} Found HIU request on retry #${attempt} (recent without txnId): ${hiuRequest.requestId}`,
+        );
+        break;
+      }
+    }
+  }
+
   if (!hiuRequest) {
     console.error(
-      `${LOG_PREFIX} No HIU request found for transactionId: ${transactionId} or consent: ${consentArtefactId}`,
+      `${LOG_PREFIX} No HIU request found after 3 retries for transactionId: ${transactionId} or consent: ${consentArtefactId}`,
     );
     throw new Error("Transaction not found"); // ABDM might retry
   }
@@ -614,100 +710,159 @@ export const handleHiuTransfer = async (
 /**
  * Extract source HIP information from a FHIR bundle.
  * Looks for Organization resource or Composition.custodian reference.
+ *
+ * SAFE FHIR PARSING: validates bundle structure before iterating entries.
+ * Wraps in try-catch to prevent malformed bundles from crashing the worker.
  */
 const extractSourceHipInfo = (
   bundle: any,
 ): { hipId: string; hipName?: string } => {
-  if (!bundle || !bundle.entry) {
-    return { hipId: "UNKNOWN" };
-  }
-
-  // Strategy 1: Find Organization resource directly
-  for (const entry of bundle.entry) {
-    const resource = entry.resource;
-    if (resource?.resourceType === "Organization") {
-      const hipId = resource.identifier?.[0]?.value || resource.id || "UNKNOWN";
-      const hipName = resource.name;
-      return { hipId, hipName };
+  try {
+    // Type guard: ensure bundle is a valid FHIR Bundle with entries
+    if (!bundle || typeof bundle !== "object") {
+      return { hipId: "UNKNOWN" };
     }
-  }
+    if (bundle.resourceType && bundle.resourceType !== "Bundle") {
+      console.warn(
+        `${LOG_PREFIX} [FHIR] Expected Bundle but got ${bundle.resourceType}`,
+      );
+      return { hipId: "UNKNOWN" };
+    }
+    if (!Array.isArray(bundle.entry) || bundle.entry.length === 0) {
+      return { hipId: "UNKNOWN" };
+    }
 
-  // Strategy 2: Look at Composition.custodian
-  for (const entry of bundle.entry) {
-    const resource = entry.resource;
-    if (resource?.resourceType === "Composition" && resource.custodian) {
-      // custodian is a reference like "Organization/xyz" or "urn:uuid:xyz"
-      const ref = resource.custodian.reference || "";
-      const display = resource.custodian.display;
-      if (ref.includes("Organization/")) {
-        const hipId = ref.split("Organization/")[1];
-        return { hipId, hipName: display };
-      }
-      if (ref.includes("urn:uuid:")) {
-        return { hipId: ref.split("urn:uuid:")[1], hipName: display };
+    // Strategy 1: Find Organization resource directly
+    for (const entry of bundle.entry) {
+      if (!entry || typeof entry !== "object") continue;
+      const resource = entry.resource;
+      if (!resource || typeof resource !== "object") continue;
+
+      if (resource.resourceType === "Organization") {
+        const hipId =
+          resource.identifier?.[0]?.value || resource.id || "UNKNOWN";
+        const hipName = resource.name;
+        return { hipId, hipName };
       }
     }
-  }
 
-  return { hipId: "UNKNOWN" };
-};
+    // Strategy 2: Look at Composition.custodian
+    for (const entry of bundle.entry) {
+      if (!entry || typeof entry !== "object") continue;
+      const resource = entry.resource;
+      if (!resource || typeof resource !== "object") continue;
 
-// Use simple logic to extract hiTypes from bundle
-const extractHiTypesFromBundle = (bundle: any): string[] => {
-  const types = new Set<string>();
-  if (!bundle || !bundle.entry) return [];
-
-  for (const entry of bundle.entry) {
-    const resource = entry.resource;
-    if (!resource) continue;
-
-    if (resource.resourceType === "Composition") {
-      // 1. Check Composition title (for single-type bundles)
-      const title = resource.title?.toLowerCase() || "";
-      if (title.includes("prescription")) types.add("Prescription");
-      if (title.includes("diagnostic") || title.includes("lab"))
-        types.add("DiagnosticReport");
-      if (title.includes("discharge")) types.add("DischargeSummary");
-      if (title.includes("immunization")) types.add("ImmunizationRecord");
-      if (title.includes("wellness")) types.add("WellnessRecord");
-      if (title.includes("health document")) types.add("HealthDocumentRecord");
-
-      // 2. Check Composition SECTIONS (for combined bundles)
-      if (resource.section && Array.isArray(resource.section)) {
-        for (const section of resource.section) {
-          const secTitle = section.title?.toLowerCase() || "";
-          if (secTitle.includes("prescription")) types.add("Prescription");
-          if (secTitle.includes("diagnostic") || secTitle.includes("lab"))
-            types.add("DiagnosticReport");
-          if (secTitle.includes("discharge")) types.add("DischargeSummary");
-          if (secTitle.includes("immunization"))
-            types.add("ImmunizationRecord");
-          if (secTitle.includes("wellness")) types.add("WellnessRecord");
-          if (secTitle.includes("health document"))
-            types.add("HealthDocumentRecord");
-          if (
-            secTitle.includes("note") ||
-            secTitle.includes("consultation") ||
-            secTitle.includes("soap") ||
-            secTitle.includes("visit information")
-          )
-            types.add("OPConsultation");
+      if (resource.resourceType === "Composition" && resource.custodian) {
+        const ref = resource.custodian.reference || "";
+        const display = resource.custodian.display;
+        if (ref.includes("Organization/")) {
+          const hipId = ref.split("Organization/")[1];
+          return { hipId, hipName: display };
+        }
+        if (ref.includes("urn:uuid:")) {
+          return { hipId: ref.split("urn:uuid:")[1], hipName: display };
         }
       }
     }
 
-    // 3. Check loose resources (legacy or split bundles)
-    if (resource.resourceType === "MedicationRequest")
-      types.add("Prescription");
-    if (resource.resourceType === "DiagnosticReport")
-      types.add("DiagnosticReport");
-    if (resource.resourceType === "Immunization")
-      types.add("ImmunizationRecord");
-    if (resource.resourceType === "DocumentReference")
-      types.add("HealthDocumentRecord");
+    return { hipId: "UNKNOWN" };
+  } catch (err: any) {
+    console.error(
+      `${LOG_PREFIX} [FHIR] extractSourceHipInfo failed:`,
+      err.message,
+    );
+    return { hipId: "UNKNOWN" };
   }
+};
 
-  return Array.from(types);
+/**
+ * Extract HI types from a FHIR bundle by inspecting resource types and titles.
+ *
+ * SAFE FHIR PARSING: validates bundle structure, skips malformed entries,
+ * and only looks at valid resource sections.
+ */
+const extractHiTypesFromBundle = (bundle: any): string[] => {
+  try {
+    const types = new Set<string>();
+
+    // Type guard: ensure bundle is a valid FHIR Bundle with entries
+    if (!bundle || typeof bundle !== "object") return [];
+    if (bundle.resourceType && bundle.resourceType !== "Bundle") {
+      console.warn(
+        `${LOG_PREFIX} [FHIR] extractHiTypes: Expected Bundle but got ${bundle.resourceType}`,
+      );
+      return [];
+    }
+    if (!Array.isArray(bundle.entry) || bundle.entry.length === 0) return [];
+
+    for (const entry of bundle.entry) {
+      if (!entry || typeof entry !== "object") continue;
+      const resource = entry.resource;
+      if (!resource || typeof resource !== "object" || !resource.resourceType)
+        continue;
+
+      if (resource.resourceType === "Composition") {
+        // 1. Check Composition title (for single-type bundles)
+        const title =
+          typeof resource.title === "string"
+            ? resource.title.toLowerCase()
+            : "";
+        if (title.includes("prescription")) types.add("Prescription");
+        if (title.includes("diagnostic") || title.includes("lab"))
+          types.add("DiagnosticReport");
+        if (title.includes("discharge")) types.add("DischargeSummary");
+        if (title.includes("immunization")) types.add("ImmunizationRecord");
+        if (title.includes("wellness")) types.add("WellnessRecord");
+        if (title.includes("health document"))
+          types.add("HealthDocumentRecord");
+
+        // 2. Check Composition SECTIONS (for combined bundles)
+        if (Array.isArray(resource.section)) {
+          for (const section of resource.section) {
+            if (!section || typeof section !== "object") continue;
+            const secTitle =
+              typeof section.title === "string"
+                ? section.title.toLowerCase()
+                : "";
+            if (secTitle.includes("prescription")) types.add("Prescription");
+            if (secTitle.includes("diagnostic") || secTitle.includes("lab"))
+              types.add("DiagnosticReport");
+            if (secTitle.includes("discharge")) types.add("DischargeSummary");
+            if (secTitle.includes("immunization"))
+              types.add("ImmunizationRecord");
+            if (secTitle.includes("wellness")) types.add("WellnessRecord");
+            if (secTitle.includes("health document"))
+              types.add("HealthDocumentRecord");
+            if (
+              secTitle.includes("note") ||
+              secTitle.includes("consultation") ||
+              secTitle.includes("soap") ||
+              secTitle.includes("visit information")
+            )
+              types.add("OPConsultation");
+          }
+        }
+      }
+
+      // 3. Check loose resources (legacy or split bundles)
+      if (resource.resourceType === "MedicationRequest")
+        types.add("Prescription");
+      if (resource.resourceType === "DiagnosticReport")
+        types.add("DiagnosticReport");
+      if (resource.resourceType === "Immunization")
+        types.add("ImmunizationRecord");
+      if (resource.resourceType === "DocumentReference")
+        types.add("HealthDocumentRecord");
+    }
+
+    return Array.from(types);
+  } catch (err: any) {
+    console.error(
+      `${LOG_PREFIX} [FHIR] extractHiTypesFromBundle failed:`,
+      err.message,
+    );
+    return [];
+  }
 };
 
 // ============================================================================

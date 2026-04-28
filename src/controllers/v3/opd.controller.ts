@@ -19,6 +19,7 @@ import { ENDPOINTS } from "../../utils/endpoints";
 import { STATUS_CODE } from "../../utils/constant";
 import { DepartmentModel } from "../../models/Department";
 import { DoctorModel } from "../../models/Doctor";
+import { AbdmLogger } from "../../utils/abdm.logger";
 
 const getTodayDateString = (): string => {
   const today = new Date();
@@ -94,7 +95,7 @@ const isValidDate = (dateStr: string): boolean => {
 
 export const scanAndShareWebhook = async (req: Request, res: Response) => {
   try {
-    console.log("entry on scan", JSON.stringify(req.body, null, 2));
+    AbdmLogger.logPayloadDebug("entry on scan", req.body);
     console.log({
       ip: req.ip,
       origin: req.headers.origin,
@@ -292,7 +293,6 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
     console.error("Scan & Share Webhook error:", {
       message: error.message,
       stack: error.stack,
-      body: req.body,
     });
   }
 };
@@ -803,10 +803,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
 
 export const queueStatus = async (req: Request, res: Response) => {
   try {
-    console.log(
-      "Queue Status request received:",
-      JSON.stringify(req.body, null, 2),
-    );
+    AbdmLogger.logPayloadDebug("Queue Status request received:", req.body);
 
     res.status(202).json({
       status: "Accepted",
@@ -858,7 +855,6 @@ export const queueStatus = async (req: Request, res: Response) => {
     console.error("Queue Status error:", {
       message: error.message,
       stack: error.stack,
-      body: req.body,
     });
   }
 };

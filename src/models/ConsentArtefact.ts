@@ -1,5 +1,11 @@
 import { Schema, model, Document, Types } from "mongoose";
 
+export enum ArtefactSourceType {
+  CONSENT = "CONSENT",
+  FETCH = "FETCH",
+  CALLBACK = "CALLBACK",
+}
+
 export enum ConsentArtefactStatus {
   GRANTED = "GRANTED",
   REVOKED = "REVOKED",
@@ -65,6 +71,9 @@ export interface IConsentArtefact extends Document {
 
   signature?: string;
 
+  /** Traces the origin of this artefact: CONSENT (from consent grant), FETCH (from data fetch), CALLBACK (from ABDM callback) */
+  sourceType?: ArtefactSourceType;
+
   grantedAt?: Date;
 
   revokedAt?: Date;
@@ -110,7 +119,6 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
     artefactId: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
     },
     consentRequestId: {
@@ -166,6 +174,11 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
       },
     },
     signature: { type: String },
+    sourceType: {
+      type: String,
+      enum: Object.values(ArtefactSourceType),
+      default: ArtefactSourceType.CONSENT,
+    },
     grantedAt: { type: Date },
     revokedAt: { type: Date },
     deniedAt: { type: Date },
@@ -181,7 +194,15 @@ const ConsentArtefactSchema = new Schema<IConsentArtefact>(
 
 ConsentArtefactSchema.index({ patientAbhaAddress: 1, status: 1 });
 ConsentArtefactSchema.index({ consentRequestId: 1, status: 1 });
+ConsentArtefactSchema.index({ artefactId: 1 }); // Fast lookups for consent validation and data push
 ConsentArtefactSchema.index({ expiryDate: 1 }, { sparse: true });
+ConsentArtefactSchema.index({ "permission.dataEraseAt": 1 }, { sparse: true }); // Data erasure cron
+
+// Compound index for idempotency: prevent duplicate artefacts from different source flows
+ConsentArtefactSchema.index(
+  { artefactId: 1, consentRequestId: 1, sourceType: 1 },
+  { unique: true, sparse: true, name: "idx_artefact_dedup_compound" },
+);
 
 // ============================================================================
 // GUARD: Prevent self-referencing ghost artefacts (artefactId === consentRequestId)

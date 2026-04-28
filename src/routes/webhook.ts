@@ -12,8 +12,24 @@ import * as CareContextCallback from "../controllers/v3/carecontext.callback.con
 import * as DiscoveryController from "../controllers/v3/discovery.controller";
 import { SmsNotificationService } from "../services/sms.notification.service";
 import { GET_URL } from "../utils/constant";
+import {
+  validateAbdmWebhook,
+  webhookRateLimiter,
+} from "../middlewares/abdm.webhook.auth";
+import { validateAndCorrelate } from "../middlewares/abdm.correlation.middleware";
 
 const webook = Router();
+
+// Apply ABDM webhook auth + rate limiting.
+// validateAbdmWebhook internally checks path prefixes — only ABDM callback
+// routes (/api/v3/hip/*, /api/v3/hiu/*, etc.) are validated.
+// App routes like /api/login pass through untouched.
+webook.use(webhookRateLimiter);
+webook.use(validateAbdmWebhook);
+
+// Correlation validation: validates payload schema (Zod), classifies event type,
+// and checks consent correlation for artefact-producing routes.
+webook.use(validateAndCorrelate);
 
 // ============================================
 // Callback URL check (for debugging: verify ABDM can reach this server)
@@ -147,7 +163,8 @@ webook.post("/api/v3/hip/health-information/request", healthInformation);
 webook.post("/api/v3/hip/health-information/on-notify", (req, res) => {
   console.log(
     "[HEALTH_INFO] on-notify callback received:",
-    JSON.stringify(req.body),
+    "requestId:", req.body?.response?.requestId,
+    "status:", req.body?.acknowledgement?.status,
   );
   // This is ABDM's acknowledgment that our health information transfer notification was received
   // The actual data push already completed successfully at this point

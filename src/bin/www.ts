@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import {
   setBridgeUrlOnStartup,
   purgeRevokedExternalRecords,
+  startDataErasureCron,
 } from "../services/startup.service";
 
 dotenv.config();
@@ -59,19 +60,51 @@ function onListening(): void {
 
   // Purge any external health records left behind by missed revocation callbacks
   purgeRevokedExternalRecords();
+  
+  // Start the background cron to delete expired health data
+  startDataErasureCron();
+
+  try {
+    const { initializeWorkers } = require("../services/abdm.queue.service");
+    initializeWorkers();
+    console.log("[STARTUP] BullMQ workers initialized");
+  } catch (err: any) {
+    console.warn(
+      `[STARTUP] BullMQ workers not started (Redis may be unavailable): ${err.message}`,
+    );
+    console.warn(
+      "[STARTUP] ABDM processing will use direct (inline) mode as fallback",
+    );
+  }
 }
 
-function gracefulShutdown(signal: string): void {
+async function gracefulShutdown(signal: string): Promise<void> {
   console.log(`\n${signal} received. Starting graceful shutdown...`);
+
   server.close(() => {
-    console.log("HTTP server closed. Exiting.");
-    process.exit(0);
+    console.log("HTTP server closed.");
   });
 
-  setTimeout(() => {
-    console.error("Forced shutdown — timed out after 10s");
+  try {
+    const { shutdownQueues } = require("../services/abdm.queue.service");
+    await shutdownQueues();
+    console.log("BullMQ queues and workers shut down.");
+  } catch (_) {}
+
+  try {
+    const { closeRedisConnections } = require("../config/redis");
+    await closeRedisConnections();
+    console.log("Redis connections closed.");
+  } catch (_) {}
+
+  const timeout = setTimeout(() => {
+    console.error("Forced shutdown — timed out after 15s");
     process.exit(1);
-  }, 10_000);
+  }, 15_000);
+  timeout.unref();
+
+  console.log("Graceful shutdown complete. Exiting.");
+  process.exit(0);
 }
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

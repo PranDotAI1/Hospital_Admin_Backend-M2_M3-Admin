@@ -3,6 +3,7 @@ import {
   ConsentArtefactModel,
   ConsentArtefactStatus,
   IConsentArtefact,
+  ArtefactSourceType,
 } from "../models/ConsentArtefact";
 import { PHRConsentArtefactModel } from "../models/PHRConsentArtefact";
 import { ConsentRequestModel, IConsentRequest } from "../models/ConsentRequest";
@@ -975,6 +976,7 @@ export const storeArtefactDetails = async (
   consentRequestId?: string,
   usePHRCollection?: boolean,
   eventTimestamp?: Date,
+  sourceType: ArtefactSourceType = ArtefactSourceType.CONSENT,
 ): Promise<IConsentArtefact | null> => {
   try {
     const artefactId = consentDetail.consentId || consentDetail.id;
@@ -1062,6 +1064,7 @@ export const storeArtefactDetails = async (
       lastFetchedAt: new Date(),
       rawConsentDetail: consentDetail,
       grantedAt: eventTimestamp || new Date(),
+      sourceType,
     };
 
     const consentReq = detailRequestId
@@ -1288,7 +1291,16 @@ export const storeArtefactDetails = async (
       { artefactId },
       { $set: updateData },
       { upsert: true, new: true },
-    );
+    ).catch((err: any) => {
+      // Handle E11000 duplicate key error from compound index
+      if (err.code === 11000) {
+        console.warn(
+          `${LOG_PREFIX} [DUPLICATE] Artefact ${artefactId} already exists with sourceType=${sourceType}. Skipping.`,
+        );
+        return null;
+      }
+      throw err;
+    });
 
     console.log(
       `${LOG_PREFIX} Stored artefact details for ${artefactId}, careContexts: ${updateData.careContexts?.length || 0}${usePHRCollection ? " (PHR)" : ""}`,

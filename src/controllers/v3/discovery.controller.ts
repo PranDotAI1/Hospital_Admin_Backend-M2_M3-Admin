@@ -89,8 +89,10 @@ export const onDiscover = async (req: Request, res: Response) => {
       "Discovery: discover request received",
       "path:",
       req.path || req.originalUrl,
-      "body:",
-      JSON.stringify(req.body),
+      "requestId:",
+      req.headers["request-id"] || req.headers["REQUEST-ID"],
+      "transactionId:",
+      req.body?.transactionId,
     );
     const requestId = req.headers["request-id"] || req.headers["REQUEST-ID"];
 
@@ -298,8 +300,10 @@ export const onLinkInit = async (req: Request, res: Response) => {
       "Discovery: link/init request received",
       "path:",
       req.path || req.originalUrl,
-      "body:",
-      JSON.stringify(req.body),
+      "requestId:",
+      req.headers["request-id"] || req.headers["REQUEST-ID"],
+      "transactionId:",
+      req.body?.transactionId,
     );
 
     const requestId =
@@ -514,8 +518,10 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
       "Discovery: link/confirm request received",
       "path:",
       req.path || req.originalUrl,
-      "body:",
-      JSON.stringify(req.body),
+      "requestId:",
+      req.headers["request-id"] || req.headers["REQUEST-ID"],
+      "hasConfirmation:",
+      !!req.body?.confirmation,
     );
 
     const requestId =

@@ -2,6 +2,7 @@ import axios from "axios";
 import { Request, Response } from "express";
 import { ScanShareDailyQueueModel } from "../../models/ScanShareDailyQueue";
 import { generateUID } from "../../utils/constant";
+import { AbdmLogger } from "../../utils/abdm.logger";
 
 const getTodayDateString = (): string => {
   const today = new Date();
@@ -16,10 +17,7 @@ export const handleRunningTokenStatus = async (
   res: Response,
 ): Promise<void> => {
   try {
-    console.log(
-      "Running token status request received:",
-      JSON.stringify(req.body, null, 2),
-    );
+    AbdmLogger.logPayloadDebug("Running token status request received:", req.body);
     // console.log("Headers:", req.headers);
 
     res.status(202).json({
@@ -86,7 +84,6 @@ export const handleRunningTokenStatus = async (
     console.error("Handle Running Token Status error:", {
       message: error.message,
       stack: error.stack,
-      body: req.body,
     });
   }
 };

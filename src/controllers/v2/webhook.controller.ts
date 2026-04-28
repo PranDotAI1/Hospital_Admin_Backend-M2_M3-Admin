@@ -2,7 +2,8 @@ import axios from "axios";
 import { HealthRecordModel } from "../../models/HealthRecord";
 import { STATUS_CODE, facilityId, generateUID } from "../../utils/constant";
 import { MSG } from "../../utils/msgs";
-
+import { HealthInformationRequestSchema } from "../../schemas/abdm.webhook.schemas";
+import { AbdmLogger } from "../../utils/abdm.logger";
 export const linkTokenGeneration = async (req: any, res: any) => {
   try {
     const baseUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
@@ -10,7 +11,7 @@ export const linkTokenGeneration = async (req: any, res: any) => {
     console.log("[LINK_TOKEN] URL:", baseUrl);
 
     let postData = req.body;
-    console.log("[LINK_TOKEN] Request:", JSON.stringify(postData));
+    AbdmLogger.logPayloadDebug("[LINK_TOKEN] Request:", postData);
 
     const latestRecord = await HealthRecordModel.findOne({
       hid_address: postData.abhaAddress,
@@ -156,10 +157,37 @@ export const onCarecontext = async (req: any, res: any) => {
 
 export const healthInformation = async (req: any, res: any) => {
   try {
+    // Log only metadata — never log full body (contains PHI: keyMaterial, patient data)
     console.log(
       "[HEALTH_INFO] Received health-information/request:",
-      JSON.stringify(req.body),
+      JSON.stringify({
+        transactionId: req.body?.transactionId,
+        consentId: req.body?.hiRequest?.consent?.id,
+        dateRange: req.body?.hiRequest?.dateRange,
+        dataPushUrl: req.body?.hiRequest?.dataPushUrl
+          ? new URL(req.body.hiRequest.dataPushUrl).hostname
+          : undefined,
+      }),
     );
+
+    // Validate payload against Zod schema
+    const parseResult = HealthInformationRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      const errorSummary = parseResult.error.issues
+        .map((e: any) => `${e.path.join(".")}: ${e.message}`)
+        .join("; ");
+      console.warn(`[HEALTH_INFO] Payload validation failed: ${errorSummary}`);
+      AbdmLogger.logRejected({
+        requestId: req.body?.requestId,
+        consentId: req.body?.hiRequest?.consent?.id,
+        reason: `INVALID_PAYLOAD: ${errorSummary}`,
+        routePath: req.originalUrl,
+      });
+      return res.status(200).json({
+        status: "Acknowledged",
+        message: "Payload validation failed",
+      });
+    }
 
     const input = req.body;
     const requestId =
@@ -178,22 +206,49 @@ export const healthInformation = async (req: any, res: any) => {
       });
     }
 
+    // Respond to ABDM immediately — processing happens in the background
     res.status(200).json({
       status: "Success",
       message: "Health information request acknowledged and processing",
     });
 
-    const { HealthInformationService } =
-      await import("../../services/health-information.service");
-
     const callbackAuth =
       req.headers["authorization"] || req.headers["Authorization"] || "";
 
-    await HealthInformationService.processHealthInfoRequest(
-      input,
-      requestId,
-      callbackAuth,
-    );
+    // Try BullMQ queue first; fall back to direct processing if Redis is down
+    try {
+      const { enqueueHipPush } = await import(
+        "../../services/abdm.queue.service"
+      );
+      const jobId = await enqueueHipPush({
+        request: input,
+        requestId,
+        callbackAuth,
+      });
+      if (jobId) {
+        console.log(
+          `[HEALTH_INFO] Enqueued to BullMQ (jobId=${jobId}) for consent: ${input.hiRequest.consent.id}`,
+        );
+        return;
+      }
+      // jobId is null → BullMQ dedup rejected (same transactionId already queued)
+      console.log(
+        `[HEALTH_INFO] Skipped — transaction already queued for consent: ${input.hiRequest.consent.id}`,
+      );
+    } catch (queueErr: any) {
+      console.warn(
+        `[HEALTH_INFO] BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
+      );
+      // Fallback: process directly (same as before BullMQ)
+      const { HealthInformationService } = await import(
+        "../../services/health-information.service"
+      );
+      await HealthInformationService.processHealthInfoRequest(
+        input,
+        requestId,
+        callbackAuth,
+      );
+    }
   } catch (error: any) {
     console.error("[HEALTH_INFO] Handler error:", error.message);
     if (!res.headersSent) {

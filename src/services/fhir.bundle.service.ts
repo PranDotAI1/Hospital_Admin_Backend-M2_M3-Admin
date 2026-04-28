@@ -1390,10 +1390,6 @@ export const buildMedicationRequest = (
     ];
   }
 
-  console.log(
-    `[FHIR] MedicationRequest for "${medicineName}": ${JSON.stringify(medRequest.resource, null, 2)}`,
-  );
-
   return medRequest;
 };
 

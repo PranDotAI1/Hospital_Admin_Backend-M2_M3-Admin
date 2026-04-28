@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { STATUS_CODE } from "../../utils/constant";
 import { HiuService } from "../../services/hiu.service";
+import { AbdmLogger } from "../../utils/abdm.logger";
 
 export const searchPatient = async (req: Request, res: Response) => {
   try {
@@ -35,10 +36,7 @@ export const searchPatient = async (req: Request, res: Response) => {
 export const onDiscover = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    console.log(
-      "[HIU_CONTROLLER] On-discover callback received:",
-      JSON.stringify(body, null, 2),
-    );
+    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-discover callback received:", body);
 
     return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
   } catch (error: any) {
@@ -53,10 +51,7 @@ export const onDiscover = async (req: Request, res: Response) => {
 export const onLinkInit = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    console.log(
-      "[HIU_CONTROLLER] On-init (Auth) callback received:",
-      JSON.stringify(body, null, 2),
-    );
+    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-init (Auth) callback received:", body);
 
     // In a real app, you would handle the transactionId here to prompt user for OTP
     return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
@@ -72,10 +67,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
 export const onLinkConfirm = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    console.log(
-      "[HIU_CONTROLLER] On-confirm (Auth) callback received:",
-      JSON.stringify(body, null, 2),
-    );
+    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-confirm (Auth) callback received:", body);
 
     // In a real app, you would verify the auth token and link the patient locally
     return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
@@ -151,10 +143,7 @@ export const onHealthInformationRequest = async (
   try {
     const body = req.body;
 
-    console.log(
-      "[HIU_CONTROLLER] On-request callback received:",
-      JSON.stringify(body, null, 2),
-    );
+    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-request callback received:", body);
 
     const originalRequestId =
       body.response?.requestId ||
@@ -210,27 +199,51 @@ export const onHealthInformationTransfer = async (
     const { transactionId, entries, keyMaterial } = body;
 
     if (!transactionId || !entries || !keyMaterial) {
-      console.error("[HIU_CONTROLLER] Invalid transfer payload", body);
+      console.error("[HIU_CONTROLLER] Invalid transfer payload — missing transactionId, entries, or keyMaterial");
       return res.status(STATUS_CODE.ERROR).json({ message: "Invalid payload" });
     }
 
-    HiuService.handleHiuTransfer(transactionId, entries, keyMaterial)
-      .then(() =>
-        console.log(`[HIU_CONTROLLER] Transfer processed for ${transactionId}`),
-      )
-      .catch((err) =>
-        console.error(
-          `[HIU_CONTROLLER] Transfer handling failed for ${transactionId}:`,
-          err,
-        ),
-      );
+    // Respond immediately — processing happens in the background via BullMQ
+    res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
 
-    return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
+    // Try BullMQ queue first; fall back to direct processing if Redis is down
+    try {
+      const { enqueueHiuTransfer } = await import(
+        "../../services/abdm.queue.service"
+      );
+      const jobId = await enqueueHiuTransfer({
+        transactionId,
+        entries,
+        keyMaterial,
+      });
+      console.log(
+        `[HIU_CONTROLLER] Transfer enqueued (jobId=${jobId}) for ${transactionId}`,
+      );
+    } catch (queueErr: any) {
+      console.warn(
+        `[HIU_CONTROLLER] BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
+      );
+      // Fallback: process directly
+      HiuService.handleHiuTransfer(transactionId, entries, keyMaterial)
+        .then(() =>
+          console.log(
+            `[HIU_CONTROLLER] Transfer processed for ${transactionId}`,
+          ),
+        )
+        .catch((err) =>
+          console.error(
+            `[HIU_CONTROLLER] Transfer handling failed for ${transactionId}:`,
+            err,
+          ),
+        );
+    }
   } catch (error: any) {
     console.error("HIU Transfer callback error:", error);
-    return res
-      .status(STATUS_CODE.ERROR)
-      .json({ message: "Error processing transfer" });
+    if (!res.headersSent) {
+      return res
+        .status(STATUS_CODE.ERROR)
+        .json({ message: "Error processing transfer" });
+    }
   }
 };
 

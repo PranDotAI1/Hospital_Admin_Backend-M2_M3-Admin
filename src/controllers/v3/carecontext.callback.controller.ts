@@ -7,7 +7,8 @@ export const onGenerateToken = async (req: Request, res: Response) => {
   try {
     console.log(
       "CareContext Callback: on-generate-token received",
-      JSON.stringify(req.body),
+      "abhaAddress:", req.body?.abhaAddress ? "[REDACTED]" : "missing",
+      "hasLinkToken:", !!req.body?.linkToken,
     );
 
     const postData = req.body;
@@ -103,7 +104,8 @@ export const onCareContext = async (req: Request, res: Response) => {
   try {
     console.log(
       "CareContext Callback: on-carecontext received",
-      JSON.stringify(req.body),
+      "requestId:", req.body?.response?.requestId,
+      "hasError:", !!req.body?.error,
     );
 
     const postData = req.body;
@@ -161,7 +163,8 @@ export const onContextNotify = async (req: Request, res: Response) => {
   try {
     console.log(
       "CareContext Callback: on-context-notify received",
-      JSON.stringify(req.body),
+      "requestId:", req.body?.response?.requestId,
+      "status:", req.body?.acknowledgement?.status,
     );
 
     const postData = req.body;
