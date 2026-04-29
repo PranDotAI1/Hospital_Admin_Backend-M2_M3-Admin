@@ -569,6 +569,7 @@ export const getOptionalDataForCareContext = async (
 const pushHealthData = async (
   dataPushUrl: string,
   transactionId: string,
+  consentId: string,
   careContext: ICareContext,
   keyMaterial: ABDMKeyMaterial,
   authToken: string,
@@ -831,6 +832,7 @@ const pushHealthData = async (
     for (const { hiType, payload } of preparedPayloads) {
       let pushSuccess = false;
       const MAX_RETRIES = 3;
+      let consecutiveAbdm1017 = 0; // Track persistent ABDM-1017 for early exit
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -864,11 +866,27 @@ const pushHealthData = async (
         } catch (pushErr: any) {
           const errCode = pushErr.response?.data?.code;
           const errStatus = pushErr.response?.status;
-          const isTransient = errCode === "ABDM-1017" || (errStatus && errStatus >= 500);
+          const isAbdm1017 = errCode === "ABDM-1017";
+          const isTransient = isAbdm1017 || (errStatus && errStatus >= 500);
 
-          // ABDM-1017: Gateway hasn't processed our ACK yet (race condition).
+          // Track consecutive ABDM-1017 errors.
+          // If the PHR app already received this data under another consent,
+          // the transaction is permanently invalid — retries are futile.
+          if (isAbdm1017) {
+            consecutiveAbdm1017++;
+            if (consecutiveAbdm1017 >= 2) {
+              console.error(
+                `${LOG_PREFIX} ABDM-1017 persisted ${consecutiveAbdm1017} times for [${hiType}] — transaction is permanently invalid (likely already fulfilled under another consent). Stopping retries.`,
+              );
+              break;
+            }
+          } else {
+            consecutiveAbdm1017 = 0;
+          }
+
           // 5xx: Gateway is temporarily unavailable.
-          // Retry with exponential backoff — gateway typically catches up within a few seconds.
+          // ABDM-1017 on first occurrence: Gateway may not have processed ACK yet.
+          // Retry with exponential backoff.
           if (isTransient && attempt < MAX_RETRIES) {
             const backoffMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
             console.warn(
@@ -932,7 +950,34 @@ const pushHealthData = async (
 
     return allPushed;
   } catch (error: any) {
-    // Outer catch for non-push errors (patient lookup, FHIR generation, encryption)
+    // The user requested removing BullMQ queueing entirely.
+    // If we hit a transient error and exhaust all inline retries, we now
+    // immediately send the FAILED notification to ABDM to unlock the consent.
+    if (error instanceof TransientDataPushError) {
+      console.error(
+        `${LOG_PREFIX} Data push failed for ${careContext.careContextReference} after all inline retries. Sending FAILED notification to ABDM.`,
+      );
+      await CareContextModel.updateOne(
+        { _id: careContext._id },
+        {
+          $set: {
+            dataTransferStatus: DataTransferStatus.FAILED,
+            transactionId,
+            dataTransferError: { message: error.message, code: error.code },
+          },
+        },
+      );
+      
+      // We must notify ABDM that the session failed so it doesn't get permanently stuck
+      try {
+        await sendFailedTransferNotification(consentId, transactionId);
+      } catch (notifyErr: any) {
+        console.error(`${LOG_PREFIX} Failed to send FAILED notification:`, notifyErr.message);
+      }
+      return false;
+    }
+
+    // Non-transient errors (patient lookup, FHIR generation, encryption)
     console.error(
       `${LOG_PREFIX} Data push failed for ${careContext.careContextReference}:<>`,
       error.response?.status,
@@ -1073,36 +1118,31 @@ const processHealthInfoRequest = async (
     return;
   }
 
-  // --- LAYER 1: LOCAL IN-MEMORY LOCK (fast path, zero-cost) ---
-  if (activeConsentProcessing.has(consentId)) {
+  // --- LAYER 1: LOCAL IN-MEMORY LOCK (by transactionId) ---
+  // Lock on transactionId (not consentId) so that the same ABDM request isn't
+  // processed twice, but different requests for the same consent (e.g. after
+  // clinical data update) ARE allowed through.
+  if (activeConsentProcessing.has(transactionId)) {
     console.warn(
-      `${LOG_PREFIX} Duplicate webhook blocked (in-memory)! Consent ${consentId} already processing. (Transaction: ${transactionId}). Skipping.`,
+      `${LOG_PREFIX} Duplicate blocked (in-memory)! Transaction ${transactionId} already processing. Skipping.`,
     );
     return;
   }
 
-  // --- LAYER 2: REDIS DISTRIBUTED LOCK (cross-instance safety) ---
-  // Provides mutual exclusion across PM2 clusters / multiple server instances.
-  // Falls back to in-memory only if Redis is unavailable.
+  // --- LAYER 2: REDIS DISTRIBUTED LOCK (by transactionId) ---
+  // Prevents the same transactionId from being processed concurrently across
+  // PM2 clusters / multiple server instances.
   let useRedisLock = false;
   try {
-    const { acquireConsentLock, isConsentProcessed } = await import(
+    const { acquireConsentLock } = await import(
       "./abdm.queue.service"
     );
 
-    // Check Redis-level idempotency first (fastest)
-    if (await isConsentProcessed(consentId)) {
-      console.warn(
-        `${LOG_PREFIX} Consent ${consentId} already processed (Redis). Transaction ${transactionId} is duplicate. Skipping.`,
-      );
-      return;
-    }
-
-    // Acquire distributed lock
-    const lockAcquired = await acquireConsentLock(consentId);
+    // Acquire distributed lock keyed on transactionId
+    const lockAcquired = await acquireConsentLock(transactionId);
     if (!lockAcquired) {
       console.warn(
-        `${LOG_PREFIX} Duplicate webhook blocked (Redis lock)! Consent ${consentId} locked by another instance. (Transaction: ${transactionId}). Skipping.`,
+        `${LOG_PREFIX} Duplicate blocked (Redis lock)! Transaction ${transactionId} already locked. Skipping.`,
       );
       return;
     }
@@ -1114,15 +1154,15 @@ const processHealthInfoRequest = async (
   }
 
   // Set in-memory lock (local instance dedup)
-  activeConsentProcessing.add(consentId);
+  activeConsentProcessing.add(transactionId);
 
   // Helper to release both locks cleanly.
   const releaseLock = async () => {
-    activeConsentProcessing.delete(consentId);
+    activeConsentProcessing.delete(transactionId);
     if (useRedisLock) {
       try {
         const { releaseConsentLock } = await import("./abdm.queue.service");
-        await releaseConsentLock(consentId);
+        await releaseConsentLock(transactionId);
       } catch (_) {}
     }
   };
@@ -1236,12 +1276,14 @@ const processHealthInfoRequest = async (
       return;
     }
 
-    // ── ABDM-1017 RACE CONDITION FIX ──
-    // ABDM processes our ACK asynchronously. The data push must wait for the gateway
-    // to finish activating the transaction. Combined with retry logic in pushHealthData
-    // for edge cases where the gateway is slower than usual.
-    console.log(`${LOG_PREFIX} Waiting 2s for ABDM Gateway to process the ACK before pushing data...`);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // The ABDM sandbox PHR app needs time to register the transaction after the
+    // gateway processes our ACK. Without this delay, the PHR returns ABDM-1017
+    // (Invalid Transaction Id) because it hasn't set up the transaction yet.
+    // The inline retry logic (2s/4s/8s backoff) in pushHealthData provides
+    // additional resilience for edge cases.
+    const STABILIZATION_DELAY_MS = 5000;
+    console.log(`${LOG_PREFIX} Waiting ${STABILIZATION_DELAY_MS / 1000}s for ABDM to activate transaction before pushing data...`);
+    await new Promise((resolve) => setTimeout(resolve, STABILIZATION_DELAY_MS));
 
     // Step 2: Find care contexts for this consent
     careContexts = await findCareContextsForConsent(consentId, dateRange);
@@ -1277,6 +1319,9 @@ const processHealthInfoRequest = async (
     // and to keep all pushes within the ABDM transaction window.
     const consentedHiTypes = artefact?.hiTypes;
 
+    // Track push results in-memory to avoid concurrent DB overwrite issues
+    const pushResults: any[] = [];
+
     let browser: Browser | undefined;
     try {
       browser = await puppeteer.launch({
@@ -1295,16 +1340,26 @@ const processHealthInfoRequest = async (
 
       for (const cc of careContexts) {
         try {
-          await pushHealthData(
+          const success = await pushHealthData(
             dataPushUrl,
             transactionId,
+            consentId,
             cc,
             keyMaterial,
             abdmToken,
             consentedHiTypes,
             browser,
           );
+          pushResults.push({
+            ...cc,
+            dataTransferStatus: success ? DataTransferStatus.TRANSFERRED : DataTransferStatus.FAILED
+          });
         } catch (err: any) {
+          pushResults.push({
+            ...cc,
+            dataTransferStatus: DataTransferStatus.FAILED
+          });
+          
           // ── GUARANTEED DELIVERY ──
           // TransientDataPushError = gateway is temporarily unavailable.
           // Let it propagate to BullMQ so the entire job is retried later.
@@ -1342,16 +1397,13 @@ const processHealthInfoRequest = async (
       }
     }
 
-    // Refresh care contexts to get updated statuses
-    const updatedContexts = await CareContextModel.find({
-      _id: { $in: contextIds },
-    }).lean();
-
-    // Step 4: Notify ABDM about the transfer
+    // Step 4: Notify ABDM about the transfer using in-memory results
+    // This prevents race conditions where a concurrent abandoned transaction 
+    // overwrites the DB status to FAILED right before we read it.
     await notifyHealthInfoTransfer(
       consentId,
       transactionId,
-      updatedContexts as unknown as ICareContext[],
+      pushResults as unknown as ICareContext[],
       abdmToken,
     );
 
@@ -1405,6 +1457,73 @@ const processHealthInfoRequest = async (
 };
 
 // ============================================================================
+// Send FAILED transfer notification (for permanent failures)
+// ============================================================================
+
+/**
+ * Send a FAILED transfer notification to ABDM when all retries are exhausted.
+ * Per ABDM M2 spec Section 6.3.6, HIP must notify CM about transfer failure
+ * so the consent can be released for future requests.
+ */
+const sendFailedTransferNotification = async (
+  consentId: string,
+  transactionId: string,
+): Promise<void> => {
+  try {
+    const abdmToken = await AbdmTokenService.getToken();
+    const requestId = generateUID();
+
+    // Find care contexts for this consent to build statusResponses
+    const careContexts = await CareContextModel.find({
+      transactionId,
+    }).lean();
+
+    const statusResponses = careContexts.length > 0
+      ? careContexts.map((cc: any) => ({
+          careContextReference: cc.careContextReference,
+          hiStatus: "ERRORED",
+          description: "Data push permanently failed after all retries",
+        }))
+      : [{ careContextReference: "unknown", hiStatus: "ERRORED", description: "Data push permanently failed" }];
+
+    const payload = {
+      notification: {
+        consentId,
+        transactionId,
+        doneAt: new Date().toISOString(),
+        notifier: { type: "HIP", id: facilityId },
+        statusNotification: {
+          sessionStatus: "FAILED",
+          hipId: facilityId,
+          statusResponses,
+        },
+      },
+    };
+
+    const url = `${process.env.ABDM_BASE_URL}${ENDPOINTS.HEALTH_INFO_NOTIFY}`;
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${abdmToken}`,
+        "REQUEST-ID": requestId,
+        TIMESTAMP: new Date().toISOString(),
+        "X-CM-ID": X_CM_ID,
+        "Content-Type": "application/json",
+      },
+    });
+
+    console.log(
+      `${LOG_PREFIX} Sent FAILED transfer notification to ABDM for consent ${consentId}, status: ${response.status}`,
+    );
+  } catch (err: any) {
+    console.error(
+      `${LOG_PREFIX} Failed to send FAILED notification for consent ${consentId}:`,
+      err.response?.status,
+      err.response?.data || err.message,
+    );
+  }
+};
+
+// ============================================================================
 // Export
 // ============================================================================
 
@@ -1414,6 +1533,7 @@ export const HealthInformationService = {
   pushHealthData,
   notifyHealthInfoTransfer,
   processHealthInfoRequest,
+  sendFailedTransferNotification,
 };
 
 export default HealthInformationService;

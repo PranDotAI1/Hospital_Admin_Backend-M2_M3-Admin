@@ -215,40 +215,17 @@ export const healthInformation = async (req: any, res: any) => {
     const callbackAuth =
       req.headers["authorization"] || req.headers["Authorization"] || "";
 
-    // Try BullMQ queue first; fall back to direct processing if Redis is down
-    try {
-      const { enqueueHipPush } = await import(
-        "../../services/abdm.queue.service"
-      );
-      const jobId = await enqueueHipPush({
-        request: input,
-        requestId,
-        callbackAuth,
-      });
-      if (jobId) {
-        console.log(
-          `[HEALTH_INFO] Enqueued to BullMQ (jobId=${jobId}) for consent: ${input.hiRequest.consent.id}`,
-        );
-        return;
-      }
-      // jobId is null → BullMQ dedup rejected (same transactionId already queued)
-      console.log(
-        `[HEALTH_INFO] Skipped — transaction already queued for consent: ${input.hiRequest.consent.id}`,
-      );
-    } catch (queueErr: any) {
-      console.warn(
-        `[HEALTH_INFO] BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
-      );
-      // Fallback: process directly (same as before BullMQ)
-      const { HealthInformationService } = await import(
-        "../../services/health-information.service"
-      );
-      await HealthInformationService.processHealthInfoRequest(
-        input,
-        requestId,
-        callbackAuth,
-      );
-    }
+    // Process directly in the background (no queue) as per user preference
+    const { HealthInformationService } = await import(
+      "../../services/health-information.service"
+    );
+    HealthInformationService.processHealthInfoRequest(
+      input,
+      requestId,
+      callbackAuth,
+    ).catch(e => {
+      console.error("[HEALTH_INFO] Background processing failed:", e);
+    });
   } catch (error: any) {
     console.error("[HEALTH_INFO] Handler error:", error.message);
     if (!res.headersSent) {

@@ -214,10 +214,8 @@ export const startHipPushWorker = (): Worker => {
     {
       connection: createBullMQConnection(),
       concurrency: 2, // Max 2 concurrent Puppeteer-based pushes
-      limiter: {
-        max: 10, // Max 10 jobs
-        duration: 60000, // Per minute (ABDM rate limiting safety)
-      },
+      // No rate limiter — ABDM spec requires immediate processing of
+      // health-information/request. Concurrency cap is sufficient protection.
     },
   );
 
@@ -225,7 +223,7 @@ export const startHipPushWorker = (): Worker => {
     console.log(`${LOG_PREFIX} [HIP Worker] Job ${job.id} completed`);
   });
 
-  _hipWorker.on("failed", (job, err) => {
+  _hipWorker.on("failed", async (job, err) => {
     const maxAttempts = job?.opts?.attempts ?? 1;
     const attemptsUsed = job?.attemptsMade ?? 0;
     const willRetry = attemptsUsed < maxAttempts;
@@ -238,6 +236,28 @@ export const startHipPushWorker = (): Worker => {
       console.error(
         `${LOG_PREFIX} [HIP Worker] Job ${job?.id} PERMANENTLY FAILED after ${attemptsUsed} attempts: ${err.message}`,
       );
+
+      // Per ABDM M2 spec Section 6.3.6: notify ABDM that the transfer FAILED
+      // so it can release the consent for future requests.
+      if (job?.data) {
+        try {
+          const { request, requestId, callbackAuth } = job.data;
+          const consentId = request.hiRequest.consent.id;
+          const transactionId = request.transactionId;
+          const { default: HealthInformationService } = await import(
+            "./health-information.service"
+          );
+          await HealthInformationService.sendFailedTransferNotification(
+            consentId,
+            transactionId,
+          );
+        } catch (notifyErr: any) {
+          console.error(
+            `${LOG_PREFIX} [HIP Worker] Failed to send FAILED notification to ABDM:`,
+            notifyErr.message,
+          );
+        }
+      }
     }
   });
 
@@ -246,7 +266,7 @@ export const startHipPushWorker = (): Worker => {
   });
 
   console.log(
-    `${LOG_PREFIX} HIP push worker started (concurrency=2, rate=10/min)`,
+    `${LOG_PREFIX} HIP push worker started (concurrency=2)`,
   );
   return _hipWorker;
 };
