@@ -52,17 +52,31 @@ export const generateUID = () => {
   });
 };
 
-export const CLIENT_ID = "SBXID_009407";
-export const CLIENT_SECRET = "a924a27d-6305-47c1-b610-07bf5c629350";
-export const GRANT_TYPE = "client_credentials";
-export const GET_URL = "https://admin.pran.ai";
-//export const GET_URL = "https://webhook.site/b301f5f6-6229-4934-8568-4c7dfea7a960";
-export const HIP_NAME = "ABC hospital";
-export const facilityId = "IN0710001890";
-export const facilityName = "ABC hospital";
-export const bridgeId = "SBXID_009407";
-export const X_HIP_ID = "IN0710001890";
+// ABDM Credentials - loaded from environment variables
+export const CLIENT_ID = process.env.ABDM_CLIENT_ID || "";
+export const CLIENT_SECRET = process.env.ABDM_CLIENT_SECRET || "";
+export const GRANT_TYPE = process.env.ABDM_GRANT_TYPE || "client_credentials";
 
+// Callback URL - the public URL of this server
+export const GET_URL = process.env.ABDM_CALLBACK_URL || "";
+
+// HIP Configuration
+export const HIP_NAME = process.env.ABDM_HIP_NAME || "ABC hospital";
+export const facilityId = process.env.ABDM_FACILITY_ID || "";
+export const facilityName = process.env.ABDM_FACILITY_NAME || "ABC hospital";
+export const bridgeId = process.env.ABDM_BRIDGE_ID || "";
+export const X_HIP_ID = process.env.ABDM_X_HIP_ID || "";
+export const X_HIU_ID =
+  process.env.ABDM_X_HIU_ID || process.env.ABDM_X_HIP_ID || ""; // HIU may have separate ID
+export const X_CM_ID = process.env.ABDM_X_CM_ID || "sbx";
+
+export const clientParams = {
+  clientId: CLIENT_ID,
+  clientSecret: CLIENT_SECRET,
+  grantType: GRANT_TYPE,
+};
+
+/** Must match CareContext HI_TYPES (ABDM 7 clinical artifact types). Used for consent/APIs. */
 export const HIP_TYPES = [
   "Prescription",
   "DiagnosticReport",
@@ -71,25 +85,32 @@ export const HIP_TYPES = [
   "ImmunizationRecord",
   "HealthDocumentRecord",
   "WellnessRecord",
-];
-
-export const REDIS_LOGS = {
-  DISCONNECTED: "Redis disconnected successfully",
-};
-
-export const REDIS_EVENTS = {
-  ERROR: "error",
-  CONNECT: "connect",
-  READY: "ready",
-  RECONNECTING: "reconnecting",
-  END: "end",
-};
-
-export const PROCESS_EVENTS = {
-  SIGINT: "SIGINT",
-  SIGTERM: "SIGTERM",
-};
-
+] as const;
 
 export const ABDM_PHR_WEB_BASE_URL =
   process.env.ABDM_PHR_WEB_BASE_URL || "https://phrsbx.abdm.gov.in";
+
+export const baseHeaders = (hip: boolean = false) => ({
+  "Content-Type": "application/json",
+  "REQUEST-ID": generateUID(),
+  TIMESTAMP: new Date().toISOString(),
+  "X-CM-ID": X_CM_ID,
+  ...(hip && { "X-HIP-ID": X_HIP_ID }),
+});
+
+/** Maximum number of link attempts before marking as permanently FAILED */
+export const MAX_LINK_ATTEMPTS = 3;
+
+/** Link token validity in months (ABDM says 6, we use 5 for safety) */
+export const LINK_TOKEN_VALIDITY_MONTHS = 5;
+
+/** Cooldown between link token requests per patient (ABDM can block for 24h if hit too often) */
+export const LINK_TOKEN_REQUEST_COOLDOWN_HOURS = 24;
+
+/** Whether to update patient name from ABDM discovery flow data (set true to enable) */
+export const DISCOVERY_UPDATE_PATIENT_NAME = true;
+
+export const SEPARATE_CARECONTEXT_PER_HITYPE: boolean =
+  process.env.SEPARATE_CARECONTEXT_PER_HITYPE !== "false";
+
+export { ENDPOINTS } from "./endpoints";

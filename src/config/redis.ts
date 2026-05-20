@@ -1,122 +1,87 @@
-import { createClient } from "redis";
-import { REDIS_LOGS, REDIS_EVENTS, PROCESS_EVENTS } from "../utils/constant";
+import IORedis from "ioredis";
 
-type RedisClientType = ReturnType<typeof createClient>;
+const LOG_PREFIX = "[REDIS]";
 
-class RedisInterface {
-  private static instance: RedisInterface;
-  redisClient: RedisClientType;
+const createRedisConnection = (): IORedis => {
+  const redisUrl = process.env.REDIS_URL;
 
-  private constructor() {
-    this.redisClient = createClient({
-      url: process.env.REDIS_URL,
-    });
-    this.initializeListeners();
-  }
-
-  private initializeListeners() {
-    this.redisClient.on(REDIS_EVENTS.ERROR, (err) => {
-      console.error(`Redis error: ${err.message}`);
-    });
-
-    this.redisClient.on(REDIS_EVENTS.CONNECT, () => {
-      console.info("Redis connecting...");
-    });
-
-    this.redisClient.on(REDIS_EVENTS.READY, () => {
-      console.info("Redis ready");
-    });
-
-    this.redisClient.on(REDIS_EVENTS.RECONNECTING, () => {
-      console.warn("Redis reconnecting...");
-    });
-
-    this.redisClient.on(REDIS_EVENTS.END, () => {
-      console.warn("Redis connection closed");
-    });
-  }
-
-  public async connect(): Promise<RedisClientType> {
-    if (!this.redisClient.isOpen) {
-      await this.redisClient.connect();
-    }
-    return this.redisClient;
-  }
-
-  public async disconnect(): Promise<void> {
-    if (this.redisClient.isOpen) {
-      await this.redisClient.quit();
-      console.info(REDIS_LOGS.DISCONNECTED);
-    }
-  }
-
-  public async set(
-    key: string,
-    value: any,
-    options?: { EX?: number; PX?: number },
-  ): Promise<string | null> {
-    await this.connect();
-    const stringValue =
-      typeof value === "object" ? JSON.stringify(value) : String(value);
-
-    return this.redisClient.set(key, stringValue, options);
-  }
-
-  public async get<T = string>(
-    key: string,
-    parseJson = true,
-  ): Promise<T | string | null> {
-    await this.connect();
-    const value = await this.redisClient.get(key);
-    if (parseJson && value) {
-      try {
-        return JSON.parse(value) as T;
-      } catch {
-        return value;
+  const opts: import("ioredis").RedisOptions = {
+    maxRetriesPerRequest: null, // Required by BullMQ
+    enableReadyCheck: false,
+    retryStrategy: (times: number) => {
+      if (times > 10) {
+        console.error(
+          `${LOG_PREFIX} Max Redis reconnection attempts (10) exceeded`,
+        );
+        return null; // Stop retrying
       }
-    }
-    return value;
+      const delay = Math.min(times * 500, 5000);
+      console.warn(
+        `${LOG_PREFIX} Reconnecting to Redis (attempt ${times}, delay ${delay}ms)`,
+      );
+      return delay;
+    },
+    lazyConnect: false,
+  };
+
+  let connection: IORedis;
+
+  if (redisUrl) {
+    connection = new IORedis(redisUrl, opts);
+  } else {
+    const host = process.env.REDIS_HOST || "127.0.0.1";
+    const port = parseInt(process.env.REDIS_PORT || "6379", 10);
+    const password = process.env.REDIS_PASSWORD || undefined;
+    connection = new IORedis({ host, port, password, ...opts });
   }
 
-  public async del(key: string): Promise<number> {
-    await this.connect();
-    return this.redisClient.del(key);
+  connection.on("connect", () => {
+    console.log(`${LOG_PREFIX} Connected to Redis`);
+  });
+
+  connection.on("error", (err) => {
+    console.error(`${LOG_PREFIX} Redis error:`, err.message);
+  });
+
+  connection.on("close", () => {
+    console.warn(`${LOG_PREFIX} Redis connection closed`);
+  });
+
+  return connection;
+};
+
+/**
+ * Shared Redis connection singleton for direct key operations
+ * (locks, caching, transaction ID bridging).
+ *
+ * BullMQ creates its own connections internally — do NOT share this with Queue/Worker.
+ */
+let _sharedConnection: IORedis | null = null;
+
+export const getRedisConnection = (): IORedis => {
+  if (!_sharedConnection) {
+    _sharedConnection = createRedisConnection();
   }
+  return _sharedConnection;
+};
 
-  public async incr(key: string): Promise<number> {
-    await this.connect();
-    return this.redisClient.incr(key);
+/**
+ * Create a NEW Redis connection for BullMQ Queue/Worker.
+ * BullMQ requires its own dedicated connections (one per Queue, one per Worker).
+ * These must NOT be shared with application-level Redis operations.
+ */
+export const createBullMQConnection = (): IORedis => {
+  return createRedisConnection();
+};
+
+/**
+ * Gracefully close all Redis connections.
+ * Called during server shutdown.
+ */
+export const closeRedisConnections = async (): Promise<void> => {
+  if (_sharedConnection) {
+    await _sharedConnection.quit().catch(() => { });
+    _sharedConnection = null;
+    console.log(`${LOG_PREFIX} Shared Redis connection closed`);
   }
-
-  public async decr(key: string): Promise<number> {
-    await this.connect();
-    return this.redisClient.decr(key);
-  }
-
-  public async exists(key: string): Promise<boolean> {
-    await this.connect();
-    const result = await this.redisClient.exists(key);
-    return result > 0;
-  }
-
-  public static getInstance(): RedisInterface {
-    if (!RedisInterface.instance) {
-      RedisInterface.instance = new RedisInterface();
-
-      process.on(PROCESS_EVENTS.SIGINT, async () => {
-        console.log("Redis shutting down (SIGINT)...");
-        await RedisInterface.instance.disconnect();
-        process.exit(0);
-      });
-
-      process.on(PROCESS_EVENTS.SIGTERM, async () => {
-        console.log("Redis shutting down (SIGTERM)...");
-        await RedisInterface.instance.disconnect();
-        process.exit(0);
-      });
-    }
-    return RedisInterface.instance;
-  }
-}
-
-export default RedisInterface.getInstance();
+};

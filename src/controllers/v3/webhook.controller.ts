@@ -1,497 +1,403 @@
-import axios from "axios";
-import { HealthRecordModel } from "../../models/HealthRecord";
-import { X_HIP_ID, facilityId, generateUID } from "../../utils/constant";
-import { ENDPOINTS } from "../../utils/endpoints";
+import { ConsentRequestModel } from "../../models/ConsentRequest";
+import {
+  ConsentArtefactModel,
+  ConsentArtefactStatus,
+} from "../../models/ConsentArtefact";
+import { PHRConsentArtefactModel } from "../../models/PHRConsentArtefact";
+import { ExternalHealthRecordModel } from "../../models/ExternalHealthRecord";
+import { ConsentService } from "../../services/consent.service";
+import { generateUID } from "../../utils/constant";
+import { AbdmLogger } from "../../utils/abdm.logger";
 
-export const requestOnInitCallback = async (req: any, res: any) => {
-    try {
-        const baseUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
-        console.log(
-            "requestOnInitCallback Link token generation start here ----------------------------------",
+const LOG_PREFIX = "[CONSENT_WEBHOOK]";
+
+export const handleConsentOnInit = async (req: any, res: any) => {
+  try {
+    const postData = req.body;
+    AbdmLogger.logPayloadDebug(`${LOG_PREFIX} on-init callback received:`, postData);
+
+    // Handle error case
+    if (postData.error) {
+      AbdmLogger.logPayloadDebug(`${LOG_PREFIX} Consent init error from ABDM:`, postData.error);
+
+      if (postData.response?.requestId) {
+        await ConsentRequestModel.updateOne(
+          { requestId: postData.response.requestId },
+          {
+            $set: {
+              status: "DENIED",
+              error: postData.error,
+            },
+          },
         );
         console.log(
-            "URL-------------",
-            baseUrl,
-            req.headers["authorization"].split(" ")[1],
+          `${LOG_PREFIX} Marked consent request ${postData.response.requestId} as DENIED`,
         );
-        //
-        let postData = req.body;
-        console.log("linkTokenGeneration-1 Request ", postData);
-        const latestRecord = await HealthRecordModel.findOne({
-            "version_m3.access_token": req.headers["authorization"].split(" ")[1],
-        })
-            .sort({ updatedAt: -1 })
-            .limit(1);
+      }
 
-        console.log("LinkTokenGeneration-2 Response ", latestRecord, postData);
-
-        if (latestRecord) {
-            console.log("LinkTokenGeneration Response success", postData);
-            await HealthRecordModel.updateOne(
-                { _id: latestRecord._id },
-                {
-                    $set: {
-                        "version_m3.consentId": postData.consentRequest.id,
-                        "version_m3.consentRequestId": postData.response.requestId,
-                        "version_m3.updatedAt": new Date(),
-                    },
-                },
-            );
-            await updateConsentRequestStatus(
-                req,
-                res,
-                postData.consentRequest.id,
-                latestRecord,
-            );
-            return res
-                .status(200)
-                .json({ status: 200, message: "Latest record updated for m3" });
-        } else {
-            console.log("LinkTokenGeneration Response no data found", postData);
-            return res
-                .status(200)
-                .json({
-                    status: 200,
-                    message: "No records found for this abhaAddress.",
-                });
-        }
-    } catch (error: any) {
-        console.log("web hook error Response", error);
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
+      return res.status(200).json({ status: "Error handled" });
     }
+
+    // Handle success case
+    if (postData.consentRequest?.id && postData.response?.requestId) {
+      const updateResult = await ConsentRequestModel.updateOne(
+        { requestId: postData.response.requestId },
+        {
+          $set: {
+            consentRequestId: postData.consentRequest.id,
+            status: "REQUESTED",
+          },
+        },
+      );
+
+      console.log(
+        `${LOG_PREFIX} Consent request updated: consentRequestId=${postData.consentRequest.id}, matched=${updateResult.matchedCount}`,
+      );
+
+      if (updateResult.matchedCount === 0) {
+        console.warn(
+          `${LOG_PREFIX} No consent request found with requestId=${postData.response.requestId}. Callback may have arrived before DB write completed.`,
+        );
+      }
+    } else {
+      console.warn(
+        `${LOG_PREFIX} on-init callback missing consentRequest.id or response.requestId`,
+      );
+    }
+
+    return res.status(200).json({ status: "success" });
+  } catch (error: any) {
+    console.error(`${LOG_PREFIX} Error in handleConsentOnInit:`, error.message);
+    return res.status(500).json({ error: error.message });
+  }
 };
 
-//https://dev.abdm.gov.in/api/hiecm/consent/v3/request/status
+export const handleConsentHipNotify = async (req: any, res: any) => {
+  try {
+    const postData = req.body;
+    const requestId =
+      req.headers["request-id"] || req.headers["REQUEST-ID"] || generateUID();
+    const route = req.originalUrl || req.path;
 
-export const updateConsentRequestStatus = async (
-    req: any,
-    res: any,
-    consentId: string,
-    latestRecord: any,
-) => {
+    AbdmLogger.logPayloadDebug(`${LOG_PREFIX} HIP notify callback on ${route}:`, postData);
+
+    const notification = postData.notification;
+    if (!notification) {
+      console.error(`${LOG_PREFIX} HIP notify missing notification object`);
+      return res.status(400).json({ error: "Missing notification object" });
+    }
+
+    // Respond immediately -- processing happens in BullMQ worker
+    res.status(200).json({ status: "success" });
+
+    const callbackAuth =
+      req.headers["authorization"] || req.headers["Authorization"];
+
+    // Try BullMQ queue first; fall back to direct processing if Redis is down
     try {
-        const params = {
-            consentRequestId: consentId,
-        };
+      const { enqueueConsentNotify } = await import(
+        "../../services/abdm.webhook.queue"
+      );
+      const jobId = await enqueueConsentNotify({
+        notification,
+        requestId,
+        callbackAuth,
+      });
+      if (jobId) {
+        console.log(
+          `${LOG_PREFIX} Enqueued consent-notify to BullMQ (jobId=${jobId})`,
+        );
+        return;
+      }
+    } catch (queueErr: any) {
+      console.warn(
+        `${LOG_PREFIX} BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
+      );
+    }
 
-        let random32String = generateUID();
+    // Fallback: process directly
+    await ConsentService.handleHipNotify(notification, requestId, callbackAuth);
+  } catch (error: any) {
+    console.error(
+      `${LOG_PREFIX} Error in handleConsentHipNotify:`,
+      error.message,
+    );
+    if (!res.headersSent) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+};
 
-        const response = await axios.post(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.GET_REQ_STATUS}`,
-            params,
+export const handleConsentOnFetch = async (req: any, res: any) => {
+  try {
+    const body = req.body;
+    const paramRequestId = req.params.requestid || body.response?.requestId;
+
+    console.log(
+      `${LOG_PREFIX} on-fetch callback received for request: ${paramRequestId || "unknown"}`,
+    );
+
+    if (body.error) {
+      console.error(
+        `${LOG_PREFIX} Consent fetch error from ABDM: code=${body.error?.code}, message=${body.error?.message}`,
+      );
+      return res.status(200).json({ status: "Error handled" });
+    }
+
+    // Respond immediately — processing in BullMQ worker
+    res.status(200).json({ status: "success" });
+
+    // Try BullMQ queue first
+    try {
+      const { enqueueConsentOnFetch } = await import(
+        "../../services/abdm.webhook.queue"
+      );
+      const jobId = await enqueueConsentOnFetch({
+        body,
+        paramRequestId,
+      });
+      if (jobId) {
+        console.log(
+          `${LOG_PREFIX} Enqueued consent-on-fetch to BullMQ (jobId=${jobId})`,
+        );
+        return;
+      }
+    } catch (queueErr: any) {
+      console.warn(
+        `${LOG_PREFIX} BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
+      );
+    }
+
+    // Fallback: process directly (same as before)
+    if (body.consent?.consentDetail) {
+      const consentDetail = body.consent.consentDetail;
+      const consentStatus = body.consent.status || "GRANTED";
+      const signature = body.consent.signature;
+
+      if (signature) {
+        consentDetail.signature = signature;
+      }
+
+      const resolvedConsentRequestId =
+        consentDetail.consentRequestId || paramRequestId;
+
+      const isPHRPull = consentDetail.purpose?.code === "PATRQT";
+
+      let usePHRCollection = isPHRPull;
+      if (!isPHRPull) {
+        const consentReq = resolvedConsentRequestId
+          ? await ConsentRequestModel.findOne({
+              $or: [
+                { consentRequestId: resolvedConsentRequestId },
+                { requestId: resolvedConsentRequestId },
+              ],
+            })
+              .select("requestPurpose")
+              .lean()
+          : null;
+        usePHRCollection = consentReq?.requestPurpose === "PHR";
+      }
+
+      if (isPHRPull) {
+        console.log(
+          `${LOG_PREFIX} Detected PHR pull record (purpose.code=PATRQT). Using PHR collection.`,
+        );
+      }
+
+      const artefact = await ConsentService.storeArtefactDetails(
+        consentDetail,
+        consentStatus,
+        resolvedConsentRequestId,
+        usePHRCollection,
+      );
+
+      if (artefact) {
+        const consentId = consentDetail.consentId || body.consent.id;
+
+        if (consentId) {
+          await ConsentRequestModel.updateOne(
             {
-                headers: {
-                    "Content-Type": "application/json",
-                    "REQUEST-ID": random32String,
-                    TIMESTAMP: new Date().toISOString(),
-                    "X-CM-ID": "sbx",
-                    "X-HIP-ID": X_HIP_ID,
-                    Authorization: "Bearer " + req.headers["authorization"],
-                },
+              $or: [
+                { consentArtefacts: consentId },
+                { consentRequestId: consentId },
+              ],
             },
-        );
-        console.log("M3 Step-1 Response consentRequestId", response.data);
-        if (response.status == 202 || response.status == 200) {
-            let resp = response.data;
-            await HealthRecordModel.updateOne(
-                { _id: latestRecord._id },
-                {
-                    $set: {
-                        "version_m3.consentStatus": resp.consentRequest.status,
-                    },
-                },
-            );
-            await onNotify(req, res, latestRecord);
-            //return res.status(response.status).json({ "status": response.status, "message": "Success", "api_name": "get consent status https://dev.abdm.gov.in/api/hiecm/consent/v3/request/status" });
-        } else {
-            return res
-                .status(response.status)
-                .json({
-                    status: response.status,
-                    error: "getting error from api " + response.data,
-                    step: 1,
-                });
-        }
-    } catch (error: any) {
-        console.log("M3 error-1", error.response);
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
-    }
-};
-
-//https://dev.abdm.gov.in/api/hiecm/consent/v3/request/hiu/on-notify
-export const onNotify = async (req: any, res: any, latestRecord: any) => {
-    try {
-        console.log(
-            "M3 Step-1 Response onNotify ---- /api/hiecm/consent/v3/request/hiu/on-notify",
-        );
-        const record = await HealthRecordModel.findOne({ _id: latestRecord._id })
-            .sort({ updatedAt: -1 })
-            .limit(1);
-
-        let random32String = generateUID();
-        let params = {
-            acknowledgement: [
-                {
-                    status: record?.version_m3?.status,
-                    consentId: record?.version_m3?.consentId,
-                },
-            ],
-            response: {
-                requestId: record?.version_m3?.last_request_id,
-            },
-        };
-
-        const response = await axios.post(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.ON_NOTIFY}`,
-            params,
             {
-                headers: {
-                    "Content-Type": "application/json",
-                    "REQUEST-ID": random32String,
-                    TIMESTAMP: new Date().toISOString(),
-                    "X-CM-ID": "sbx",
-                    Authorization: "Bearer " + req.headers["authorization"],
-                },
+              $set: {
+                status: consentStatus,
+              },
             },
-        );
-        console.log("M3 Step-1 Response onNotify", response.data);
-        if (response.status == 202 || response.status == 200) {
-            await patientConsentFetch(req, res, record?.version_m3?.consentId);
-            //return res.status(response.status).json({ "status": response.status, "message": "Success", "api_name": "notifiy status https://dev.abdm.gov.in/api/hiecm/consent/v3/request/hiu/on-notify" });
-        } else {
-            return res
-                .status(response.status)
-                .json({
-                    status: response.status,
-                    error: "getting error from api " + response.data,
-                    step: 1,
-                });
+          );
         }
-    } catch (error: any) {
-        console.log("M3 error-1", error.response);
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
-    }
-};
 
-//https://dev.abdm.gov.in/api/hiecm/consent/v3/fetch
-export const patientConsentFetch = async (
-    req: any,
-    res: any,
-    consentId: any,
-) => {
-    try {
         console.log(
-            "Step -- 99  patient Consent Fetch start here ------------------- ",
+          `${LOG_PREFIX} Artefact details stored for ${artefact.artefactId}`,
         );
-        let random32String = generateUID();
-        let params = {
-            consentId: consentId,
-        };
-        const response = await axios.post(
-            `${process.env.ABDM_BASE_URL + ENDPOINTS.CONSENT_FETCH}`,
-            params,
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    "REQUEST-ID": random32String,
-                    TIMESTAMP: new Date().toISOString(),
-                    "X-CM-ID": "sbx",
-                    "X-HIP-ID": X_HIP_ID,
-                    Authorization: "Bearer " + req.headers["authorization"],
-                },
-            },
-        );
-        console.log(
-            "patient Consent Fetch response ----------",
-            response.data,
-            "---------status-----",
-            response.status,
-        );
-        if (response.status == 202 || response.status == 200) {
-            // will get the response in callback
-            return res
-                .status(response.status)
-                .json({
-                    status: response.status,
-                    message: "Consent fetch success",
-                    api_name: "notifiy status /api/v3/hiu/consent/on-fetch",
-                });
-        } else {
-            return res
-                .status(response.status)
-                .json({
-                    status: response.status,
-                    error: "getting error from api " + response.data,
-                    step: 1,
-                });
-        }
-    } catch (error: any) {
-        console.log(
-            "patient Consent Fetch response in catch block",
-            error.response,
-        );
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
-    }
-};
 
-//https://webhook.site/7e64fb5c-96a0-4585-9e1e-7c10ce8df7a5/api/v3/hiu/consent/on-fetch
-
-export const consentOnFetchCallback = async (req: any, res: any) => {
-    try {
-        console.log(
-            "Step -- 100  consent OnFetchCallbackstart here ------------------- /api/v3/hiu/consent/on-fetch ",
-        );
-        let body = req.body;
-        let params = req.params.requestid;
-        console.log("params", params, body.consent.consentDetail.patient.id);
-
-        let abhaAddress = body.consent.consentDetail.patient.id;
-
-        await HealthRecordModel.updateOne(
-            { hid_address: abhaAddress },
-            {
-                $set: {
-                    "version_m3.consentDetails": body,
-                },
-            },
-        );
-        return res.status(200).json({ msg: "Consent details updated" });
-    } catch (error: any) {
-        console.log(
-            "patient Consent Fetch response in catch block",
-            error.response,
-        );
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
-    }
-};
-
-//https://webhook.site/7e64fb5c-96a0-4585-9e1e-7c10ce8df7a5/api/v3/hiu/consent/request/on-status
-export const receivedConsentRequestStatus = async (req: any, res: any) => {
-    try {
-        console.log(
-            "Request consent status recevied ---- https://webhook.site/7e64fb5c-96a0-4585-9e1e-7c10ce8df7a5/api/v3/hiu/consent/request/on-status ",
-        );
-        let body = req.body;
-        console.log("params", body);
-
-        let consentRequestId = body.consentRequest.id;
-
-        await HealthRecordModel.updateOne(
-            { "version_m3.consentId": consentRequestId },
-            {
-                $set: {
-                    "version_m3.consentStatus": body.consentRequest.status,
-                },
-            },
-        );
-        return res.status(200).json({ msg: "Consent details updated" });
-    } catch (error: any) {
-        console.log(
-            "patient Consent Fetch response in catch block",
-            error.response,
-        );
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
-    }
-};
-
-export const callingDataPushUrl = async (
-    req: any,
-    res: any
-) => {
-    try {
-        console.log("Step-8 callingDataPushUrl api request V3 ", req.body);
-        let input = req.body;
-
-        let requestId = generateUID();
-
-        const latestRecord: any = await HealthRecordModel.findOne({
-            transaction_id: input.transactionId,
-        })
-            .sort({ updatedAt: -1 })
-            .limit(1);
-
-        let URL = `${process.env.ABDM_BASE_URL + ENDPOINTS.CALLING_DATA_PUSH_URL_V3}`;
-
-        let postData = {
-            hiRequest: {
-                consent: {
-                    id: "",
-                },
-            },
-            dateRange: {
-                from: "",
-                to: "",
-                dataPushUrl: "",
-                keyMaterial: {
-                    cryptoAlg: "",
-                    curve: "",
-                    dhPublicKey: {
-                        expiry: "",
-                        parameters: "",
-                        keyValue: "",
-                    },
-                    nonce: "",
-                },
-            },
-        };
-
-        //let random32String = generateUID();
-        const response = await axios.post(URL, postData, {
-            headers: {
-                "Content-Type": "application/json",
-                "REQUEST-ID": requestId,
-                TIMESTAMP: new Date().toISOString(),
-                "X-CM-ID": "sbx",
-                "X-HIP-ID": X_HIP_ID,
-                Authorization: req.headers["authorization"],
-            },
+        AbdmLogger.logAccepted({
+          consentId: artefact.artefactId,
+          sourceType: "CALLBACK",
         });
-        console.log("Step-9 callingDataPushUrl api response ---- ", response.data);
-        if (response.status == 202 || response.status == 200) {
-            return res
-                .status(200)
-                .json({
-                    URL: "dataPushUrl",
-                    status: "Success",
-                    message: "dataPushUrl api submited",
-                });
-        } else {
-            return res
-                .status(response.status)
-                .json({
-                    status: response.status,
-                    error: "getting error from api" + response,
-                });
+
+        if (consentStatus === "GRANTED" && !usePHRCollection) {
+          if (
+            artefact.consentRequestId &&
+            artefact.consentRequestId !== artefact.artefactId
+          ) {
+            console.log(
+              `${LOG_PREFIX} [AUTO-TRIGGER] Consent GRANTED, initiating HIU data fetch for ${artefact.artefactId}`,
+            );
+            ConsentService.triggerHiuDataFetchAsync([artefact.artefactId]);
+          } else {
+            console.warn(
+              `${LOG_PREFIX} [AUTO-TRIGGER] Skipping for ${artefact.artefactId}: artefact has no valid consentRequestId link (self-ref or null). Will not auto-fetch.`,
+            );
+          }
         }
-    } catch (error: any) {
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
+      }
+    } else {
+      console.warn(
+        `${LOG_PREFIX} on-fetch callback has no consent.consentDetail`,
+      );
     }
+  } catch (error: any) {
+    console.error(
+      `${LOG_PREFIX} Error in handleConsentOnFetch:`,
+      error.message,
+    );
+    if (!res.headersSent) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
 };
 
-//https://dev.abdm.gov.in/api/hiecm/consent/v3/request/hip/on-notify
-export const sentRequestNotify = async (
-    res: any,
-    consentId: any,
-    reqId: any,
-    token: any,
-) => {
+export const handleConsentOnStatus = async (req: any, res: any) => {
+  try {
+    const body = req.body;
+    AbdmLogger.logPayloadDebug(`${LOG_PREFIX} on-status callback received:`, body);
+
+    if (body.error) {
+      console.error(
+        `${LOG_PREFIX} Consent status error from ABDM: code=${body.error?.code}, message=${body.error?.message}`,
+      );
+      return res.status(200).json({ status: "Error handled" });
+    }
+
+    // Respond immediately — processing in BullMQ worker
+    res.status(200).json({ status: "success" });
+
+    // Try BullMQ queue first
     try {
-        console.log("Step-5");
-
-        let postData = {
-            acknowledgement: {
-                status: "OK",
-                consentId: consentId,
-            },
-            response: {
-                requestId: reqId,
-            },
-        };
-
-        let random32String = generateUID();
-        const response = await axios.post(
-            `${process.env.ABDM_BASE_URL}/hiecm/consent/v3/request/hip/on-notify`,
-            postData,
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    "REQUEST-ID": random32String,
-                    TIMESTAMP: new Date().toISOString(),
-                    "X-CM-ID": "sbx",
-                    Authorization: "Bearer " + token, //req.headers['authorization']
-                },
-            },
-        );
-
+      const { enqueueConsentOnStatus } = await import(
+        "../../services/abdm.webhook.queue"
+      );
+      const jobId = await enqueueConsentOnStatus({ body });
+      if (jobId) {
         console.log(
-            "response data from  /hiecm/consent/v3/request/hip/on-notifyon-notify ",
-            response.data,
+          `${LOG_PREFIX} Enqueued consent-on-status to BullMQ (jobId=${jobId})`,
         );
-
-        if (response.status == 202 || response.status == 200) {
-            // await careContext(req, res, response.data.linkToken);
-            return res
-                .status(200)
-                .json({
-                    URL: "api/hiecm/consent/v3/request/hip/on-notify",
-                    status: "Success",
-                    message: "Success",
-                });
-        } else {
-            return res
-                .status(response.status)
-                .json({
-                    status: response.status,
-                    error: "getting error from api" + response,
-                });
-        }
-    } catch (error: any) {
-        if (error.response) {
-            return res
-                .status(error.response.status)
-                .json({ error: error.response.data });
-        } else if (error.request) {
-            return res.status(503).json({ error: "Service unavailable" });
-        } else {
-            return res.status(500).json({ error: error.message });
-        }
+        return;
+      }
+    } catch (queueErr: any) {
+      console.warn(
+        `${LOG_PREFIX} BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
+      );
     }
+
+    // Fallback: process directly (same logic as before)
+    if (body.consentRequest?.id) {
+      const statusUpdate: any = {
+        status: body.consentRequest.status || "UNKNOWN",
+        lastCheckedAt: new Date(),
+      };
+
+      if (body.consentRequest.status === "GRANTED" && !statusUpdate.grantedAt) {
+        statusUpdate.grantedAt = body.timestamp
+          ? new Date(body.timestamp)
+          : new Date();
+      }
+
+      const reqId = body.consentRequest.id;
+      const eventTs = body.timestamp ? new Date(body.timestamp) : new Date();
+      const broadQuery = {
+        $or: [{ consentRequestId: reqId }, { artefactId: reqId }],
+      };
+
+      if (body.consentRequest.status === "REVOKED") {
+        statusUpdate.revokedAt = eventTs;
+        await ConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: eventTs },
+        });
+        await PHRConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: eventTs },
+        });
+        const revokedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+        if (revokedIds.length > 0) {
+          await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: revokedIds } });
+        }
+      }
+
+      if (body.consentRequest.status === "EXPIRED") {
+        await ConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.EXPIRED },
+        });
+        await PHRConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.EXPIRED },
+        });
+        const expiredIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+        if (expiredIds.length > 0) {
+          await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: expiredIds } });
+        }
+      }
+
+      if (body.consentRequest.status === "DENIED") {
+        statusUpdate.deniedAt = eventTs;
+        await ConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.DENIED, deniedAt: eventTs },
+        });
+        await PHRConsentArtefactModel.updateMany(broadQuery, {
+          $set: { status: ConsentArtefactStatus.DENIED, deniedAt: eventTs },
+        });
+        const deniedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+        if (deniedIds.length > 0) {
+          await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: deniedIds } });
+        }
+      }
+
+      const updateResult = await ConsentRequestModel.updateOne(
+        {
+          $or: [
+            { consentRequestId: body.consentRequest.id },
+            { requestId: body.response?.requestId },
+          ],
+        },
+        { $set: statusUpdate },
+      );
+
+      if (
+        body.consentRequest.status === "GRANTED" &&
+        body.consentRequest.consentArtefacts &&
+        body.consentRequest.consentArtefacts.length > 0 &&
+        updateResult.matchedCount > 0
+      ) {
+        const artefactIds = body.consentRequest.consentArtefacts.map((a: any) => a.id);
+        ConsentService.triggerHiuDataFetchAsync(artefactIds);
+      } else if (
+        body.consentRequest.status === "GRANTED" &&
+        updateResult.matchedCount === 0
+      ) {
+        console.warn(
+          `${LOG_PREFIX} on-status GRANTED but no local ConsentRequest matched for ${body.consentRequest.id}. Skipping auto-trigger.`,
+        );
+      }
+    }
+  } catch (error: any) {
+    console.error(
+      `${LOG_PREFIX} Error in handleConsentOnStatus:`,
+      error.message,
+    );
+    if (!res.headersSent) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
 };
-
-
