@@ -90,6 +90,8 @@ import {
 } from "../controllers/v3/lab-report.controller";
 
 import authRoutes from "./v1/auth/auth.routes";
+import doctorRoutes from "./doctor.routes";
+import analyticsRoutes from "./analytics.routes";
 
 const router = Router();
 
@@ -102,6 +104,8 @@ router.get("/testing", (_req: any, res: any) => {
 });
 
 router.use("/", authRoutes);
+router.use("/doctors", doctorRoutes);
+router.use("/analytics/physicians", analyticsRoutes);
 
 // onboarding Routes
 router.get("/profile", checkToken, userProfile);

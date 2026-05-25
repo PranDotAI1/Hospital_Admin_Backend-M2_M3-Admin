@@ -21,14 +21,78 @@ export const comparePassword = async (
   return bcrypt.compare(password, hash);
 };
 
-export const apiResponse = (
-  res: any,
-  data: any,
-  code: number,
-  msg?: string | "Success",
-) => {
-  return res.status(code).json({ data: data, msg: msg, code: code });
+export const apiResponse = (res: Response, data: any, code: number, msg?: string | "Success") => {
+    return res.status(code).json({ "data": data, "msg": msg, "code": code })
+}
+
+// Standardized response helpers for consistent API format
+
+export interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+export const buildPaginationMeta = (total: number, page: number, limit: number): PaginationMeta => {
+  const totalPages = Math.ceil(total / limit);
+  return {
+    total,
+    page,
+    limit,
+    totalPages,
+    hasNextPage: page < totalPages,
+    hasPrevPage: page > 1,
+  };
 };
+
+// Success response with paginated data
+export const successListResponse = (
+  res: Response,
+  data: any[],
+  meta: PaginationMeta,
+  statusCode: number = 200
+): void => {
+  res.status(statusCode).json({
+    status: "success",
+    data,
+    meta,
+  });
+};
+
+// Success response with single item or non-paginated data
+export const successResponse = (
+  res: Response,
+  data: any,
+  message?: string,
+  statusCode: number = 200
+): void => {
+  const response: { status: string; data: any; message?: string } = {
+    status: "success",
+    data,
+  };
+  if (message) response.message = message;
+  res.status(statusCode).json(response);
+};
+
+// Error response
+export const errorResponse = (
+  res: Response,
+  message: string,
+  statusCode: number = 500,
+  errors?: any
+): void => {
+  const response: { status: string; message: string; code: number; errors?: any } = {
+    status: "error",
+    message,
+    code: statusCode,
+  };
+  if (errors) response.errors = errors;
+  res.status(statusCode).json(response);
+};
+
 
 export const generateToken = (payload: object): string => {
   return jwt.sign(payload, SECRET_KEY, { expiresIn: "24h" });

@@ -45,6 +45,68 @@ export const ROLE = {
   NURSE: 5,
 };
 
+export const DOCTOR_STATUS = {
+  ACTIVE: "ACTIVE",
+  ON_LEAVE: "ON_LEAVE",
+  RETIRED: "RETIRED",
+  INACTIVE: "INACTIVE",
+} as const;
+
+export const DOCTOR_CURRENT_STATUS = {
+  AVAILABLE: "AVAILABLE",
+  CONSULTING: "CONSULTING",
+  ON_BREAK: "ON_BREAK",
+  LEAVE: "LEAVE",
+  OFF_DUTY: "OFF_DUTY",
+  NOT_AVAILABLE: "NOT_AVAILABLE",
+} as const;
+
+export const ATTENDANCE_STATUS = {
+  PRESENT: "PRESENT",
+  ABSENT: "ABSENT",
+  HALF_DAY: "HALF_DAY",
+  LEAVE: "LEAVE",
+  OFF: "OFF",
+} as const;
+
+export const LEAVE_TYPE = {
+  ANNUAL: "ANNUAL",
+  SICK: "SICK",
+  OTHER: "OTHER",
+} as const;
+
+export const LEAVE_REQUEST_STATUS = {
+  PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+} as const;
+
+export const DOCTOR_INVITE_EXPIRY_MINUTES = 7 * 24 * 60;
+
+export const SET_PASSWORD_RATE_LIMIT = {
+  MAX_ATTEMPTS: 5,
+  WINDOW_MINUTES: 15,
+} as const;
+
+// Default available slots for doctors (Mon-Fri, 9 AM - 5 PM)
+export const DEFAULT_AVAILABLE_SLOTS = [
+  { day: "Monday", startTime: "09:00", endTime: "17:00" },
+  { day: "Tuesday", startTime: "09:00", endTime: "17:00" },
+  { day: "Wednesday", startTime: "09:00", endTime: "17:00" },
+  { day: "Thursday", startTime: "09:00", endTime: "17:00" },
+  { day: "Friday", startTime: "09:00", endTime: "17:00" },
+] as const;
+
+export const DAYS_OF_WEEK = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
 export const generateUID = () => {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
     const r = (Math.random() * 16) | 0; // Generate a random number between 0 and 15
@@ -86,7 +148,24 @@ export const HIP_TYPES = [
   "ImmunizationRecord",
   "HealthDocumentRecord",
   "WellnessRecord",
-] as const;
+];
+
+export const REDIS_LOGS = {
+  DISCONNECTED: "Redis disconnected successfully",
+};
+
+export const REDIS_EVENTS = {
+  ERROR: "error",
+  CONNECT: "connect",
+  READY: "ready",
+  RECONNECTING: "reconnecting",
+  END: "end",
+};
+
+export const PROCESS_EVENTS = {
+  SIGINT: "SIGINT",
+  SIGTERM: "SIGTERM",
+};
 
 export const ABDM_PHR_WEB_BASE_URL =
   process.env.ABDM_PHR_WEB_BASE_URL || "https://phrsbx.abdm.gov.in";

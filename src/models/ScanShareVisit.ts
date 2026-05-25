@@ -57,6 +57,12 @@ export interface IScanShareVisit extends Document {
   description?: string;
 
   patientId?: Types.ObjectId;
+
+  consultationStartedAt?: Date;
+  consultationEndedAt?: Date;
+  isFollowUp?: boolean;
+  treatmentOutcome?: "SUCCESS" | "ONGOING" | "FAILED";
+  collaboratingDoctorIds?: import("mongoose").Types.ObjectId[];
 }
 
 const AddressSchema = new Schema<IScanShareVisitAddress>(
@@ -139,7 +145,17 @@ const ScanShareVisitSchema = new Schema<IScanShareVisit>(
     visitType: { type: String, required: false, trim: true },
     description: { type: String, required: false, trim: true },
 
-    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: false },
+    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: false, index: true },
+
+    consultationStartedAt: { type: Date, required: false },
+    consultationEndedAt: { type: Date, required: false },
+    isFollowUp: { type: Boolean, required: false, default: false },
+    treatmentOutcome: {
+      type: String,
+      enum: ["SUCCESS", "ONGOING", "FAILED"],
+      required: false,
+    },
+    collaboratingDoctorIds: [{ type: Schema.Types.ObjectId, ref: "Doctor", required: false }],
   },
   {
     timestamps: true,

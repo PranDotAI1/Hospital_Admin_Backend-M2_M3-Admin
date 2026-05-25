@@ -23,4 +23,4 @@ const SpecializeSchema = new Schema<ISpecialize>({
 
 SpecializeSchema.index({ name: 1 });
 
-export const RoleModel = model<ISpecialize>('Role', SpecializeSchema);
+export const SpecializeModel = model<ISpecialize>('Specialize', SpecializeSchema);

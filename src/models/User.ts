@@ -65,6 +65,8 @@ export interface IUser extends Document {
   passwordResetExpires?: Date;
   passwordResetAttempts?: number;
   passwordResetLastAttempt?: Date;
+
+  doctorId?: import("mongoose").Types.ObjectId;
 }
 
 const SpecializeReferenceSchema = new Schema(
@@ -187,6 +189,7 @@ const UserSchema = new Schema<IUser>(
     passwordResetExpires: { type: Date, required: false },
     passwordResetAttempts: { type: Number, default: 0, required: false },
     passwordResetLastAttempt: { type: Date, required: false },
+    doctorId: { type: Schema.Types.ObjectId, ref: "Doctor", required: false },
   },
   {
     timestamps: true,

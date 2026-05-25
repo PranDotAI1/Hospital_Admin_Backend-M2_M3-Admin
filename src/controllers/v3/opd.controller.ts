@@ -536,7 +536,10 @@ export const completeRegistration = async (req: Request, res: Response) => {
     if (departmentName) updateData.department = departmentName;
     if (departmentId) updateData.departmentId = departmentId;
     if (doctorName) updateData.doctorName = doctorName;
-    if (doctorId) updateData.doctorId = doctorId;
+    doctorId = manualFields.doctorId;
+    if (doctorId && isValidObjectId(String(doctorId))) {
+      updateData.doctorId = new Types.ObjectId(String(doctorId));
+    }
 
     if (consultationFee !== undefined) {
       updateData.consultationFee = consultationFee;

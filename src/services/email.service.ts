@@ -299,6 +299,104 @@ export const sendOtpEmail = async (
   }
 };
 
+interface DoctorInviteEmailParams {
+  to: string;
+  doctorName: string;
+  inviteToken: string; // 64-char hex; single-use, hashed in DB; do not log
+  expiryMinutes: number;
+}
+
+const generateDoctorInviteEmail = (
+  params: DoctorInviteEmailParams,
+): { subject: string; html: string; text: string } => {
+  const frontendUrl =
+    process.env.FRONTEND_DOCTOR_SET_PASSWORD_URL ||
+    process.env.FRONTEND_RESET_URL ||
+    "http://localhost:3000/set-password";
+  const setPasswordUrl = `${frontendUrl}?token=${params.inviteToken}`;
+
+  const subject = "Set Your Password - Hospital Admin";
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Set Your Password</title>
+</head>
+<body style="margin: 0; padding: 0; width: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <div style="background-color: #f4f7f6; padding: 40px 20px;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); overflow: hidden;">
+      <div style="background: linear-gradient(135deg, #0f766e 0%, #115e59 100%); padding: 32px; text-align: center;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;">Pran Ai</h1>
+      </div>
+      <div style="padding: 40px 32px; color: #374151; line-height: 1.6;">
+        <h2 style="margin-top: 0; color: #111827; font-size: 20px; font-weight: 600;">Welcome to the Hospital Admin</h2>
+        <p style="margin-bottom: 24px; font-size: 16px;">Hello Dr. ${params.doctorName || "Doctor"},</p>
+        <p style="margin-bottom: 24px; font-size: 16px;">You have been added as a doctor. Use the button below to set your password and access the system.</p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${setPasswordUrl}" style="background-color: #0f766e; color: #ffffff; padding: 14px 32px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 16px; display: inline-block;">Set Password</a>
+        </div>
+        <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; margin-bottom: 24px; font-size: 14px; color: #92400e;">
+          <strong>Security:</strong> This link is single-use and expires in ${params.expiryMinutes} minutes. Do not share it with anyone. If you did not expect this email, ignore it.
+        </div>
+        <p style="font-size: 13px; color: #6b7280;">If the button does not work, copy this link into your browser: ${setPasswordUrl}</p>
+      </div>
+      <div style="background-color: #f9fafb; padding: 24px 32px; text-align: center; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af;">
+        <p style="margin: 0;">© ${new Date().getFullYear()} Hospital Admin. Automated message.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+
+  const text = `
+Set Your Password - Hospital Admin
+
+Hello Dr. ${params.doctorName || "Doctor"},
+
+You have been added. Use this link to set your password (single-use, expires in ${params.expiryMinutes} min; do not share):
+
+${setPasswordUrl}
+
+If you did not expect this email, please ignore it.
+  `.trim();
+
+  return { subject, html, text };
+};
+
+export const sendDoctorInviteEmail = async (
+  params: DoctorInviteEmailParams,
+): Promise<SendEmailResult> => {
+  try {
+    const config = getEmailConfig();
+    if (!config.auth.user || !config.auth.pass) {
+      if (process.env.NODE_ENV === "development") {
+        return { success: true, messageId: `dev-doctor-invite-${Date.now()}` };
+      }
+      return { success: false, error: "Email service not configured" };
+    }
+    const transporter = getTransporter();
+    const emailContent = generateDoctorInviteEmail(params);
+    const info = await transporter.sendMail({
+      from: config.from,
+      to: params.to,
+      subject: emailContent.subject,
+      html: emailContent.html,
+      text: emailContent.text,
+    });
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error("Doctor invite email failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+};
+
 export const verifyEmailConfig = async (): Promise<boolean> => {
   try {
     const config = getEmailConfig();
