@@ -8,7 +8,6 @@ import {
   generateToken,
   expiredToken,
 } from "../utils/common";
-import { USER_ENUM } from "../utils/constant";
 import { MSG } from "../utils/msgs";
 import { LoginInput } from "../validations/auth.schema";
 import { createSession, invalidateSession } from "../services/session.service";
