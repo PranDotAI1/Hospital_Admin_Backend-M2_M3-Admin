@@ -183,7 +183,7 @@ const DoctorSchema = new Schema<IDoctor>(
     currentStatusUpdatedAt: { type: Date, required: false },
     currentVisitId: {
       type: Schema.Types.ObjectId,
-      ref: "OPDVisit",
+      ref: "ScanShareVisit",
       required: false,
     },
 

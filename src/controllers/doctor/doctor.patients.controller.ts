@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import { Types } from "mongoose";
-import { OPDVisitModel } from "../../models/OPDVisit";
-import { VisitStatus } from "../../models/OPDVisit";
+import { ScanShareVisitModel, ScanShareVisitStatus } from "../../models/ScanShareVisit";
 import { DoctorModel } from "../../models/Doctor";
 import {
   successResponse,
@@ -49,19 +48,19 @@ export const listPatientsLooked = async (req: Request, res: Response): Promise<v
       doctorId: new Types.ObjectId(id),
       visitDate: { $gte: start, $lte: end },
     };
-    if (status && Object.values(VisitStatus).includes(status as VisitStatus)) {
+    if (status && Object.values(ScanShareVisitStatus).includes(status as ScanShareVisitStatus)) {
       match.visitStatus = status;
     }
 
     const skip = (page - 1) * limit;
     const [list, total] = await Promise.all([
-      OPDVisitModel.find(match)
+      ScanShareVisitModel.find(match)
         .sort({ visitDate: -1 })
         .skip(skip)
         .limit(limit)
         .select("tokenNumber visitDate visitStatus name mobile complaint department doctorName consultationFee")
         .lean(),
-      OPDVisitModel.countDocuments(match),
+      ScanShareVisitModel.countDocuments(match),
     ]);
 
     return successListResponse(res, list, buildPaginationMeta(total, page, limit));
@@ -97,14 +96,14 @@ export const patientsLookedStats = async (req: Request, res: Response): Promise<
     }
 
     const [totalCount, completedCount] = await Promise.all([
-      OPDVisitModel.countDocuments({
+      ScanShareVisitModel.countDocuments({
         doctorId: new Types.ObjectId(id),
         visitDate: { $gte: start, $lte: end },
       }),
-      OPDVisitModel.countDocuments({
+      ScanShareVisitModel.countDocuments({
         doctorId: new Types.ObjectId(id),
         visitDate: { $gte: start, $lte: end },
-        visitStatus: VisitStatus.COMPLETED,
+        visitStatus: ScanShareVisitStatus.COMPLETED,
       }),
     ]);
 

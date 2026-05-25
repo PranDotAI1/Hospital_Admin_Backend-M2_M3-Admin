@@ -5,7 +5,7 @@ import csvParser from "csv-parser";
 import { Parser as Json2CsvParser } from "json2csv";
 import PDFDocument from "pdfkit";
 import { DoctorModel } from "../../models/Doctor";
-import { OPDVisitModel, VisitStatus } from "../../models/OPDVisit";
+import { ScanShareVisitModel, ScanShareVisitStatus } from "../../models/ScanShareVisit";
 import { successResponse, errorResponse } from "../../utils/common";
 import {
   STATUS_CODE,
@@ -394,7 +394,7 @@ export const exportDoctors = async (
       },
       {
         $lookup: {
-          from: "opd_visits",
+          from: "scan_share_visits",
           let: { docId: "$_id" },
           pipeline: [
             {
@@ -402,7 +402,7 @@ export const exportDoctors = async (
                 $expr: { $eq: ["$doctorId", "$$docId"] },
                 visitDate: { $gte: todayStart, $lte: todayEnd },
                 visitStatus: {
-                  $in: [VisitStatus.REGISTERED, VisitStatus.COMPLETED],
+                  $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.COMPLETED],
                 },
               },
             },

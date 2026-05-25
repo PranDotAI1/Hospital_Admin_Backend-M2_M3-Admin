@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import { Types } from "mongoose";
-import { OPDVisitModel } from "../../models/OPDVisit";
-import { VisitStatus } from "../../models/OPDVisit";
+import { ScanShareVisitModel, ScanShareVisitStatus } from "../../models/ScanShareVisit";
 import { DoctorModel } from "../../models/Doctor";
 import {
   successResponse,
@@ -103,7 +102,7 @@ export const getPhysicianAnalyticsSummary = async (
 
     const matchVisit: Record<string, unknown> = {
       visitDate: { $gte: start, $lte: end },
-      visitStatus: { $in: [VisitStatus.REGISTERED, VisitStatus.COMPLETED] },
+      visitStatus: { $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.COMPLETED] },
       doctorId: { $exists: true, $ne: null },
     };
 
@@ -136,7 +135,7 @@ export const getPhysicianAnalyticsSummary = async (
 
     matchVisit.doctorId = { $in: doctorIds };
 
-    const visits = await OPDVisitModel.find(matchVisit)
+    const visits = await ScanShareVisitModel.find(matchVisit)
       .select(
         "doctorId consultationStartedAt consultationEndedAt isFollowUp treatmentOutcome collaboratingDoctorIds"
       )
@@ -410,9 +409,9 @@ export const getPhysicianAnalyticsTable = async (
       return successListResponse(res, [], buildPaginationMeta(0, page, limit));
     }
 
-    const visits = await OPDVisitModel.find({
+    const visits = await ScanShareVisitModel.find({
       visitDate: { $gte: start, $lte: end },
-      visitStatus: { $in: [VisitStatus.REGISTERED, VisitStatus.COMPLETED] },
+      visitStatus: { $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.COMPLETED] },
       doctorId: { $in: doctorIds },
     })
       .select("doctorId isFollowUp treatmentOutcome collaboratingDoctorIds")

@@ -3,8 +3,7 @@ import { Request, Response } from "express";
 import { Types } from "mongoose";
 import { DoctorModel } from "../../models/Doctor";
 import { UserModel } from "../../models/User";
-import { OPDVisitModel } from "../../models/OPDVisit";
-import { VisitStatus } from "../../models/OPDVisit";
+import { ScanShareVisitModel, ScanShareVisitStatus } from "../../models/ScanShareVisit";
 import {
   hashPassword,
   generateUniqueAlphaNumericId,
@@ -298,7 +297,7 @@ export const listDoctors = async (
       },
       {
         $lookup: {
-          from: "opd_visits",
+          from: "scan_share_visits",
           let: { docId: "$_id" },
           pipeline: [
             {
@@ -306,7 +305,7 @@ export const listDoctors = async (
                 $expr: { $eq: ["$doctorId", "$$docId"] },
                 visitDate: { $gte: todayStart, $lte: todayEnd },
                 visitStatus: {
-                  $in: [VisitStatus.REGISTERED, VisitStatus.COMPLETED],
+                  $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.COMPLETED],
                 },
               },
             },
@@ -388,10 +387,10 @@ export const getDoctor = async (req: Request, res: Response): Promise<void> => {
     }
 
     const { start: todayStart, end: todayEnd } = getTodayStartEnd();
-    const appointmentsToday = await OPDVisitModel.countDocuments({
+    const appointmentsToday = await ScanShareVisitModel.countDocuments({
       doctorId: new Types.ObjectId(id),
       visitDate: { $gte: todayStart, $lte: todayEnd },
-      visitStatus: { $in: [VisitStatus.REGISTERED, VisitStatus.COMPLETED] },
+      visitStatus: { $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.COMPLETED] },
     });
 
     const availableSlots =
