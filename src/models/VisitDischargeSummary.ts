@@ -40,6 +40,10 @@ export interface IVisitDischargeSummary extends Document {
   surgicalNote?: string;
   doctorSignature?: string;
   dischargeMedications: IDischargeMedication[];
+
+  diseaseCategory?: string;
+  outcomeStatus?:   "SURVIVED" | "DECEASED" | "TRANSFERRED";
+
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -86,9 +90,18 @@ const VisitDischargeSummarySchema = new Schema<IVisitDischargeSummary>(
     surgicalNote: { type: String, trim: true },
     doctorSignature: { type: String, trim: true },
     dischargeMedications: { type: [DischargeMedicationSchema], default: [] },
+
+    diseaseCategory: { type: String, trim: true },
+    outcomeStatus: {
+      type: String,
+      enum: ["SURVIVED", "DECEASED", "TRANSFERRED"],
+    },
   },
   { timestamps: true },
 );
+
+VisitDischargeSummarySchema.index({ diseaseCategory: 1, outcomeStatus: 1 });
+VisitDischargeSummarySchema.index({ patientId: 1, dischargeDate: -1 });
 
 export const VisitDischargeSummaryModel = model<IVisitDischargeSummary>(
   "VisitDischargeSummary",

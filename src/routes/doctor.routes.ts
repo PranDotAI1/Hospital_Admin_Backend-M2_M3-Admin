@@ -75,7 +75,7 @@ router.get("/bulk-import/template",
 
 router.post(
   "/",
-  checkToken,
+  // checkToken,
   validate(createDoctorSchema, "body"),
   createDoctor,
 );

@@ -1,5 +1,7 @@
 import { Router } from "express";
-import { checkToken } from "../middlewares/user.authentication";
+import { auth } from "../middlewares/user.authentication";
+import { requirePermission } from "../middlewares/permissions";
+import { MODULES, ACTIONS } from "../utils/permissions.constants";
 import {
   getPhysicianAnalyticsSummary,
   getPhysicianAnalyticsTable,
@@ -7,8 +9,18 @@ import {
 
 const router = Router();
 
-router.get("/summary", checkToken, getPhysicianAnalyticsSummary);
+router.get(
+  "/summary",
+  auth(),
+  requirePermission(MODULES.ANALYTICS_DASHBOARD, ACTIONS.VIEW),
+  getPhysicianAnalyticsSummary,
+);
 
-router.get("/table", checkToken, getPhysicianAnalyticsTable);
+router.get(
+  "/table",
+  auth(),
+  requirePermission(MODULES.ANALYTICS_DASHBOARD, ACTIONS.VIEW),
+  getPhysicianAnalyticsTable,
+);
 
 export default router;

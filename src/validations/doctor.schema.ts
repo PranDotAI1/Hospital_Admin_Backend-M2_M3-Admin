@@ -21,13 +21,31 @@ const availableSlotSchema = z.object({
   endTime: z.string().trim().min(1),
 });
 
+const modulePermissionSchema = z.object({
+  view: z.boolean(),
+  create: z.boolean(),
+  edit: z.boolean(),
+  delete: z.boolean(),
+});
+
+export const permissionsSchema = z
+  .record(z.string(), modulePermissionSchema)
+  .optional();
+
+export const updatePermissionsSchema = z.object({
+  permissions: z.record(z.string(), modulePermissionSchema),
+});
+
+export type UpdatePermissionsInput = z.infer<typeof updatePermissionsSchema>;
+
 export const createDoctorSchema = z.object({
+  fullName: optionalString,
   firstName: requiredString,
   lastName: requiredString,
   email: emailSchema,
-  phone: phoneSchema,
+  phone: phoneSchema.optional(),
   specialization: requiredString,
-  department: mongoIdSchema,
+  // department: mongoIdSchema, 
   licenseNumber: requiredString,
   experience: z.number().min(0),
   qualification: requiredString,
@@ -44,7 +62,7 @@ export const createDoctorSchema = z.object({
   assignedPatientIds: z.array(mongoIdSchema).optional(),
   status: z.enum(["ACTIVE", "ON_LEAVE", "RETIRED"]).optional(),
   accessLevel: z.enum(["FULL", "LIMITED", "VIEW_ONLY"]).optional(),
-  permissions: z.record(z.string(), z.any()).optional(),
+  permissions: permissionsSchema,
   timeZone: z.string().trim().optional(),
 });
 

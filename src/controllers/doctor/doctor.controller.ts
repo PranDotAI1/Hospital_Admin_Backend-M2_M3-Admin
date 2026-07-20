@@ -59,7 +59,7 @@ export const createDoctor = async (
       .toLowerCase();
     const phone = String(body.phone || "").trim();
     const specialization = String(body.specialization || "").trim();
-    const department = body.department;
+    const department = "68b95deded5ae6a228803591";
     const licenseNumber = String(body.licenseNumber || "").trim();
     const experience = body.experience != null ? Number(body.experience) : null;
     const qualification = String(body.qualification || "").trim();
@@ -86,9 +86,6 @@ export const createDoctor = async (
     }
     if (!email) {
       return errorResponse(res, "email is required", STATUS_CODE.BAD_REQUEST);
-    }
-    if (!phone) {
-      return errorResponse(res, "phone is required", STATUS_CODE.BAD_REQUEST);
     }
     if (!specialization) {
       return errorResponse(
@@ -189,6 +186,11 @@ export const createDoctor = async (
         hospital_id && isValidObjectId(String(hospital_id))
           ? new Types.ObjectId(String(hospital_id))
           : undefined,
+      assignedPatientIds: Array.isArray(body.assignedPatientIds)
+        ? (body.assignedPatientIds as string[])
+            .filter(isValidObjectId)
+            .map((id) => new Types.ObjectId(id))
+        : undefined,
       status: Object.values(DOCTOR_STATUS).includes(status as any)
         ? status
         : DOCTOR_STATUS.ACTIVE,
@@ -451,6 +453,7 @@ export const updateDoctor = async (
       "additionalSpecializationIds",
       "hospital_id",
       "assignedHospitalUnitIds",
+      "assignedPatientIds",
       "status",
       "accessLevel",
       "permissions",

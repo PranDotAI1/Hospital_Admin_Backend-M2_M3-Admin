@@ -22,11 +22,17 @@ import {
   doctorListing,
 } from "../controllers/user.controller";
 import {
+  getUserPermissions,
+  updateUserPermissions,
+} from "../controllers/permissions.controller";
+import {
   tokenGeneration,
   userV2Onboard,
 } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
-import { checkToken, requireRole } from "../middlewares/user.authentication";
+import { checkToken, requireRole, auth } from "../middlewares/user.authentication";
+import { requirePermission } from "../middlewares/permissions";
+import { MODULES, ACTIONS } from "../utils/permissions.constants";
 import { loginLimiter } from "../middlewares/rate.limiter";
 import { ROLE } from "../utils/constant";
 import {
@@ -91,7 +97,7 @@ import {
 
 import authRoutes from "./v1/auth/auth.routes";
 import doctorRoutes from "./doctor.routes";
-import analyticsRoutes from "./analytics.routes";
+import analyticsRouter from "./analytics";
 
 const router = Router();
 
@@ -105,7 +111,7 @@ router.get("/testing", (_req: any, res: any) => {
 
 router.use("/", authRoutes);
 router.use("/doctors", doctorRoutes);
-router.use("/analytics/physicians", analyticsRoutes);
+router.use("/analytics", analyticsRouter);
 
 // onboarding Routes
 router.get("/profile", checkToken, userProfile);
@@ -114,14 +120,14 @@ router.get("/profile", checkToken, userProfile);
 router.get("/hospital", checkToken, listing);
 router.post(
   "/hospital",
-  checkToken,
-  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  auth(),
+  requirePermission(MODULES.HOSPITAL_SETTINGS, ACTIONS.CREATE),
   add,
 );
 router.put(
   "/hospital/:id",
-  checkToken,
-  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  auth(),
+  requirePermission(MODULES.HOSPITAL_SETTINGS, ACTIONS.EDIT),
   update,
 );
 
@@ -130,17 +136,25 @@ router.get("/users", checkToken, userListing);
 router.get("/doctors", checkToken, doctorListing);
 router.post(
   "/user/add",
-  checkToken,
-  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  auth(),
+  requirePermission(MODULES.USER_MANAGEMENT, ACTIONS.CREATE),
   userAdd,
 );
 router.put(
   "/user/:id",
-  checkToken,
-  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  auth(),
+  requirePermission(MODULES.USER_MANAGEMENT, ACTIONS.EDIT),
   userUpdate,
 );
 router.put("/user/update/password/:id", checkToken, updatePassword);
+
+// ── Unified User Permissions ──
+router.get("/users/:id/permissions", checkToken, getUserPermissions);
+router.put(
+  "/users/:id/permissions",
+  checkToken, // Could optionally restrict to SUPER_ADMIN/HOSPITAL_ADMIN here
+  updateUserPermissions
+);
 
 // router.post("/user/new-add", userNewAdd);
 
@@ -148,14 +162,14 @@ router.put("/user/update/password/:id", checkToken, updatePassword);
 router.get("/departments", checkToken, departmentList);
 router.post(
   "/department",
-  checkToken,
-  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  auth(),
+  requirePermission(MODULES.USER_MANAGEMENT, ACTIONS.CREATE),
   addDepartment,
 );
 router.put(
   "/department/:id",
-  checkToken,
-  requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  auth(),
+  requirePermission(MODULES.USER_MANAGEMENT, ACTIONS.EDIT),
   updateDepartment,
 );
 
@@ -378,5 +392,61 @@ router.get("/lab-reports/patient/:patientId", checkToken, getPatientLabReports);
 router.get("/lab-reports/:id", checkToken, getLabReport);
 router.put("/lab-reports/:id/test/:testType", checkToken, updateLabTest);
 router.patch("/lab-reports/:id/finalize", checkToken, finalizeLabReport);
+
+import { Types as MongooseTypes } from "mongoose";
+import { PatientModel as PatientModelImport } from "../models/Patient";
+import { invalidateEndpoint as invalidateSdoh } from "../utils/analytics.cache";
+
+router.patch(
+  "/patient/:id/social-profile",
+  auth(),
+  requirePermission(MODULES.PATIENT_RECORDS, ACTIONS.EDIT),
+  async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      if (!MongooseTypes.ObjectId.isValid(id)) {
+        return res.status(400).json({ status: "error", message: "Invalid patient ID" });
+      }
+      const allowedFields = [
+        "education", "employment", "incomeLevel",
+        "housingStability", "foodSecurity", "accessToHealthcare", "hasCriminalSafetyRisk",
+      ];
+      const updates: Record<string, unknown> = {};
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updates[`socialProfile.${field}`] = req.body[field];
+        }
+      }
+      updates["socialProfile.updatedAt"] = new Date();
+      updates["socialProfile.updatedBy"] = req.user?._id || req.user?.id;
+
+      const patient = await PatientModelImport.findByIdAndUpdate(
+        id,
+        { $set: updates },
+        { new: true, runValidators: true }
+      ).lean();
+
+      if (!patient) {
+        return res.status(404).json({ status: "error", message: "Patient not found" });
+      }
+
+      const hospId = patient.hospitalId?.toString() || req.user?.hospitalId?.toString();
+      if (hospId) await invalidateSdoh(hospId, "patient-social-determinants");
+
+      return res.status(200).json({ status: "success", data: patient });
+    } catch (error: any) {
+      return res.status(500).json({ status: "error", message: error.message });
+    }
+  }
+);
+
+import feedbackRoutes from "./feedback.routes";
+router.use("/feedback", feedbackRoutes);
+
+import incidentRoutes from "./incidents.routes";
+router.use("/incidents", incidentRoutes);
+
+import resourceRoutes from "./resources.routes";
+router.use("/resources", resourceRoutes);
 
 export default router;

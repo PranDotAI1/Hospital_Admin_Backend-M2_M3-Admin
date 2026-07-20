@@ -88,7 +88,6 @@ export const getPhysicianAnalyticsSummary = async (
 
     const { start, end } = getDateRange(groupBy, from, to);
 
-    // Include all doctors that are not explicitly inactive (true or missing)
     const matchDoctor: Record<string, unknown> = { isActive: { $ne: false } };
     if (hospitalId && /^[a-f0-9]{24}$/i.test(hospitalId)) {
       matchDoctor.$or = [
@@ -107,7 +106,6 @@ export const getPhysicianAnalyticsSummary = async (
     };
 
     let doctorIds = await DoctorModel.find(matchDoctor).distinct("_id");
-    // If hospital/department filter yielded no doctors, fall back to all active doctors so dashboard shows data
     if (doctorIds.length === 0 && (hospitalId || departmentId)) {
       const fallbackMatch: Record<string, unknown> = {
         isActive: { $ne: false },
@@ -141,20 +139,17 @@ export const getPhysicianAnalyticsSummary = async (
       )
       .lean();
 
-    // Select doctor fields for name and specialization
     const doctorList = await DoctorModel.find({ _id: { $in: doctorIds } })
       .select("firstName lastName email specialization primarySpecializationId")
       .populate("primarySpecializationId", "name")
       .lean();
 
-    // Build a map with extracted name and specialization
     const doctorMap = new Map<
       string,
       { name: string; specialization: string }
     >();
     for (const d of doctorList) {
       const docAny = d as any;
-      // Build fullName from firstName + lastName
       let rawName = "";
       if (docAny.firstName || docAny.lastName) {
         rawName = `${docAny.firstName || ""} ${docAny.lastName || ""}`.trim();
@@ -168,7 +163,6 @@ export const getPhysicianAnalyticsSummary = async (
       const displayName = rawName.startsWith("Dr.")
         ? rawName
         : `Dr. ${rawName}`;
-      // Use specialization field (string) or populated primarySpecializationId
       const specName =
         docAny.specialization ||
         (docAny.primarySpecializationId as any)?.name ||
@@ -248,7 +242,6 @@ export const getPhysicianAnalyticsSummary = async (
 
     const averageTimePerConsultation = topDoctorIds.map((id) => {
       const row = byDoctor.get(id)!;
-      // Return 0 instead of null for avgMinutes when no data, for cleaner charting
       const avgMinutes =
         row.withTime > 0
           ? Math.round((row.totalMinutes / row.withTime) * 10) / 10
@@ -303,11 +296,10 @@ export const getPhysicianAnalyticsSummary = async (
       };
     });
 
-    // Accuracy of diagnoses requires diagnosis verification data - placeholder for now
     const accuracyOfDiagnoses = topDoctorIds.map((id) => ({
       doctorId: id,
       name: getName(id),
-      ratePercent: 0, // Will be calculated when diagnosis verification is implemented
+      ratePercent: 0, 
     }));
 
     return successResponse(res, {
@@ -372,7 +364,6 @@ export const getPhysicianAnalyticsTable = async (
 
     const { start, end } = getDateRange(groupBy, from, to);
 
-    // Include all doctors that are not explicitly inactive
     const matchDoctor: Record<string, unknown> = { isActive: { $ne: false } };
     if (hospitalId && /^[a-f0-9]{24}$/i.test(hospitalId)) {
       matchDoctor.$or = [
@@ -417,7 +408,6 @@ export const getPhysicianAnalyticsTable = async (
       .select("doctorId isFollowUp treatmentOutcome collaboratingDoctorIds")
       .lean();
 
-    // Select doctor fields for name and specialization
     const doctorList = await DoctorModel.find({ _id: { $in: doctorIds } })
       .select("firstName lastName email specialization primarySpecializationId")
       .populate("primarySpecializationId", "name")
@@ -472,10 +462,8 @@ export const getPhysicianAnalyticsTable = async (
         collaborating: 0,
       };
       const docAny = d as any;
-      // Use specialization field (string) or populated primarySpecializationId
       const spec =
         docAny.specialization || docAny.primarySpecializationId?.name || "";
-      // Build fullName from firstName + lastName
       let rawName = "";
       if (docAny.firstName || docAny.lastName) {
         rawName = `${docAny.firstName || ""} ${docAny.lastName || ""}`.trim();
@@ -499,7 +487,7 @@ export const getPhysicianAnalyticsTable = async (
           row.count > 0
             ? Math.round((row.followUp / row.count) * 10000) / 100
             : 0,
-        accuracyOfDiagnoses: 0, // Placeholder until diagnosis verification is implemented
+        accuracyOfDiagnoses: 0, 
         treatmentSuccessRate:
           row.withOutcome > 0
             ? Math.round((row.success / row.withOutcome) * 10000) / 100

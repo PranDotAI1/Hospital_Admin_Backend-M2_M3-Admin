@@ -213,9 +213,10 @@ export const startHipPushWorker = (): Worker => {
     },
     {
       connection: createBullMQConnection(),
-      concurrency: 2, // Max 2 concurrent Puppeteer-based pushes
-      // No rate limiter — ABDM spec requires immediate processing of
-      // health-information/request. Concurrency cap is sufficient protection.
+      concurrency: 2, 
+      stalledInterval: 300000, 
+      lockDuration: 300000,
+      drainDelay: 300,
     },
   );
 
@@ -303,6 +304,9 @@ export const startHiuTransferWorker = (): Worker => {
     {
       connection: createBullMQConnection(),
       concurrency: 3,
+      stalledInterval: 300000,
+      lockDuration: 300000,
+      drainDelay: 300,
     },
   );
 

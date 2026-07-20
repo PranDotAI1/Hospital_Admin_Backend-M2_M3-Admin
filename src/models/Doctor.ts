@@ -1,5 +1,6 @@
 import { Document, Schema, model, Types } from "mongoose";
 import { DOCTOR_STATUS, DOCTOR_CURRENT_STATUS } from "../utils/constant";
+import type { ModulePermissions } from "../utils/permissions.constants";
 
 export type DoctorStatusType =
   (typeof DOCTOR_STATUS)[keyof typeof DOCTOR_STATUS];
@@ -49,10 +50,7 @@ export interface IDoctor extends Document {
   inviteSentAt?: Date;
 
   accessLevel?: "FULL" | "LIMITED" | "VIEW_ONLY";
-  permissions?: Record<
-    string,
-    { view?: boolean; create?: boolean; edit?: boolean; delete?: boolean }
-  >;
+  permissions?: Map<string, ModulePermissions>;
 
   timeZone?: string;
 
@@ -197,7 +195,20 @@ const DoctorSchema = new Schema<IDoctor>(
       required: false,
       default: "FULL",
     },
-    permissions: { type: Schema.Types.Mixed, required: false },
+    permissions: {
+      type: Map,
+      of: new Schema(
+        {
+          view: { type: Boolean, default: false },
+          create: { type: Boolean, default: false },
+          edit: { type: Boolean, default: false },
+          delete: { type: Boolean, default: false },
+        },
+        { _id: false }
+      ),
+      required: false,
+      default: undefined,
+    },
 
     timeZone: { type: String, required: false, default: "Asia/Kolkata" },
 

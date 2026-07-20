@@ -56,6 +56,12 @@ export interface IDocumentUpload {
   uploadDate: Date;
 }
 
+export interface IDiagnosisEntry {
+  code:    string;
+  display: string;
+  system:  string;
+}
+
 export interface IVisitAssessment extends Document {
   visitId: Types.ObjectId;
   patientId: Types.ObjectId;
@@ -69,6 +75,13 @@ export interface IVisitAssessment extends Document {
   womenHealth?: IWomenHealth;
   documentUploads?: IDocumentUpload[];
   dataSharingConsent?: boolean;
+
+  primaryDiagnosis?:   IDiagnosisEntry;
+  secondaryDiagnoses?: IDiagnosisEntry[];
+  complications?:      string[];
+  isReadmission?:      boolean;
+  patientDied?:        boolean;
+
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -171,10 +184,31 @@ const VisitAssessmentSchema = new Schema<IVisitAssessment>(
     womenHealth: { type: WomenHealthSchema },
     documentUploads: { type: [DocumentUploadSchema], default: [] },
     dataSharingConsent: { type: Boolean },
+
+    primaryDiagnosis: {
+      code:    { type: String, trim: true },
+      display: { type: String, trim: true },
+      system:  { type: String, trim: true, default: "ICD-10" },
+    },
+    secondaryDiagnoses: [
+      {
+        code:    { type: String, trim: true },
+        display: { type: String, trim: true },
+        system:  { type: String, trim: true, default: "ICD-10" },
+        _id:     false,
+      },
+    ],
+    complications: [{ type: String, trim: true }],
+    isReadmission:  { type: Boolean, default: false },
+    patientDied:    { type: Boolean, default: false },
   },
 
   { timestamps: true },
 );
+
+VisitAssessmentSchema.index({ patientId: 1 });
+VisitAssessmentSchema.index({ "primaryDiagnosis.code": 1 });
+VisitAssessmentSchema.index({ visitId: 1, "primaryDiagnosis.code": 1 });
 
 export const VisitAssessmentModel = model<IVisitAssessment>(
   "VisitAssessment",

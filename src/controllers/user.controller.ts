@@ -2,6 +2,7 @@ import { HealthRecordModel } from "../models/HealthRecord";
 import { NotifiyResponseModel } from "../models/NotifiyResponse";
 import { UserModel } from "../models/User";
 import { DoctorModel } from "../models/Doctor";
+import { NurseModel } from "../models/Nurse";
 import {
   apiResponse,
   comparePassword,
@@ -19,13 +20,15 @@ export const userListing = async (req: any, res: any) => {
     const hospital_id = req.query.hospital_id;
     const search = req.query.search;
 
-    let role_id =
-      req.query.role_id !== undefined ? Number(req.query.role_id) : ROLE.STAFF;
-    if (isNaN(role_id)) role_id = ROLE.STAFF;
+    const match: any = {};
+    if (req.query.role_id !== "all") {
+      let role_id =
+        req.query.role_id !== undefined ? Number(req.query.role_id) : ROLE.STAFF;
+      if (isNaN(role_id)) role_id = ROLE.STAFF;
+      match.role_id = role_id;
+    }
 
     const offset = (page - 1) * limit;
-
-    const match: any = { role_id };
 
     // Optional filters: department_id and hospital_id (if provided)
     if (department_id) {
@@ -106,6 +109,32 @@ export const userAdd = async (req: any, res: any) => {
     if (input.password) {
       input.password = await hashPassword(input.password);
     }
+    // If creating a Nurse, we also need to create the Nurse profile
+    if (input.role_id === ROLE.NURSE) {
+      const nurse = await NurseModel.create({
+        firstName: input.firstName || input.f_name || input.name || "",
+        lastName: input.lastName || input.l_name || "",
+        email: input.email,
+        phone: input.phone || input.mobile || input.contact || "",
+        specialization: input.specialization || "General",
+        department: input.department_id,
+        licenseNumber: input.licenseNumber || undefined,
+        experience: input.experience || undefined,
+        qualification: input.qualification || "Nursing Degree",
+        
+        shift: input.shift || undefined,
+        assignedDoctorId: input.assignedDoctorId || undefined,
+        certifications: input.certifications || undefined,
+        roleType: input.roleType || undefined,
+
+        isActive: true,
+        status: "ACTIVE",
+        permissions: input.permissions,
+        created_by: (req as any).user?.id || (req as any).user?._id?.toString?.(),
+      });
+      input.nurseId = nurse._id;
+    }
+
     let response = await UserModel.create(input);
     return apiResponse(
       res,
@@ -182,6 +211,9 @@ export const userUpdate = async (req: any, res: any) => {
       "reg_no",
       "pan",
       "specialize",
+      "permissions",
+      "userPermissions",
+      "is_super_admin",
     ];
     const sanitizedInput: Record<string, any> = {};
     for (const key of ALLOWED_UPDATE_FIELDS) {
@@ -198,7 +230,40 @@ export const userUpdate = async (req: any, res: any) => {
       );
     }
 
+    const user = await UserModel.findById(id);
+    if (!user) {
+      return apiResponse(res, "User not found", STATUS_CODE.NOT_FOUND);
+    }
+
     await UserModel.updateOne({ _id: id }, sanitizedInput);
+
+    // If updating a Nurse, sync relevant fields to NurseModel
+    if (user.role_id === ROLE.NURSE && user.nurseId) {
+      const nurseUpdate: any = {};
+      if (input.firstName || input.f_name || input.name) nurseUpdate.firstName = input.firstName || input.f_name || input.name;
+      if (input.lastName || input.l_name) nurseUpdate.lastName = input.lastName || input.l_name;
+      if (input.email) nurseUpdate.email = input.email;
+      if (input.phone || input.mobile || input.contact) nurseUpdate.phone = input.phone || input.mobile || input.contact;
+      if (input.department_id) nurseUpdate.department = input.department_id;
+      if (input.permissions) nurseUpdate.permissions = input.permissions;
+      if (input.hospital_id) nurseUpdate.hospital_id = input.hospital_id;
+      
+      // New Nurse fields
+      if (input.shift !== undefined) nurseUpdate.shift = input.shift;
+      if (input.assignedDoctorId !== undefined) nurseUpdate.assignedDoctorId = input.assignedDoctorId;
+      if (input.certifications !== undefined) nurseUpdate.certifications = input.certifications;
+      if (input.roleType !== undefined) nurseUpdate.roleType = input.roleType;
+      if (input.specialization !== undefined) nurseUpdate.specialization = input.specialization;
+      if (input.licenseNumber !== undefined) nurseUpdate.licenseNumber = input.licenseNumber;
+      if (input.experience !== undefined) nurseUpdate.experience = input.experience;
+      if (input.qualification !== undefined) nurseUpdate.qualification = input.qualification;
+
+      if (Object.keys(nurseUpdate).length > 0) {
+        nurseUpdate.updated_by = (req as any).user?.id || (req as any).user?._id?.toString?.();
+        await NurseModel.updateOne({ _id: user.nurseId }, { $set: nurseUpdate });
+      }
+    }
+
     return apiResponse(
       res,
       { id: id },

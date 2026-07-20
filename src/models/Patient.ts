@@ -25,7 +25,19 @@ export interface IAbdmLinkToken {
   issuedAt: Date;
   expiresAt: Date;
   status: "ACTIVE" | "EXPIRED";
-  abhaAddress?: string; // ABHA address this token was issued for
+  abhaAddress?: string;
+}
+
+export interface IPatientSocialProfile {
+  education?:           "NONE" | "PRIMARY" | "SECONDARY" | "GRADUATE" | "POSTGRADUATE";
+  employment?:          "EMPLOYED" | "UNEMPLOYED" | "SELF_EMPLOYED" | "STUDENT" | "RETIRED";
+  incomeLevel?:         "VERY_LOW" | "LOW" | "MEDIUM" | "HIGH";
+  housingStability?:    "OWNED" | "RENTED" | "HOMELESS" | "SHELTER";
+  foodSecurity?:        "SECURE" | "INSECURE";
+  accessToHealthcare?:  "GOOD" | "LIMITED" | "NO_ACCESS";
+  hasCriminalSafetyRisk?: boolean;
+  updatedAt?:           Date;
+  updatedBy?:           Types.ObjectId;
 }
 
 export interface IPatient extends Document {
@@ -65,6 +77,10 @@ export interface IPatient extends Document {
 
   isMerged?: boolean;
   mergedToPatient?: Types.ObjectId;
+
+  socialProfile?: IPatientSocialProfile;
+
+  hospitalId?: Types.ObjectId;
 }
 
 const PatientVisitRefSchema = new Schema<IPatientVisitRef>(
@@ -220,6 +236,20 @@ const PatientSchema = new Schema<IPatient>(
     abdmLinkTokenRequestedAt: { type: Date },
     isMerged: { type: Boolean, default: false },
     mergedToPatient: { type: Schema.Types.ObjectId, ref: "Patient" },
+
+    socialProfile: {
+      education:           { type: String, enum: ["NONE", "PRIMARY", "SECONDARY", "GRADUATE", "POSTGRADUATE"] },
+      employment:          { type: String, enum: ["EMPLOYED", "UNEMPLOYED", "SELF_EMPLOYED", "STUDENT", "RETIRED"] },
+      incomeLevel:         { type: String, enum: ["VERY_LOW", "LOW", "MEDIUM", "HIGH"] },
+      housingStability:    { type: String, enum: ["OWNED", "RENTED", "HOMELESS", "SHELTER"] },
+      foodSecurity:        { type: String, enum: ["SECURE", "INSECURE"] },
+      accessToHealthcare:  { type: String, enum: ["GOOD", "LIMITED", "NO_ACCESS"] },
+      hasCriminalSafetyRisk: { type: Boolean },
+      updatedAt:           { type: Date },
+      updatedBy:           { type: Schema.Types.ObjectId, ref: "User" },
+    },
+
+    hospitalId: { type: Schema.Types.ObjectId, ref: "Hospital" },
   },
   {
     collection: "Patients",
@@ -233,5 +263,7 @@ PatientSchema.index({ abhaaddress: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ mobile: 1 });
 PatientSchema.index({ uhid: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ isMerged: 1, status: 1, updatedAt: -1 });
+PatientSchema.index({ hospitalId: 1 });                           // analytics hospital filter
+PatientSchema.index({ hospitalId: 1, "socialProfile.employment": 1 }); // SDOH aggregation
 
 export const PatientModel = model<IPatient>("Patient", PatientSchema);

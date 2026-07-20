@@ -43,6 +43,10 @@ export const ROLE = {
   DOCTOR: 3,
   STAFF: 4,
   NURSE: 5,
+  RECEPTIONIST: 6,
+  ACCOUNTANT: 7,
+  IT_SUPPORT: 8,
+  SECURITY: 9,
 };
 
 export const DOCTOR_STATUS = {

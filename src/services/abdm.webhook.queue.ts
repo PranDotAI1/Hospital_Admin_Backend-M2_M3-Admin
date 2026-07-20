@@ -86,6 +86,9 @@ export const startWebhookIngestionWorker = (): Worker => {
     {
       connection: createBullMQConnection(),
       concurrency: 3,
+      stalledInterval: 300000,
+      lockDuration: 300000,
+      drainDelay: 300,
     },
   );
 
