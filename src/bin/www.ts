@@ -109,6 +109,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 process.once("SIGUSR2", () => {
-  console.log("Nodemon restart detected. Instantly killing process to release port...");
-  process.kill(process.pid, "SIGUSR2");
+  gracefulShutdown("SIGUSR2").then(() => {
+    process.kill(process.pid, "SIGUSR2");
+  });
 });
