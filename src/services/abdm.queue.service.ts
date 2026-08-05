@@ -397,6 +397,9 @@ export const enqueueHiuTransfer = async (
  * Initialize all workers. Call once on server startup.
  */
 export const initializeWorkers = (): void => {
+  getHipPushQueue();
+  getHiuTransferQueue();
+
   startHipPushWorker();
   startHiuTransferWorker();
 

@@ -58,6 +58,8 @@ let _webhookWorker: Worker<WebhookJobData> | null = null;
 export const startWebhookIngestionWorker = (): Worker => {
   if (_webhookWorker) return _webhookWorker;
 
+  getWebhookIngestionQueue();
+
   _webhookWorker = new Worker<WebhookJobData>(
     WEBHOOK_INGESTION_QUEUE,
     async (job: Job<WebhookJobData>) => {

@@ -8,6 +8,8 @@ const createRedisConnection = (): IORedis => {
   const opts: import("ioredis").RedisOptions = {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableReadyCheck: false,
+    
+    connectTimeout: 10_000, // Fail fast (10s) instead of hanging indefinitely
     retryStrategy: (times: number) => {
       if (times > 10) {
         console.error(
