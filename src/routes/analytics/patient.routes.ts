@@ -18,7 +18,7 @@ const router = Router();
 
 const analyticsGuard = [
   auth(),
-  requirePermission(MODULES.ANALYTICS_PATIENT, ACTIONS.VIEW),
+  // requirePermission(MODULES.ANALYTICS_PATIENT, ACTIONS.VIEW),
 ];
 
 router.get("/age-distribution", ...analyticsGuard, getAgeDistribution);
