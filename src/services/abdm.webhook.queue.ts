@@ -6,7 +6,7 @@
  */
 
 import { Queue, Worker, Job } from "bullmq";
-import { createBullMQConnection } from "../config/redis";
+import { getBullMQConnectionOpts } from "../config/redis";
 import { AbdmLogger } from "../utils/abdm.logger";
 
 const LOG_PREFIX = "[WEBHOOK_QUEUE]";
@@ -40,7 +40,7 @@ let _webhookQueue: Queue<WebhookJobData> | null = null;
 export const getWebhookIngestionQueue = (): Queue<WebhookJobData> => {
   if (!_webhookQueue) {
     _webhookQueue = new Queue<WebhookJobData>(WEBHOOK_INGESTION_QUEUE, {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 3000 },
@@ -86,7 +86,7 @@ export const startWebhookIngestionWorker = (): Worker => {
       console.log(`${LOG_PREFIX} Job ${job.id} (type=${data.type}) completed`);
     },
     {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       concurrency: 3,
     },
   );

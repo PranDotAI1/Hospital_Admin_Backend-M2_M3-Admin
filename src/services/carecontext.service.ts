@@ -721,6 +721,21 @@ const triggerLinkingActions = (
     return;
   }
 
+  if (context.linkingStatus === CareContextStatus.LINKING) {
+    const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000);
+    if (context.lastLinkAttemptAt && context.lastLinkAttemptAt > twoMinsAgo) {
+      console.log(
+        "CareContext: Skipping triggerLinkingActions for LINKING context",
+        context.careContextReference,
+      );
+      return;
+    }
+    console.log(
+      "CareContext: Context stuck in LINKING for > 2 mins, allowing auto-link retry",
+      context.careContextReference,
+    );
+  }
+
   if (
     context.linkingStatus === CareContextStatus.LINKED ||
     context.linkingStatus === CareContextStatus.NOTIFIED
@@ -969,21 +984,27 @@ export const linkCareContext = async (
       console.log(
         "CareContext: ABDM says duplicate link request for",
         careContextId,
-        "— leaving status as-is; link may still be pending at ABDM.",
+        "— assuming it is already LINKED to recover from stuck state.",
       );
-      // Decrement linkAttempts since this wasn't a real attempt
+      // Forcefully advance to LINKED so health data can be pushed
       await CareContextModel.updateOne(
         { _id: careContextId },
         {
-          $inc: { linkAttempts: -1 },
           $set: {
-            linkError: {
-              message: "Duplicate link request — awaiting ABDM callback",
-            },
+            linkingStatus: CareContextStatus.LINKED,
+            linkedAt: new Date(),
+            linkError: null,
           },
         },
       );
-      return false;
+      // Trigger a notify attempt in the background
+      setTimeout(async () => {
+        try {
+          const ctx = await CareContextModel.findById(careContextId);
+          if (ctx) await notifyContext(ctx);
+        } catch (e) {}
+      }, 2000);
+      return true;
     }
 
     const isMismatch =
@@ -1357,15 +1378,19 @@ export const handleLinkCallback = async (
     );
 
     // CRITICAL: Trigger context/notify to inform PHR apps
-    try {
-      await notifyContext(careContext);
-    } catch (notifyError) {
-      console.error(
-        "CareContext: context/notify failed after linking",
-        notifyError,
-      );
-      // Don't revert LINKED status - notify can be retried
-    }
+    // Add a 5 second delay to allow ABDM Sandbox to replicate the newly linked context
+    // internally before we try to notify it, otherwise it throws ABDM-1006.
+    setTimeout(async () => {
+      try {
+        await notifyContext(careContext);
+      } catch (notifyError) {
+        console.error(
+          "CareContext: context/notify failed after linking",
+          notifyError,
+        );
+        // Don't revert LINKED status - notify can be retried
+      }
+    }, 5000);
   } else {
     // Check if retryable based on link attempts
     const newStatus =

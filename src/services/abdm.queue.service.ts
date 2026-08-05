@@ -1,5 +1,5 @@
 import { Queue, Worker, Job, QueueEvents } from "bullmq";
-import { createBullMQConnection, getRedisConnection } from "../config/redis";
+import { getBullMQConnectionOpts, getRedisConnection } from "../config/redis";
 import type { HealthInfoRequest } from "./health-information.service";
 
 const LOG_PREFIX = "[ABDM_QUEUE]";
@@ -37,7 +37,7 @@ let _hiuTransferQueue: Queue<HiuTransferJobData> | null = null;
 export const getHipPushQueue = (): Queue<HipPushJobData> => {
   if (!_hipPushQueue) {
     _hipPushQueue = new Queue<HipPushJobData>(HIP_PUSH_QUEUE, {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
@@ -53,7 +53,7 @@ export const getHipPushQueue = (): Queue<HipPushJobData> => {
 export const getHiuTransferQueue = (): Queue<HiuTransferJobData> => {
   if (!_hiuTransferQueue) {
     _hiuTransferQueue = new Queue<HiuTransferJobData>(HIU_TRANSFER_QUEUE, {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 3000 },
@@ -212,7 +212,7 @@ export const startHipPushWorker = (): Worker => {
       );
     },
     {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       concurrency: 2, // Max 2 concurrent Puppeteer-based pushes
       // No rate limiter — ABDM spec requires immediate processing of
       // health-information/request. Concurrency cap is sufficient protection.
@@ -301,7 +301,7 @@ export const startHiuTransferWorker = (): Worker => {
       );
     },
     {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       concurrency: 3,
     },
   );

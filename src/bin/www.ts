@@ -1,13 +1,12 @@
+import "dotenv/config";
 import http from "http"; // Ensure you import the 'http' module
 import app from "../app";
-import dotenv from "dotenv";
 import {
   setBridgeUrlOnStartup,
   purgeRevokedExternalRecords,
   startDataErasureCron,
 } from "../services/startup.service";
 
-dotenv.config();
 
 const PORT: string | number = process.env.PORT || 4000;
 
@@ -109,3 +108,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.once("SIGUSR2", () => {
+  console.log("Nodemon restart detected. Instantly killing process to release port...");
+  process.kill(process.pid, "SIGUSR2");
+});
