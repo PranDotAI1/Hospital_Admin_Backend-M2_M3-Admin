@@ -79,11 +79,6 @@ export const requestHealthInformation = async (
         `Requested date range (${dateRange.from.toISOString()} - ${dateRange.to.toISOString()}) is outside the approved consent range (${consentRange.from.toISOString()} - ${consentRange.to.toISOString()})`,
       );
     }
-
-    console.log(
-      `${LOG_PREFIX} Date Range Clamped: Requested [${requestedFrom.toISOString()} - ${requestedTo.toISOString()}] -> Final [${finalFrom.toISOString()} - ${finalTo.toISOString()}]`,
-    );
-
     const finalDateRange = { from: finalFrom, to: finalTo };
 
     const keys = generateKeyMaterial();
@@ -110,11 +105,6 @@ export const requestHealthInformation = async (
       status: HIURequestStatus.INITIATED,
       storeAsExternalRecord,
     });
-
-    console.log(
-      `${LOG_PREFIX} Created HIU request ${requestId} for consent ${consentArtefactId}`,
-    );
-
     const payload = {
       requestId,
       timestamp: new Date().toISOString(),
@@ -135,7 +125,7 @@ export const requestHealthInformation = async (
               Date.now() + 2 * 24 * 60 * 60 * 1000,
             ).toISOString(), // 2 days
             parameters: "Curve25519",
-            keyValue: keys.publicKey, // 88 chars (Standard) or 412 chars (X509) - python output
+            keyValue: keys.x509PublicKey, // X509/SPKI format required by ABDM spec
           },
           nonce: keys.nonce,
         },
@@ -157,11 +147,6 @@ export const requestHealthInformation = async (
         },
       },
     );
-
-    console.log(
-      `${LOG_PREFIX} Sent request to ABDM. Status: ${response.status}`,
-    );
-
     // Update status
     await HIURequestModel.updateOne(
       { requestId },
@@ -223,9 +208,6 @@ export const handleHiuOnRequest = async (
     body.transactionId ??
     hiRequest?.transactionId;
   if (transactionId) {
-    console.log(
-      `${LOG_PREFIX} Request ${requestId} acknowledged. TransactionId: ${transactionId}`,
-    );
     await HIURequestModel.updateOne(
       { requestId },
       {
@@ -256,10 +238,6 @@ export const handleHiuTransfer = async (
   senderKeyMaterial: ABDMKeyMaterial,
   consentArtefactId?: string, // Optional: passed from transfer payload if available
 ): Promise<void> => {
-  console.log(
-    `${LOG_PREFIX} Received data transfer for transaction ${transactionId}, entries: ${entries.length}`,
-  );
-
   // 0. Try Redis bridge first (instant, sub-ms) — populated by handleHiuOnRequest
   let hiuRequest: import("../models/HIURequest").IHIURequest | null = null;
   try {
@@ -270,9 +248,6 @@ export const handleHiuTransfer = async (
         requestId: bridgedRequestId,
       });
       if (hiuRequest) {
-        console.log(
-          `${LOG_PREFIX} Found HIU request via Redis bridge: ${hiuRequest.requestId}`,
-        );
       }
     }
   } catch (_) {
@@ -283,72 +258,14 @@ export const handleHiuTransfer = async (
   if (!hiuRequest) {
     hiuRequest = await HIURequestModel.findOne({ transactionId });
     if (hiuRequest) {
-      console.log(
-        `${LOG_PREFIX} Found HIU request by transactionId: ${hiuRequest.requestId}, storeAsExternalRecord: ${hiuRequest.storeAsExternalRecord}`,
-      );
     }
   }
 
-  if (!hiuRequest && consentArtefactId) {
-    console.log(
-      `${LOG_PREFIX} TransactionId lookup failed, trying by consentArtefactId: ${consentArtefactId}`,
-    );
-    // Fallback: find the most recent HIU request for this consent
-    hiuRequest = await HIURequestModel.findOne({
-      consentArtefactId,
-      status: {
-        $in: [HIURequestStatus.INITIATED, HIURequestStatus.ACKNOWLEDGED],
-      },
-    }).sort({ createdAt: -1 });
 
-    if (hiuRequest) {
-      // Update the record with the transactionId for future lookups
-      await HIURequestModel.updateOne(
-        { _id: hiuRequest._id },
-        { $set: { transactionId } },
-      );
-      console.log(
-        `${LOG_PREFIX} Found HIU request by consent, updated transactionId: ${hiuRequest.requestId}`,
-      );
-    }
-  }
 
-  // 3rd fallback: Find most recent HIU request without a transactionId (within last 5 mins)
-  // This handles the edge case where the same facility is both HIP and HIU
-  if (!hiuRequest) {
-    console.log(
-      `${LOG_PREFIX} Trying fallback: recent HIU request without transactionId`,
-    );
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-
-    // Query for requests where transactionId is null, undefined, or doesn't exist
-    hiuRequest = await HIURequestModel.findOne({
-      $or: [
-        { transactionId: { $exists: false } },
-        { transactionId: null },
-        { transactionId: "" },
-      ],
-      // Include REQUESTED status - this is what requests have after being sent to ABDM
-      status: {
-        $in: [
-          HIURequestStatus.INITIATED,
-          HIURequestStatus.REQUESTED,
-          HIURequestStatus.ACKNOWLEDGED,
-        ],
-      },
-      createdAt: { $gt: fiveMinutesAgo },
-    }).sort({ createdAt: -1 });
-
-    if (hiuRequest) {
-      await HIURequestModel.updateOne(
-        { _id: hiuRequest._id },
-        { $set: { transactionId, status: HIURequestStatus.ACKNOWLEDGED } },
-      );
-      console.log(
-        `${LOG_PREFIX} Found recent HIU request without transactionId: ${hiuRequest.requestId}`,
-      );
-    }
-  }
+  // NOTE: "Recent request without transactionId" fallback REMOVED.
+  // It was matching the WRONG HIURequest when multiple consents were active simultaneously,
+  // causing data to be stored against incorrect consents.
 
   // --- RETRY WITH BACKOFF: Race condition fix ---
   // ABDM can push the /transfer callback BEFORE the /on-request callback
@@ -366,64 +283,12 @@ export const handleHiuTransfer = async (
       // Retry: Direct transactionId lookup (on-request may have stored it by now)
       hiuRequest = await HIURequestModel.findOne({ transactionId });
       if (hiuRequest) {
-        console.log(
-          `${LOG_PREFIX} Found HIU request on retry #${attempt} by transactionId: ${hiuRequest.requestId}`,
-        );
         break;
       }
 
-      // Retry: Consent-based fallback
-      if (consentArtefactId) {
-        hiuRequest = await HIURequestModel.findOne({
-          consentArtefactId,
-          status: {
-            $in: [
-              HIURequestStatus.INITIATED,
-              HIURequestStatus.REQUESTED,
-              HIURequestStatus.ACKNOWLEDGED,
-            ],
-          },
-        }).sort({ createdAt: -1 });
-        if (hiuRequest) {
-          await HIURequestModel.updateOne(
-            { _id: hiuRequest._id },
-            { $set: { transactionId } },
-          );
-          console.log(
-            `${LOG_PREFIX} Found HIU request on retry #${attempt} by consent: ${hiuRequest.requestId}`,
-          );
-          break;
-        }
-      }
 
-      // Retry: Recent request without transactionId
-      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-      hiuRequest = await HIURequestModel.findOne({
-        $or: [
-          { transactionId: { $exists: false } },
-          { transactionId: null },
-          { transactionId: "" },
-        ],
-        status: {
-          $in: [
-            HIURequestStatus.INITIATED,
-            HIURequestStatus.REQUESTED,
-            HIURequestStatus.ACKNOWLEDGED,
-          ],
-        },
-        createdAt: { $gt: tenMinutesAgo },
-      }).sort({ createdAt: -1 });
-
-      if (hiuRequest) {
-        await HIURequestModel.updateOne(
-          { _id: hiuRequest._id },
-          { $set: { transactionId, status: HIURequestStatus.ACKNOWLEDGED } },
-        );
-        console.log(
-          `${LOG_PREFIX} Found HIU request on retry #${attempt} (recent without txnId): ${hiuRequest.requestId}`,
-        );
-        break;
-      }
+      // NOTE: "Recent request without transactionId" retry fallback REMOVED.
+      // It was matching the WRONG HIURequest when multiple consents were active.
     }
   }
 
@@ -526,11 +391,6 @@ export const handleHiuTransfer = async (
   const allowedCareContexts = new Set(
     consentArtefact?.careContexts?.map((cc) => cc.careContextReference) || [],
   );
-
-  console.log(
-    `${LOG_PREFIX} Validating against ${allowedCareContexts.size} allowed care contexts for consent ${hiuRequest.consentArtefactId} (found in ${artefactSource} collection)`,
-  );
-
   if (allowedCareContexts.size === 0) {
     console.warn(
       `${LOG_PREFIX} ⚠️ Artefact found but has 0 care contexts! Artefact source: ${artefactSource}, requestPurpose: ${(consentArtefact as any).requestPurpose || "unknown"}`,
@@ -562,21 +422,7 @@ export const handleHiuTransfer = async (
       if (entry.content) {
         // Decrypt
         // Note: entry.careContextReference tells us which record this is
-
-        console.log(
-          `${LOG_PREFIX} Decrypting entry for ${entry.careContextReference}...`,
-        );
-
         // Debug: Log key material details
-        console.log(`${LOG_PREFIX} Decryption params:`, {
-          contentLength: entry.content?.length || 0,
-          myPrivateKeyLength: privateKey?.length || 0,
-          myNonceLength: myNonce?.length || 0,
-          senderPubKeyLength: dhPublicKey?.keyValue?.length || 0,
-          senderPubKeyPrefix: dhPublicKey?.keyValue?.substring(0, 20) || "N/A",
-          senderNonceLength: senderNonce?.length || 0,
-        });
-
         const { decryptedData } = decryptHealthData(
           entry.content,
           privateKey,
@@ -584,11 +430,6 @@ export const handleHiuTransfer = async (
           dhPublicKey.keyValue,
           senderNonce,
         );
-
-        console.log(
-          `${LOG_PREFIX} Decryption success for ${entry.careContextReference}`,
-        );
-
         // Extract source HIP info from FHIR bundle
         const { hipId, hipName } = extractSourceHipInfo(decryptedData);
 
@@ -601,35 +442,17 @@ export const handleHiuTransfer = async (
           (X_HIP_ID && hipId.includes(X_HIP_ID));
 
         if (SKIP_OWN_FACILITY && isOurFacility) {
-          console.log(
-            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: source HIP is our facility (${hipId}). SKIP_OWN_FACILITY is enabled.`,
-          );
           continue;
         }
 
         if (isOurFacility) {
-          console.log(
-            `${LOG_PREFIX} Storing ExternalHealthRecord from our own facility (${hipId}). SKIP_OWN_FACILITY is disabled.`,
-          );
         }
 
         // Only store in external_health_records when this fetch was for our HIMS (user-approved records we hold). Do NOT store when the request was "pull records" (patient updating his PHR) – consent was for his PHR view, not for us to store and show in HIMS (compliance risk).
-        console.log(
-          `${LOG_PREFIX} Checking storeAsExternalRecord for ${entry.careContextReference}: requestId=${hiuRequest.requestId}, storeAsExternalRecord=${hiuRequest.storeAsExternalRecord}`,
-        );
         if (hiuRequest.storeAsExternalRecord !== true) {
-          console.log(
-            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: storeAsExternalRecord is not set (e.g. PHR pull records). External records only for HIMS-use fetches.`,
-          );
           continue;
         }
-        console.log(
-          `${LOG_PREFIX} ✓ storeAsExternalRecord=true, proceeding to store record for ${entry.careContextReference}`,
-        );
         if (consentArtefact.requestPurpose === "PHR") {
-          console.log(
-            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: consent requestPurpose is PHR. Not for HIMS.`,
-          );
           continue;
         }
 
@@ -643,8 +466,10 @@ export const handleHiuTransfer = async (
           .select("_id")
           .lean();
 
-        // --- UPSERT BY CONSENT ARTEFACT ID + CARE CONTEXT ---
-        // This prevents duplicates when the same data is transferred multiple times (e.g. retries)
+        // --- UPSERT BY CONSENT + CARE CONTEXT ---
+        // One record per consent per care context. Different consents for the
+        // same patient store separate records (they have independent erase dates,
+        // date ranges, etc.). Retries within the same consent update in place.
         await ExternalHealthRecordModel.findOneAndUpdate(
           {
             consentArtefactId: hiuRequest.consentArtefactId, // Key 1
@@ -682,10 +507,6 @@ export const handleHiuTransfer = async (
             },
           },
           { upsert: true, new: true },
-        );
-
-        console.log(
-          `${LOG_PREFIX} Stored external record from ${hipName || hipId} for ${entry.careContextReference}`,
         );
       }
     } catch (err: any) {
@@ -877,8 +698,6 @@ export const retryFailedConsents = async (): Promise<{
   retried: number;
   results: Array<{ consentId: string; status: string; error?: string }>;
 }> => {
-  console.log(`${LOG_PREFIX} Starting retry of failed consents...`);
-
   // Find valid consent artefacts that:
   // 1. Status is GRANTED (still valid)
   // 2. Don't have a successful HIU request (TRANSFERRED status)
@@ -888,11 +707,6 @@ export const retryFailedConsents = async (): Promise<{
   })
     .select("artefactId consentRequestId patientAbhaAddress rawConsentDetail")
     .lean();
-
-  console.log(
-    `${LOG_PREFIX} Found ${validConsents.length} valid consent artefacts`,
-  );
-
   const results: Array<{ consentId: string; status: string; error?: string }> =
     [];
   let retriedCount = 0;
@@ -905,9 +719,6 @@ export const retryFailedConsents = async (): Promise<{
     });
 
     if (existingSuccess) {
-      console.log(
-        `${LOG_PREFIX} Consent ${consent.artefactId} already has successful transfer, skipping`,
-      );
       results.push({
         consentId: consent.artefactId,
         status: "ALREADY_TRANSFERRED",
@@ -930,7 +741,6 @@ export const retryFailedConsents = async (): Promise<{
     }
 
     try {
-      console.log(`${LOG_PREFIX} Retrying consent ${consent.artefactId}...`);
       // Skip self-referencing ghost artefacts
       if (consent.artefactId === (consent as any).consentRequestId) {
         console.warn(
@@ -962,10 +772,6 @@ export const retryFailedConsents = async (): Promise<{
     // Small delay between requests to avoid rate limiting
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-
-  console.log(
-    `${LOG_PREFIX} Retry complete. Retried ${retriedCount} consents.`,
-  );
   return { retried: retriedCount, results };
 };
 
@@ -994,12 +800,6 @@ export const searchPatient = async (
         unverifiedIdentifiers: [],
       },
     };
-
-    console.log(
-      `${LOG_PREFIX} Searching for patient:`,
-      JSON.stringify(payload),
-    );
-
     const abdmToken = await AbdmTokenService.getToken();
     await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/v3/care-contexts/discover`,
@@ -1015,8 +815,6 @@ export const searchPatient = async (
         },
       },
     );
-
-    console.log(`${LOG_PREFIX} Search request sent. RequestId: ${requestId}`);
     return requestId;
   } catch (error: any) {
     console.error(
@@ -1051,9 +849,6 @@ export const initiateHipAuth = async (
         },
       },
     };
-
-    console.log(`${LOG_PREFIX} Initiating HIP Auth:`, JSON.stringify(payload));
-
     const abdmToken = await AbdmTokenService.getToken();
     await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/user-initiated-linking/v3/auth/init`,
@@ -1068,10 +863,6 @@ export const initiateHipAuth = async (
           Authorization: abdmToken,
         },
       },
-    );
-
-    console.log(
-      `${LOG_PREFIX} Auth Init request sent. RequestId: ${requestId}`,
     );
     return requestId;
   } catch (error: any) {
@@ -1101,9 +892,6 @@ export const confirmHipAuth = async (
         authCode,
       },
     };
-
-    console.log(`${LOG_PREFIX} Confirming HIP Auth:`, JSON.stringify(payload));
-
     const abdmToken = await AbdmTokenService.getToken();
     await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/user-initiated-linking/v3/auth/confirm`,
@@ -1118,10 +906,6 @@ export const confirmHipAuth = async (
           Authorization: abdmToken,
         },
       },
-    );
-
-    console.log(
-      `${LOG_PREFIX} Auth Confirm request sent. RequestId: ${requestId}`,
     );
     return requestId;
   } catch (error: any) {

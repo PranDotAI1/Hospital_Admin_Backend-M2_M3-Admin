@@ -11,7 +11,6 @@ import {
 export const sendSmsNotification = async (mobile: string): Promise<boolean> => {
   try {
     if (!mobile) {
-      console.log("SmsNotification: No mobile number provided");
       return false;
     }
 
@@ -41,8 +40,6 @@ export const sendSmsNotification = async (mobile: string): Promise<boolean> => {
         },
       },
     );
-
-    console.log("SmsNotification: SMS notify sent, status:", response.status);
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
     console.error(
@@ -56,7 +53,6 @@ export const sendSmsNotification = async (mobile: string): Promise<boolean> => {
 export const sendSmsNotify2 = async (mobile: string): Promise<boolean> => {
   try {
     if (!mobile) {
-      console.log("SmsNotification: No mobile number provided for notify2");
       return false;
     }
 
@@ -72,14 +68,6 @@ export const sendSmsNotify2 = async (mobile: string): Promise<boolean> => {
         },
       },
     };
-
-    console.log(
-      "SmsNotification: Sending SMS notify2 (deep link) to",
-      mobile,
-      "payload:",
-      JSON.stringify(payload),
-    );
-
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}${ENDPOINTS.SMS_NOTIFY2}`,
       payload,
@@ -93,8 +81,6 @@ export const sendSmsNotify2 = async (mobile: string): Promise<boolean> => {
         },
       },
     );
-
-    console.log("SmsNotification: SMS notify2 sent, status:", response.status);
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
     console.error(
@@ -106,15 +92,9 @@ export const sendSmsNotify2 = async (mobile: string): Promise<boolean> => {
 };
 
 export const handleSmsOnNotify = (body: any): void => {
-  console.log("SmsNotification: on-notify received", JSON.stringify(body));
-
   if (body.error) {
     console.error("SmsNotification: ABDM reported error", body.error);
   } else {
-    console.log(
-      "SmsNotification: SMS sent successfully, requestId:",
-      body.response?.requestId,
-    );
   }
 };
 

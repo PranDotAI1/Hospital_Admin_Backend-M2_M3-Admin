@@ -286,7 +286,7 @@ export const abhauserListing = async (req: any, res: any) => {
       .limit(limit)
       .sort({ _id: -1 })
       .lean();
-    // console.log("userList before filter", userList);
+
     userList.data = userList?.data?.filter(
       (item: any) => item?.version_m3 != undefined,
     );

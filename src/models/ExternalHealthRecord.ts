@@ -142,7 +142,10 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
 
 ExternalHealthRecordSchema.index({ patientAbhaAddress: 1, receivedAt: -1 });
 ExternalHealthRecordSchema.index({ consentArtefactId: 1 });
-ExternalHealthRecordSchema.index({ transactionId: 1, careContextReference: 1 });
+ExternalHealthRecordSchema.index(
+  { consentArtefactId: 1, careContextReference: 1 },
+  { unique: true, name: "idx_consent_carecontext_unique" },
+);
 ExternalHealthRecordSchema.index(
   { dataEraseAt: 1 },
   { expireAfterSeconds: 0 },

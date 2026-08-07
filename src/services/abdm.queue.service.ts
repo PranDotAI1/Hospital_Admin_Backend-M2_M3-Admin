@@ -22,9 +22,11 @@ export interface HipPushJobData {
 
 export interface HiuTransferJobData {
   transactionId: string;
-  entries: any[];
-  keyMaterial: any;
+  payloadId?: string; // Reference to MongoDB document for large payloads
+  entries?: any[];    // Optional, legacy direct payload
+  keyMaterial?: any;  // Optional, legacy direct payload
   consentArtefactId?: string;
+  pageNumber?: number;
 }
 
 // ============================================================================
@@ -191,11 +193,6 @@ export const startHipPushWorker = (): Worker => {
     async (job: Job<HipPushJobData>) => {
       const { request, requestId, callbackAuth } = job.data;
       const consentId = request.hiRequest.consent.id;
-
-      console.log(
-        `${LOG_PREFIX} [HIP Worker] Processing job ${job.id} for consent: ${consentId}, attempt: ${job.attemptsMade + 1}`,
-      );
-
       // Dynamic import to avoid circular dependencies
       const { default: HealthInformationService } = await import(
         "./health-information.service"
@@ -205,10 +202,6 @@ export const startHipPushWorker = (): Worker => {
         request,
         requestId,
         callbackAuth,
-      );
-
-      console.log(
-        `${LOG_PREFIX} [HIP Worker] Job ${job.id} completed for consent: ${consentId}`,
       );
     },
     {
@@ -220,7 +213,6 @@ export const startHipPushWorker = (): Worker => {
   );
 
   _hipWorker.on("completed", (job) => {
-    console.log(`${LOG_PREFIX} [HIP Worker] Job ${job.id} completed`);
   });
 
   _hipWorker.on("failed", async (job, err) => {
@@ -281,23 +273,55 @@ export const startHiuTransferWorker = (): Worker => {
   _hiuWorker = new Worker<HiuTransferJobData>(
     HIU_TRANSFER_QUEUE,
     async (job: Job<HiuTransferJobData>) => {
-      const { transactionId, entries, keyMaterial, consentArtefactId } =
+      let { transactionId, entries, keyMaterial, consentArtefactId, payloadId } =
         job.data;
 
-      console.log(
-        `${LOG_PREFIX} [HIU Worker] Processing job ${job.id} for transaction: ${transactionId}, entries: ${entries.length}`,
-      );
+      if (payloadId) {
+        const { HIUTransferPayloadModel } = await import(
+          "../models/HIUTransferPayload"
+        );
+        try {
+          const payload = await HIUTransferPayloadModel.findById(payloadId);
+          if (payload) {
+            entries = payload.entries;
+            keyMaterial = payload.keyMaterial;
+          } else {
+            throw new Error(`HIUTransferPayload with ID ${payloadId} not found in DB`);
+          }
+        } catch (dbErr: any) {
+          console.error(`${LOG_PREFIX} [HIU Worker] DB Error loading payloadId ${payloadId}:`, dbErr.message);
+          
+          // Emergency Fallback: Try reading raw from MongoDB without strict BSON validation
+          try {
+            const mongoose = (await import("mongoose")).default;
+            if (!mongoose.connection.db) {
+              throw new Error("Mongoose connection db is not initialized.");
+            }
+            const rawDoc = await mongoose.connection.db
+              .collection("hiu_transfer_payloads")
+              .findOne({ _id: new mongoose.Types.ObjectId(payloadId) }, { enableUtf8Validation: false } as any);
 
+            
+            if (rawDoc) {
+              console.warn(`${LOG_PREFIX} [HIU Worker] SUCCESSFUL RAW READ. Document keys:`, Object.keys(rawDoc));
+              // Convert binary or weird strings to safe base64
+              entries = rawDoc.entries;
+              keyMaterial = rawDoc.keyMaterial;
+            } else {
+              throw new Error("Not found in raw collection");
+            }
+          } catch (rawErr: any) {
+            console.error(`${LOG_PREFIX} [HIU Worker] Raw fallback also failed:`, rawErr.message);
+            throw dbErr;
+          }
+        }
+      }
       const { handleHiuTransfer } = await import("./hiu.service");
       await handleHiuTransfer(
         transactionId,
-        entries,
+        entries || [],
         keyMaterial,
         consentArtefactId,
-      );
-
-      console.log(
-        `${LOG_PREFIX} [HIU Worker] Job ${job.id} completed for transaction: ${transactionId}`,
       );
     },
     {
@@ -307,7 +331,6 @@ export const startHiuTransferWorker = (): Worker => {
   );
 
   _hiuWorker.on("completed", (job) => {
-    console.log(`${LOG_PREFIX} [HIU Worker] Job ${job.id} completed`);
   });
 
   _hiuWorker.on("failed", (job, err) => {
@@ -363,10 +386,6 @@ export const enqueueHipPush = async (
     removeOnComplete: { age: 3600 },      // Clean up completed jobs after 1 hour
     removeOnFail: { age: 7 * 86400 },     // Keep failed jobs for 7 days (audit trail)
   });
-
-  console.log(
-    `${LOG_PREFIX} Enqueued HIP push job ${job.id} for consent: ${consentId}, txn: ${transactionId}`,
-  );
   return job.id || null;
 };
 
@@ -378,14 +397,18 @@ export const enqueueHiuTransfer = async (
   data: HiuTransferJobData,
 ): Promise<string | null> => {
   const queue = getHiuTransferQueue();
+  // Job key: use payloadId when available (unique per transfer callback).
+  // ABDM sends multiple transfer callbacks with DIFFERENT care context entries
+  // but the SAME transactionId and pageNumber=0. Each callback saves a unique
+  // HIUTransferPayload document, so payloadId distinguishes them.
+  // Data-level dedup is handled by the unique index on ExternalHealthRecord.
+  const jobKey = data.payloadId
+    ? `hiu-${data.transactionId}-${data.payloadId}`
+    : `hiu-${data.transactionId}-p${data.pageNumber ?? 0}`;
   const job = await queue.add("hiu-transfer", data, {
-    jobId: `hiu-${data.transactionId}`, // Dedup by transactionId
+    jobId: jobKey,
     priority: 1, // HIU transfers are higher priority (already received data)
   });
-
-  console.log(
-    `${LOG_PREFIX} Enqueued HIU transfer job ${job.id} for txn: ${data.transactionId}`,
-  );
   return job.id || null;
 };
 
@@ -418,8 +441,6 @@ export const initializeWorkers = (): void => {
  * Gracefully close all queues and workers. Call on SIGTERM/SIGINT.
  */
 export const shutdownQueues = async (): Promise<void> => {
-  console.log(`${LOG_PREFIX} Shutting down queues and workers...`);
-
   const closePromises: Promise<void>[] = [];
 
   if (_hipWorker) {
@@ -446,5 +467,4 @@ export const shutdownQueues = async (): Promise<void> => {
   } catch (_) {}
 
   await Promise.allSettled(closePromises);
-  console.log(`${LOG_PREFIX} All queues and workers shut down`);
 };

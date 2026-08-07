@@ -5,17 +5,10 @@ import { STATUS_CODE } from "../../utils/constant";
 
 export const onGenerateToken = async (req: Request, res: Response) => {
   try {
-    console.log(
-      "CareContext Callback: on-generate-token received",
-      "abhaAddress:", req.body?.abhaAddress ? "[REDACTED]" : "missing",
-      "hasLinkToken:", !!req.body?.linkToken,
-    );
-
     const postData = req.body;
     const { abhaAddress, linkToken } = postData;
 
     if (!abhaAddress || !linkToken) {
-      console.log("CareContext Callback: Missing abhaAddress or linkToken");
       return res.status(STATUS_CODE.SUCCESS).json({
         status: "success",
         message: "Acknowledged but missing required fields",
@@ -28,21 +21,11 @@ export const onGenerateToken = async (req: Request, res: Response) => {
     );
 
     if (!patient) {
-      console.log(
-        "CareContext Callback: No patient found for abhaAddress",
-        abhaAddress,
-      );
       return res.status(STATUS_CODE.SUCCESS).json({
         status: "success",
         message: "Acknowledged but patient not found",
       });
     }
-
-    console.log(
-      "CareContext Callback: LinkToken stored for patient",
-      patient.uhid ?? patient._id?.toString() ?? abhaAddress,
-    );
-
     try {
       let abdmToken: string | undefined;
       try {
@@ -74,11 +57,6 @@ export const onGenerateToken = async (req: Request, res: Response) => {
           patient._id,
           abdmToken,
         );
-        console.log(
-          "CareContext Callback: Linked",
-          linkedCount,
-          "pending contexts",
-        );
       }
     } catch (linkError) {
       console.error(
@@ -102,29 +80,10 @@ export const onGenerateToken = async (req: Request, res: Response) => {
 
 export const onCareContext = async (req: Request, res: Response) => {
   try {
-    console.log(
-      "CareContext Callback: on-carecontext received",
-      "requestId:", req.body?.response?.requestId,
-      "hasError:", !!req.body?.error,
-    );
-
     const postData = req.body;
     const { abhaAddress, error } = postData;
     const requestId = postData.response?.requestId;
-
-    console.log(
-      "CareContext Callback: on_carecontext requestId:",
-      requestId,
-      "success:",
-      !error,
-      "error:",
-      error || "none",
-    );
-
     if (!requestId) {
-      console.log(
-        "CareContext Callback: Missing requestId in body. Expected postData.response.requestId (same as REQUEST-ID header sent in link/carecontext).",
-      );
       return res.status(STATUS_CODE.SUCCESS).json({
         status: "success",
         message: "Acknowledged but missing requestId",
@@ -139,13 +98,6 @@ export const onCareContext = async (req: Request, res: Response) => {
       success,
       error,
     );
-
-    console.log(
-      "CareContext Callback: Processed",
-      requestId,
-      success ? "SUCCESS" : "FAILED",
-    );
-
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: "Callback processed",
@@ -161,12 +113,6 @@ export const onCareContext = async (req: Request, res: Response) => {
 
 export const onContextNotify = async (req: Request, res: Response) => {
   try {
-    console.log(
-      "CareContext Callback: on-context-notify received",
-      "requestId:", req.body?.response?.requestId,
-      "status:", req.body?.acknowledgement?.status,
-    );
-
     const postData = req.body;
     const requestId = postData?.response?.requestId;
     const error = postData?.error;

@@ -15,8 +15,6 @@ import { connectDB } from "../config/db";
 const LOG_PREFIX = "[MIGRATION]";
 
 async function backfillSourceType() {
-  console.log(`${LOG_PREFIX} Starting sourceType backfill migration...`);
-
   await connectDB();
 
   // Backfill consent_artefacts
@@ -24,20 +22,11 @@ async function backfillSourceType() {
     { sourceType: { $exists: false } },
     { $set: { sourceType: "CONSENT" } },
   );
-  console.log(
-    `${LOG_PREFIX} consent_artefacts: updated ${mainResult.modifiedCount} documents`,
-  );
-
   // Backfill phr_consent_artefacts
   const phrResult = await mongoose.connection.collection("phr_consent_artefacts").updateMany(
     { sourceType: { $exists: false } },
     { $set: { sourceType: "CONSENT" } },
   );
-  console.log(
-    `${LOG_PREFIX} phr_consent_artefacts: updated ${phrResult.modifiedCount} documents`,
-  );
-
-  console.log(`${LOG_PREFIX} Migration complete.`);
   await mongoose.disconnect();
   process.exit(0);
 }

@@ -18,7 +18,7 @@ export const handleRunningTokenStatus = async (
 ): Promise<void> => {
   try {
     AbdmLogger.logPayloadDebug("Running token status request received:", req.body);
-    // console.log("Headers:", req.headers);
+
 
     res.status(202).json({
       status: "Accepted",
@@ -136,12 +136,6 @@ const sendRunningTokenStatusCallback = async (
         },
         timeout: 10000,
       },
-    );
-
-    console.log(
-      "ABDM running token status callback response:",
-      callbackResponse.status,
-      callbackResponse.data,
     );
   } catch (callbackError: any) {
     console.error("ABDM running token status callback failed:", {

@@ -161,11 +161,6 @@ webook.post("/api/v3/hip/health-information/request", healthInformation);
 
 // Health Information on-notify callback - ABDM acknowledges our health-info/notify
 webook.post("/api/v3/hip/health-information/on-notify", (req, res) => {
-  console.log(
-    "[HEALTH_INFO] on-notify callback received:",
-    "requestId:", req.body?.response?.requestId,
-    "status:", req.body?.acknowledgement?.status,
-  );
   // This is ABDM's acknowledgment that our health information transfer notification was received
   // The actual data push already completed successfully at this point
   res.status(200).json({ status: "Acknowledged" });
@@ -212,9 +207,6 @@ webook.post(
   handleRunningTokenStatus,
 );
 webook.post("/api/v3/hiu/running-token/on-status", (req, res) => {
-  console.log("[RUNNING_TOKEN] on-status callback received");
-  console.log("[RUNNING_TOKEN] Headers:", req.headers);
-  console.log("[RUNNING_TOKEN] Body:", req.body);
   res.status(202).json({
     status: "Accepted",
     message: "Request received and processing",

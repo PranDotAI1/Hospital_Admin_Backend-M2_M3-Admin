@@ -111,9 +111,6 @@ export const validateAbdmWebhook = async (
   }
 
   if (!requestId) {
-    console.debug(
-      `${LOG_PREFIX} No REQUEST-ID header on ${req.method} ${req.path} (advisory)`,
-    );
   }
 
   if (timestamp) {

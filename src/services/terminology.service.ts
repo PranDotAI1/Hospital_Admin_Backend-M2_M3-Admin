@@ -281,7 +281,6 @@ export async function searchConditions(
  */
 export function clearTerminologyCache(): void { 
   terminologyCache.clear();
-  console.log("[Terminology] Cache cleared.");
 }
 
 export const TerminologyService = {

@@ -206,17 +206,7 @@ const acknowledgeHealthInfoRequest = async (
         requestId: originalRequestId,
       },
     };
-
-    console.log(
-      `${LOG_PREFIX} Sending on-request ACK: transactionId=${request.transactionId}, response.requestId=${originalRequestId}, outboundRequestId=${outboundRequestId}`,
-    );
-
     const ackUrl = `${process.env.ABDM_BASE_URL}${ENDPOINTS.HEALTH_INFO_HIP_ON_REQUEST}`;
-    console.log(`${LOG_PREFIX} on-request ACK URL: ${ackUrl}`);
-    console.log(
-      `${LOG_PREFIX} on-request ACK: transactionId=${payload.hiRequest.transactionId}, requestId=${payload.requestId}`,
-    );
-
     const response = await axios.post(ackUrl, payload, {
       headers: {
         "Content-Type": "application/json",
@@ -227,10 +217,6 @@ const acknowledgeHealthInfoRequest = async (
         Authorization: authToken,
       },
     });
-
-    console.log(
-      `${LOG_PREFIX} on-request acknowledged, status: ${response.status}`,
-    );
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
     const status = error.response?.status;
@@ -272,9 +258,6 @@ const acknowledgeHealthInfoRequest = async (
           },
         );
         if (retryResponse.status === 200 || retryResponse.status === 202) {
-          console.log(
-            `${LOG_PREFIX} on-request acknowledged on retry with session token, status: ${retryResponse.status}`,
-          );
           return true;
         }
       } catch (retryErr: any) {
@@ -320,11 +303,6 @@ const findCareContextsForConsent = async (
     const careContextRefs = artefact.careContexts.map((cc) =>
       cc.careContextReference.trim(),
     );
-
-    console.log(
-      `${LOG_PREFIX} Found ${careContextRefs.length} care context refs in artefact ${consentId}`,
-    );
-
     const contexts = await CareContextModel.find({
       careContextReference: { $in: careContextRefs },
     }).lean();
@@ -341,9 +319,6 @@ const findCareContextsForConsent = async (
   // Strategy 2: Direct consentId match on CareContext
   const directMatch = await CareContextModel.find({ consentId }).lean();
   if (directMatch.length > 0) {
-    console.log(
-      `${LOG_PREFIX} Found ${directMatch.length} care contexts with direct consentId match`,
-    );
     return directMatch as unknown as ICareContext[];
   }
 
@@ -395,11 +370,6 @@ const findContextsByAbhaAndDateRange = async (
   const contexts = await CareContextModel.find(query)
     .sort({ createdAt: -1 })
     .lean();
-
-  console.log(
-    `${LOG_PREFIX} Found ${contexts.length} LINKED/NOTIFIED contexts for patient ${abhaAddress}`,
-  );
-
   return contexts as unknown as ICareContext[];
 };
 
@@ -585,9 +555,6 @@ const pushHealthData = async (
         uhid: careContext.patientReference,
       });
       if (patient) {
-        console.log(
-          `${LOG_PREFIX}- [Push Health Data] Resolved patient by patientReference (UHID) for care context ${careContext._id}, fixing patientId`,
-        );
         await CareContextModel.updateOne(
           { _id: careContext._id },
           { $set: { patientId: patient._id } },
@@ -602,9 +569,6 @@ const pushHealthData = async (
         ],
       });
       if (patient) {
-        console.log(
-          `${LOG_PREFIX} Resolved patient by abhaAddress for care context ${careContext._id}, fixing patientId`,
-        );
         await CareContextModel.updateOne(
           { _id: careContext._id },
           { $set: { patientId: patient._id } },
@@ -674,16 +638,8 @@ const pushHealthData = async (
         : contextHiTypes;
 
     if (applicableHiTypes.length === 0) {
-      console.log(
-        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no matching hiTypes between CareContext(${contextHiTypes}) and consent(${consentedHiTypes})`,
-      );
       return false;
     }
-
-    console.log(
-      `${LOG_PREFIX} CareContext ${careContext.careContextReference}: will push ${applicableHiTypes.length} bundle(s) for hiTypes: ${JSON.stringify(applicableHiTypes)}`,
-    );
-
     // Load ALL clinical data once (per-type filtering handled by FHIR bundle service)
     const optionalData = await getOptionalDataForCareContext(careContext);
 
@@ -723,9 +679,6 @@ const pushHealthData = async (
     }
 
     if (clinicalDataFound.length > 0) {
-      console.log(
-        `${LOG_PREFIX} Clinical data found for ${careContext.careContextReference}: ${clinicalDataFound.join(", ")}`,
-      );
     } else {
       console.warn(
         `${LOG_PREFIX} ⚠️ NO clinical data found for ${careContext.careContextReference} (visitId=${careContext.visitId}). FHIR bundles will be minimal.`,
@@ -745,9 +698,6 @@ const pushHealthData = async (
 
     for (const hiType of applicableHiTypes) {
       try {
-        console.log(
-          `${LOG_PREFIX} Generating FHIR bundle for ${careContext.careContextReference} [${hiType}]`,
-        );
         const fhirBundle = await generateFhirBundle(
           hiType,
           patient,
@@ -758,10 +708,6 @@ const pushHealthData = async (
         );
         const fhirBundleJson = JSON.stringify(fhirBundle);
         const entryCount = fhirBundle.entry?.length || 0;
-        console.log(
-          `${LOG_PREFIX} FHIR bundle [${hiType}]: ${fhirBundleJson.length} chars, ${entryCount} entries`,
-        );
-
         // Guard: ImmunizationRecord bundles need at least one Immunization resource
         if (
           hiType === "ImmunizationRecord" &&
@@ -778,9 +724,6 @@ const pushHealthData = async (
 
         // Guard: Skip empty bundles (only base entries: Composition + Patient + Org + Practitioner + Encounter)
         if (entryCount <= 5) {
-          console.log(
-            `${LOG_PREFIX} Skipping push for ${careContext.careContextReference} [${hiType}]: bundle has only base entries (${entryCount})`,
-          );
           continue;
         }
 
@@ -802,10 +745,6 @@ const pushHealthData = async (
         }
 
         const keyVal = payload?.keyMaterial?.dhPublicKey?.keyValue ?? "";
-        console.log(
-          `${LOG_PREFIX} Pre-generated payload [${hiType}] keyValue length=${keyVal.length} careContext=${careContext.careContextReference}`,
-        );
-
         preparedPayloads.push({
           hiType,
           payload,
@@ -824,9 +763,6 @@ const pushHealthData = async (
     // ── Phase 2: PUSH all pre-generated payloads rapidly ──
     // All slow work (PDF gen, encryption) is done. Push quickly before transaction expires.
     if (preparedPayloads.length > 0) {
-      console.log(
-        `${LOG_PREFIX} Pushing ${preparedPayloads.length} pre-generated payload(s) for ${careContext.careContextReference}`,
-      );
     }
 
     for (const { hiType, payload } of preparedPayloads) {
@@ -838,13 +774,7 @@ const pushHealthData = async (
         try {
           const requestId = generateUID();
           if (attempt > 0) {
-            console.log(
-              `${LOG_PREFIX} Retry #${attempt} for [${hiType}] push to: ${dataPushUrl}`,
-            );
           } else {
-            console.log(
-              `${LOG_PREFIX} Pushing [${hiType}] data to: ${dataPushUrl}`,
-            );
           }
 
           const response = await axios.post(dataPushUrl, payload, {
@@ -857,10 +787,6 @@ const pushHealthData = async (
               Authorization: authToken,
             },
           });
-
-          console.log(
-            `${LOG_PREFIX} Data [${hiType}] pushed successfully, status: ${response.status}, careContext: ${careContext.careContextReference}${attempt > 0 ? ` (after ${attempt} retries)` : ""}`,
-          );
           pushSuccess = true;
           break; // Success — exit retry loop
         } catch (pushErr: any) {
@@ -1066,11 +992,6 @@ const notifyHealthInfoTransfer = async (
         },
       },
     );
-
-    console.log(
-      `${LOG_PREFIX} Transfer notification sent, status: ${response.status}, session: ${allTransferred ? "TRANSFERRED" : "FAILED"}`,
-    );
-
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
     console.error(
@@ -1105,11 +1026,6 @@ const processHealthInfoRequest = async (
   const { transactionId, hiRequest } = request;
   const { consent, dataPushUrl, keyMaterial, dateRange } = hiRequest;
   const consentId = consent.id;
-
-  console.log(
-    `${LOG_PREFIX} Processing request for consent: ${consentId}, transaction: ${transactionId}`,
-  );
-
   // --- SECURITY: Validate dataPushUrl before any processing ---
   if (!isValidDataPushUrl(dataPushUrl)) {
     console.error(
@@ -1200,7 +1116,6 @@ const processHealthInfoRequest = async (
   let abdmToken: string;
   try {
     abdmToken = await AbdmTokenService.getToken();
-    console.log(`${LOG_PREFIX} Using session token for data flow`);
   } catch (tokenError: any) {
     if (abdmCallbackAuth && abdmCallbackAuth.trim()) {
       abdmToken = abdmCallbackAuth.trim();
@@ -1282,7 +1197,6 @@ const processHealthInfoRequest = async (
     // The inline retry logic (2s/4s/8s backoff) in pushHealthData provides
     // additional resilience for edge cases.
     const STABILIZATION_DELAY_MS = 5000;
-    console.log(`${LOG_PREFIX} Waiting ${STABILIZATION_DELAY_MS / 1000}s for ABDM to activate transaction before pushing data...`);
     await new Promise((resolve) => setTimeout(resolve, STABILIZATION_DELAY_MS));
 
     // Step 2: Find care contexts for this consent
@@ -1296,11 +1210,6 @@ const processHealthInfoRequest = async (
       // so we cannot send a notification with empty care contexts. ABDM will handle timeout/retry if needed.
       return;
     }
-
-    console.log(
-      `${LOG_PREFIX} Found ${careContexts.length} care contexts for consent: ${consentId}`,
-    );
-
     // Mark care contexts with consent and transaction IDs
     const contextIds = careContexts.map((cc) => cc._id);
     await CareContextModel.updateMany(
@@ -1333,11 +1242,6 @@ const processHealthInfoRequest = async (
           "--disable-gpu",
         ],
       });
-
-      console.log(
-        `${LOG_PREFIX} Launched shared browser for ${careContexts.length} contexts`,
-      );
-
       for (const cc of careContexts) {
         try {
           const success = await pushHealthData(
@@ -1393,7 +1297,6 @@ const processHealthInfoRequest = async (
     } finally {
       if (browser) {
         await browser.close();
-        console.log(`${LOG_PREFIX} Closed shared browser`);
       }
     }
 
@@ -1405,10 +1308,6 @@ const processHealthInfoRequest = async (
       transactionId,
       pushResults as unknown as ICareContext[],
       abdmToken,
-    );
-
-    console.log(
-      `${LOG_PREFIX} Request processing complete for consent: ${consentId}`,
     );
   } catch (error: any) {
     // ── GUARANTEED DELIVERY ──
@@ -1510,10 +1409,6 @@ const sendFailedTransferNotification = async (
         "Content-Type": "application/json",
       },
     });
-
-    console.log(
-      `${LOG_PREFIX} Sent FAILED transfer notification to ABDM for consent ${consentId}, status: ${response.status}`,
-    );
   } catch (err: any) {
     console.error(
       `${LOG_PREFIX} Failed to send FAILED notification for consent ${consentId}:`,

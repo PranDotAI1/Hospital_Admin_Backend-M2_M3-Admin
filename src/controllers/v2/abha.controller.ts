@@ -14,12 +14,6 @@ import { MSG } from "../../utils/msgs";
 
 export const userV2Onboard = async (req: any, res: any) => {
   try {
-    console.log("Step-1");
-    console.log(
-      "Session URL",
-      `${process.env.ABHA_URL}/sessions`,
-      clientParams,
-    );
     let headers = baseHeaders();
     let random32String = headers["REQUEST-ID"];
     const response = await axios.post(
@@ -29,7 +23,6 @@ export const userV2Onboard = async (req: any, res: any) => {
         headers: headers,
       },
     );
-    console.log("Step-1 Response", response.data);
     if (response.data.accessToken) {
       await checkBridgeUrl(
         response.data.accessToken,
@@ -49,7 +42,6 @@ export const userV2Onboard = async (req: any, res: any) => {
         });
     }
   } catch (error: any) {
-    console.log("error-1", error);
     if (error.response) {
       return res
         .status(error.response.status)
@@ -72,10 +64,6 @@ export const checkBridgeUrl = async (
   random32String: any,
 ) => {
   try {
-    console.log(
-      "Step-2 checkBridgeUrl",
-      process.env.ABHA_URL + "/" + "bridge-services",
-    );
     const headers = baseHeaders();
 
     const response = await axios.get(
@@ -84,26 +72,18 @@ export const checkBridgeUrl = async (
         headers: {...headers, Authorization: "Bearer " + token},
       },
     );
-    console.log("Step-2.2 status ", response.status);
-    console.log("Step-2.2", response.data);
-    console.log("URL to be set", response?.data?.bridge?.url, url);
-    console.log("status", response.status == STATUS_CODE.SUCCESS);
-
     if (response?.data?.bridge?.url != url) {
       await setBridgeUrl(token, url, req, res, random32String);
       return;
     } else if (response.status == STATUS_CODE.SUCCESS) {
-      console.log("Step-2 Response", token);
       await tokenGeneration(req, res, token);
       return;
     } else {
-      console.log("Step-2 else response");
       await setBridgeUrl(token, url, req, res, random32String);
       return;
       //return res.status(response.status).json({ "status": response.status, "error": MSG.API_ERROR + response.data, step: 2 });
     }
   } catch (error: any) {
-    console.log(error.message)
     if (error.response) {
       return res
         .status(error.response.status)
@@ -126,7 +106,6 @@ export const setBridgeUrl = async (
   random32String: string,
 ) => {
   try {
-    console.log("Step-3", token);
     let headers = {
       "Content-Type": "application/json",
       "REQUEST-ID": random32String,
@@ -141,13 +120,10 @@ export const setBridgeUrl = async (
         headers: headers,
       },
     );
-    console.log("Step-3 status ", response.status);
-    console.log("Step-3 Response1", response.data);
     if (
       response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
     ) {
-      console.log("Step-3 Response");
       await registrationService(token, req, res, url);
       return;
     } else {
@@ -160,7 +136,6 @@ export const setBridgeUrl = async (
         });
     }
   } catch (error: any) {
-    console.log("error-3", error);
     if (error.response) {
       return res
         .status(error.response.status)
@@ -182,7 +157,6 @@ export const registrationService = async (
   url: any,
 ) => {
   try {
-    console.log("Step-4");
     let headers = {
       "Content-Type": "application/json",
       Authorization: "Bearer " + token,
@@ -205,8 +179,6 @@ export const registrationService = async (
         headers: headers,
       },
     );
-    console.log("step-5 status", response.status);
-    console.log("Step-5 Response", response.data);
     if (
       response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
@@ -221,7 +193,6 @@ export const registrationService = async (
         .json({ status: response.status, error: MSG.API_ERROR, step: 2 });
     }
   } catch (error: any) {
-    console.log("error.response", error.response);
     if (error.response) {
       return res
         .status(error.response.status)
@@ -238,10 +209,7 @@ export const registrationService = async (
 
 export const tokenGeneration = async (req: any, res: any, token: any) => {
   try {
-    console.log("tokenGeneration Step-5");
     let request = req.body;
-
-    console.log("tokenGeneration request Data", request);
     let random32String = generateUID();
     let headers = {
       "Content-Type": "application/json",
@@ -258,13 +226,7 @@ export const tokenGeneration = async (req: any, res: any, token: any) => {
         headers: headers,
       },
     );
-    console.log("Step-6 Response", response.status);
-    console.log("Step-6 Response", response.data);
     const baseUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
-    console.log(
-      "Callback after token generation URL-------------",
-      "https://admin.pran.ai/api/v3/hip/token/on-generate-token",
-    );
     if (
       response.status == STATUS_CODE.ACCEPTED ||
       response.status == STATUS_CODE.SUCCESS
@@ -289,7 +251,6 @@ export const tokenGeneration = async (req: any, res: any, token: any) => {
         .json({ status: response.status, error: MSG.API_ERROR + response });
     }
   } catch (error: any) {
-    console.log("error-6", error.response);
     if (error.response) {
       return res
         .status(error.response.status)

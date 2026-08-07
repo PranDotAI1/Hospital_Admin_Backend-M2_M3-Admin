@@ -98,6 +98,5 @@ export async function closeRedisConnections(): Promise<void> {
   if (_appConnection) {
     await _appConnection.quit().catch(() => {});
     _appConnection = null;
-    console.log(`${LOG_PREFIX} App connection closed`);
   }
 }

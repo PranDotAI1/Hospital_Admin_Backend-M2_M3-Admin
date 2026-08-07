@@ -205,13 +205,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       const hoursSince =
         (Date.now() - new Date(requestedAt).getTime()) / (1000 * 60 * 60);
       if (hoursSince < LINK_TOKEN_REQUEST_COOLDOWN_HOURS) {
-        console.log(
-          "CareContext: Skipping link token request (cooldown). Last requested",
-          Math.round(hoursSince),
-          "h ago. Retry after",
-          LINK_TOKEN_REQUEST_COOLDOWN_HOURS,
-          "h.",
-        );
         return false;
       }
     }
@@ -219,9 +212,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     // Use refreshed patient data (abhaaddress/ABHANumber may have just been saved)
     const latestPatient = fresh as unknown as IPatient;
     if (!latestPatient.abhaaddress?.trim()) {
-      console.log(
-        "CareContext: Skipping link token request — patient has no abhaAddress stored.",
-      );
       return false;
     }
 
@@ -259,12 +249,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     if (abhaNumber14.length === 14) {
       payload.abhaNumber = abhaNumber14 ?? "";
     }
-
-    console.log(
-      "CareContext: Requesting link token with payload:",
-      JSON.stringify(payload),
-    );
-
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/v3/token/generate-token`,
       payload,
@@ -289,13 +273,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
         { $set: { abdmLinkTokenRequestedAt: new Date() } },
       );
     }
-
-    console.log(
-      "CareContext: Link token requested, status:",
-      response.status,
-      "| ABDM will call your callback with the token. Ensure callback URL is reachable:",
-      "POST /api/v3/hip/token/on-generate-token",
-    );
     return isSuccess;
   } catch (error: any) {
     const errCode = String(
@@ -313,11 +290,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       // ABDM-1092: ABDM already has a pending token generation for this ABHA address.
       // Treat as a soft success — set the cooldown so we don't keep hammering ABDM.
       // The token will arrive via the on-generate-token callback.
-      console.log(
-        "CareContext: ABDM-1092 — token request already in flight for patient",
-        patient._id?.toString(),
-        "| Awaiting on-generate-token callback.",
-      );
       try {
         const patientId = patient._id?.toString();
         if (patientId) {
@@ -342,10 +314,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
           { _id: patientId },
           { $unset: { abdmLinkTokenRequestedAt: 1 } },
         );
-        console.log(
-          "CareContext: Cleared abdmLinkTokenRequestedAt after failed token request for patient",
-          patientId,
-        );
       }
     } catch (clearErr) {
       console.warn(
@@ -366,7 +334,6 @@ export const createCareContextForVisit = async (
     // Get patient details
     const patient = await PatientModel.findById(patientId);
     if (!patient) {
-      console.log("[CareContext: Patient not found", patientId);
       return null;
     }
 
@@ -376,7 +343,6 @@ export const createCareContextForVisit = async (
       visitId,
     });
     if (existingContext) {
-      console.log("CareContext: Already exists for visit", visitId);
       return existingContext;
     }
 
@@ -442,14 +408,8 @@ export const createCareContextForVisit = async (
       facilityId: facilityId,
       facilityName: facilityName,
     });
-
-    console.log("CareContext: Created", careContext.careContextReference);
-
     if (patient.abhaaddress) {
       if (isLinkTokenValid(patient)) {
-        console.log(
-          "CareContext: Patient has valid link token, auto-linking...",
-        );
         setImmediate(async () => {
           try {
             const abdmToken = await AbdmTokenService.getToken();
@@ -462,11 +422,6 @@ export const createCareContextForVisit = async (
           }
         });
       } else {
-        console.log(
-          "CareContext: No valid link token for patient",
-          patient.uhid || patient._id,
-          "-> requesting link token from ABDM (cooldown-protected)",
-        );
         setImmediate(async () => {
           try {
             await requestLinkToken(patient);
@@ -479,9 +434,6 @@ export const createCareContextForVisit = async (
         });
       }
     } else {
-      console.log(
-        "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
-      );
     }
 
     return careContext;
@@ -527,10 +479,6 @@ export const createOrUpdateCareContextForVisit = async (
   try {
     const patient = await PatientModel.findById(patientId);
     if (!patient) {
-      console.log(
-        "[CareContext] createOrUpdateCareContextForVisit: Patient not found",
-        patientId,
-      );
       return null;
     }
 
@@ -556,29 +504,9 @@ export const createOrUpdateCareContextForVisit = async (
             ...(existingContext.hiTypes || []),
             hiType,
           ];
-          console.log(
-            "CareContext: Added hiType",
-            hiType,
-            "to existing context for visit",
-            visitId,
-            "-> hiTypes:",
-            existingContext.hiTypes,
-          );
         } else {
-          console.log(
-            "CareContext: Already has hiType",
-            hiType,
-            "for visit",
-            visitId,
-          );
         }
       } else {
-        console.log(
-          "CareContext: Already exists for visit",
-          visitId,
-          "hiType",
-          hiType,
-        );
       }
 
       // Existing context may still need sync actions after clinical updates.
@@ -637,13 +565,6 @@ export const createOrUpdateCareContextForVisit = async (
             dupKeyMsg.includes("patientId_1_visitId_1_hiType_1");
 
           if (isCompoundDup) {
-            console.log(
-              "CareContext: Concurrent creation detected for visit",
-              visitId,
-              "hiType",
-              hiType,
-              "— finding existing",
-            );
             if (SEPARATE_CARECONTEXT_PER_HITYPE) {
               const raceContext = await CareContextModel.findOne({
                 patientId,
@@ -676,16 +597,6 @@ export const createOrUpdateCareContextForVisit = async (
         throw createErr;
       }
     }
-
-    console.log(
-      "CareContext: Created for visit",
-      visitId,
-      "with hiType",
-      hiType,
-      "->",
-      careContext.careContextReference,
-    );
-
     triggerLinkingActions(careContext, patient);
     return careContext;
   } catch (error) {
@@ -704,36 +615,20 @@ const triggerLinkingActions = (
   patient: IPatient,
 ): void => {
   if (!patient.abhaaddress) {
-    console.log(
-      "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
-    );
     return;
   }
 
   // Don't retry FAILED contexts on every clinical save — they need manual intervention
   // or a new link token to arrive via callback.
   if (context.linkingStatus === CareContextStatus.FAILED) {
-    console.log(
-      "CareContext: Skipping triggerLinkingActions for FAILED context",
-      context.careContextReference,
-      `(${context.linkAttempts} attempts)`,
-    );
     return;
   }
 
   if (context.linkingStatus === CareContextStatus.LINKING) {
     const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000);
     if (context.lastLinkAttemptAt && context.lastLinkAttemptAt > twoMinsAgo) {
-      console.log(
-        "CareContext: Skipping triggerLinkingActions for LINKING context",
-        context.careContextReference,
-      );
       return;
     }
-    console.log(
-      "CareContext: Context stuck in LINKING for > 2 mins, allowing auto-link retry",
-      context.careContextReference,
-    );
   }
 
   if (
@@ -751,7 +646,6 @@ const triggerLinkingActions = (
       }
     });
   } else if (isLinkTokenValid(patient)) {
-    console.log("CareContext: Patient has valid link token, auto-linking...");
     setImmediate(async () => {
       try {
         const abdmToken = await AbdmTokenService.getToken();
@@ -764,11 +658,6 @@ const triggerLinkingActions = (
       }
     });
   } else {
-    console.log(
-      "CareContext: No valid link token for patient",
-      patient.uhid || patient._id,
-      "-> requesting link token from ABDM (cooldown-protected)",
-    );
     setImmediate(async () => {
       try {
         await requestLinkToken(patient);
@@ -827,7 +716,6 @@ export const linkCareContext = async (
   try {
     const careContext = await CareContextModel.findById(careContextId);
     if (!careContext) {
-      console.log("CareContext: Not found for linking", careContextId);
       return false;
     }
 
@@ -836,13 +724,11 @@ export const linkCareContext = async (
       (careContext.linkingStatus === CareContextStatus.LINKED ||
         careContext.linkingStatus === CareContextStatus.NOTIFIED)
     ) {
-      console.log("CareContext: Already linked", careContextId);
       return true;
     }
 
     // Check max attempts
     if (careContext.linkAttempts >= MAX_LINK_ATTEMPTS) {
-      console.log("CareContext: Max attempts reached", careContextId);
       careContext.linkingStatus = CareContextStatus.FAILED;
       careContext.linkError = { message: "Maximum link attempts reached" };
       await careContext.save();
@@ -852,16 +738,10 @@ export const linkCareContext = async (
     // Get patient and check link token
     const patient = await PatientModel.findById(careContext.patientId);
     if (!patient) {
-      console.log("CareContext: Patient not found", careContext.patientId);
       return false;
     }
 
     if (!isLinkTokenValid(patient)) {
-      console.log(
-        "CareContext: No valid link token for patient",
-        patient._id,
-        "-> requesting token (no error thrown)",
-      );
       careContext.linkingStatus = CareContextStatus.PENDING;
       careContext.linkError = {
         message: "No valid link token available; token request triggered",
@@ -899,19 +779,6 @@ export const linkCareContext = async (
     }
 
     const normalizedAbhaAddr = normalizeAbhaAddress(patient.abhaaddress);
-
-    console.log(
-      "CareContext: linkCareContext payload debug:",
-      JSON.stringify({
-        abhaNumber14,
-        abhaAddress: normalizedAbhaAddr,
-        storedABHANumber: patient.ABHANumber,
-        tokenAbhaAddress: patient.abdmLinkToken?.abhaAddress,
-        careContextRef: careContext.careContextReference,
-        hiType: careContext.hiType || careContext.hiTypes?.[0],
-      }),
-    );
-
     const payload = {
       abhaNumber: abhaNumber14,
       abhaAddress: normalizedAbhaAddr,
@@ -957,9 +824,6 @@ export const linkCareContext = async (
         },
       },
     );
-
-    console.log("CareContext: Link API response", response.status);
-
     // 200 or 202 = request accepted, wait for callback
     if (response.status === 200 || response.status === 202) {
       return true;
@@ -981,11 +845,6 @@ export const linkCareContext = async (
     // Treat as a soft no-op: don't increment attempts, don't clear token, don't mark LINKED.
     const isDuplicate = /duplicate.*link/i.test(errMsg);
     if (isDuplicate) {
-      console.log(
-        "CareContext: ABDM says duplicate link request for",
-        careContextId,
-        "— assuming it is already LINKED to recover from stuck state.",
-      );
       // Forcefully advance to LINKED so health data can be pushed
       await CareContextModel.updateOne(
         { _id: careContextId },
@@ -1015,9 +874,6 @@ export const linkCareContext = async (
       await PatientModel.updateOne(
         { _id: ctx.patientId },
         { $unset: { abdmLinkToken: 1 } },
-      );
-      console.log(
-        "CareContext: Cleared link token due to ABHA mismatch; a new token will be requested on next attempt.",
       );
     }
     const newStatus =
@@ -1060,10 +916,6 @@ export const linkPendingCareContexts = async (
     const success = await linkCareContext(context._id, abdmToken);
     if (success) linked++;
   }
-
-  console.log(
-    `CareContext: Linked ${linked}/${pendingContexts.length} for patient ${patientId}`,
-  );
   return linked;
 };
 
@@ -1076,7 +928,6 @@ export const linkPendingCareContextsByAbhaAddress = async (
 ): Promise<number> => {
   const patient = await PatientModel.findOne({ abhaaddress: abhaAddress });
   if (!patient) {
-    console.log("CareContext: No patient found for ABHA address", abhaAddress);
     return 0;
   }
 
@@ -1136,9 +987,6 @@ export const notifyContext = async (
           await CareContextModel.updateOne(
             { _id: careContext._id },
             { $set: { hiType: resolvedHiType } },
-          );
-          console.log(
-            `CareContext notifyContext: Set primary hiType for context ${careContext.careContextReference} → ${resolvedHiType}`,
           );
         }
       } catch (detectErr: any) {
@@ -1224,14 +1072,7 @@ export const notifyContext = async (
       payload,
       { headers },
     );
-
-    console.log("CareContext: context/notify response", response.status);
-
     if (response.status === 200 || response.status === 202) {
-      console.log(
-        "CareContext: context/notify accepted (awaiting callback ack) for",
-        careContext.careContextReference,
-      );
       return true;
     }
 
@@ -1262,10 +1103,6 @@ export const handleContextNotifyCallback = async (
     notifyRequestId: requestId,
   });
   if (!careContext) {
-    console.log(
-      "CareContext: No care context found for context-notify requestId:",
-      requestId,
-    );
     return;
   }
 
@@ -1279,10 +1116,6 @@ export const handleContextNotifyCallback = async (
           notifyError: null,
         },
       },
-    );
-    console.log(
-      "CareContext: Context-notify ACK success for",
-      careContext.careContextReference,
     );
     return;
   }
@@ -1357,11 +1190,6 @@ export const handleLinkCallback = async (
   }
 
   if (!careContext) {
-    console.log(
-      "CareContext: No care context found for requestId:",
-      requestId,
-      "| Ensure ABDM callback sends response.requestId equal to the REQUEST-ID header you sent in link/carecontext.",
-    );
     return;
   }
 
@@ -1371,12 +1199,6 @@ export const handleLinkCallback = async (
     careContext.linkedAt = new Date();
     careContext.linkError = null;
     await careContext.save();
-
-    console.log(
-      "CareContext: Marked as LINKED",
-      careContext.careContextReference,
-    );
-
     // CRITICAL: Trigger context/notify to inform PHR apps
     // Add a 5 second delay to allow ABDM Sandbox to replicate the newly linked context
     // internally before we try to notify it, otherwise it throws ABDM-1006.
@@ -1401,13 +1223,6 @@ export const handleLinkCallback = async (
     careContext.linkingStatus = newStatus;
     careContext.linkError = error;
     await careContext.save();
-
-    console.log(
-      "CareContext: Link failed, status set to",
-      newStatus,
-      "attempts:",
-      careContext.linkAttempts,
-    );
   }
 };
 
@@ -1609,9 +1424,6 @@ export const bulkUpdateCareContextsForPatient = async (
   try {
     const patient = await PatientModel.findById(patientId).lean();
     if (!patient) {
-      console.log(
-        "CareContext: bulkUpdateCareContextsForPatient - Patient not found",
-      );
       return 0;
     }
 
@@ -1634,11 +1446,6 @@ export const bulkUpdateCareContextsForPatient = async (
         },
       },
     );
-
-    console.log(
-      `CareContext: Bulk updated ${result.modifiedCount} care contexts with ABHA for patient ${patientId}`,
-    );
-
     return result.modifiedCount;
   } catch (error: any) {
     console.error(
@@ -1689,13 +1496,7 @@ export const createCareContextsForExistingVisits = async (
     const uniqueVisitIds = Array.from(
       new Map(visitIds.map((id) => [id.toString(), id])).values(),
     );
-
-    console.log(
-      `[CareContext] Retroactive: Found ${uniqueVisitIds.length} visits for patient ${uhid}`,
-    );
-
     if (uniqueVisitIds.length === 0) {
-      console.log(`[CareContext] Retroactive: No visits to process`);
       return result;
     }
 
@@ -1704,10 +1505,6 @@ export const createCareContextsForExistingVisits = async (
       uniqueVisitIds.map(async (visitId) => {
         try {
           const hiTypes = await detectHiTypesForVisit(visitId);
-          console.log(
-            `[CareContext] Retroactive: Detected hiTypes for visit ${visitId}:`,
-            hiTypes,
-          );
           return { visitId, hiTypes, error: null };
         } catch (err: any) {
           return { visitId, hiTypes: [] as HIType[], error: err.message };
@@ -1725,9 +1522,6 @@ export const createCareContextsForExistingVisits = async (
     );
 
     if (pairs.length === 0) {
-      console.log(
-        `[CareContext] Retroactive: Created 0, Linked 0, Errors ${result.errors.length}`,
-      );
       return result;
     }
 
@@ -1809,9 +1603,6 @@ export const createCareContextsForExistingVisits = async (
           ordered: false,
         } as any);
         result.created = newDocs.length;
-        console.log(
-          `[CareContext] Retroactive: Created ${result.created} CareContexts via insertMany`,
-        );
       } catch (bulkErr: any) {
         // Partial inserts on duplicate key are ok (concurrent requests)
         const insertedCount =
@@ -1826,10 +1617,6 @@ export const createCareContextsForExistingVisits = async (
         }
       }
     }
-
-    console.log(
-      `[CareContext] Retroactive: Created ${result.created}, Linked ${result.linked}, Errors ${result.errors.length}`,
-    );
   } catch (err: any) {
     result.errors.push(err.message);
   }

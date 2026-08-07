@@ -30,9 +30,6 @@ export const handleConsentOnInit = async (req: any, res: any) => {
             },
           },
         );
-        console.log(
-          `${LOG_PREFIX} Marked consent request ${postData.response.requestId} as DENIED`,
-        );
       }
 
       return res.status(200).json({ status: "Error handled" });
@@ -49,11 +46,6 @@ export const handleConsentOnInit = async (req: any, res: any) => {
           },
         },
       );
-
-      console.log(
-        `${LOG_PREFIX} Consent request updated: consentRequestId=${postData.consentRequest.id}, matched=${updateResult.matchedCount}`,
-      );
-
       if (updateResult.matchedCount === 0) {
         console.warn(
           `${LOG_PREFIX} No consent request found with requestId=${postData.response.requestId}. Callback may have arrived before DB write completed.`,
@@ -104,9 +96,6 @@ export const handleConsentHipNotify = async (req: any, res: any) => {
         callbackAuth,
       });
       if (jobId) {
-        console.log(
-          `${LOG_PREFIX} Enqueued consent-notify to BullMQ (jobId=${jobId})`,
-        );
         return;
       }
     } catch (queueErr: any) {
@@ -132,11 +121,6 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
   try {
     const body = req.body;
     const paramRequestId = req.params.requestid || body.response?.requestId;
-
-    console.log(
-      `${LOG_PREFIX} on-fetch callback received for request: ${paramRequestId || "unknown"}`,
-    );
-
     if (body.error) {
       console.error(
         `${LOG_PREFIX} Consent fetch error from ABDM: code=${body.error?.code}, message=${body.error?.message}`,
@@ -157,9 +141,6 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
         paramRequestId,
       });
       if (jobId) {
-        console.log(
-          `${LOG_PREFIX} Enqueued consent-on-fetch to BullMQ (jobId=${jobId})`,
-        );
         return;
       }
     } catch (queueErr: any) {
@@ -199,9 +180,6 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
       }
 
       if (isPHRPull) {
-        console.log(
-          `${LOG_PREFIX} Detected PHR pull record (purpose.code=PATRQT). Using PHR collection.`,
-        );
       }
 
       const artefact = await ConsentService.storeArtefactDetails(
@@ -229,11 +207,6 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
             },
           );
         }
-
-        console.log(
-          `${LOG_PREFIX} Artefact details stored for ${artefact.artefactId}`,
-        );
-
         AbdmLogger.logAccepted({
           consentId: artefact.artefactId,
           sourceType: "CALLBACK",
@@ -244,10 +217,8 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
             artefact.consentRequestId &&
             artefact.consentRequestId !== artefact.artefactId
           ) {
-            console.log(
-              `${LOG_PREFIX} [AUTO-TRIGGER] Consent GRANTED, initiating HIU data fetch for ${artefact.artefactId}`,
-            );
-            ConsentService.triggerHiuDataFetchAsync([artefact.artefactId]);
+            // AUTO-TRIGGER removed from on-fetch fallback path.
+            // triggerHiuDataFetchAsync is called ONLY from handleHipNotify.
           } else {
             console.warn(
               `${LOG_PREFIX} [AUTO-TRIGGER] Skipping for ${artefact.artefactId}: artefact has no valid consentRequestId link (self-ref or null). Will not auto-fetch.`,
@@ -293,9 +264,6 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
       );
       const jobId = await enqueueConsentOnStatus({ body });
       if (jobId) {
-        console.log(
-          `${LOG_PREFIX} Enqueued consent-on-status to BullMQ (jobId=${jobId})`,
-        );
         return;
       }
     } catch (queueErr: any) {
@@ -380,8 +348,9 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         body.consentRequest.consentArtefacts.length > 0 &&
         updateResult.matchedCount > 0
       ) {
+        // AUTO-TRIGGER removed from on-status fallback path.
+        // triggerHiuDataFetchAsync is called ONLY from handleHipNotify.
         const artefactIds = body.consentRequest.consentArtefacts.map((a: any) => a.id);
-        ConsentService.triggerHiuDataFetchAsync(artefactIds);
       } else if (
         body.consentRequest.status === "GRANTED" &&
         updateResult.matchedCount === 0

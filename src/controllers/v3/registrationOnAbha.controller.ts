@@ -5,24 +5,19 @@ import { ConsentService } from "../../services/consent.service";
 
 export const userOnboardingByĂbha = async (req: any, res: any) => {
     try {
-        console.log("M3 Step-1 start----------------------------")
         const params = {
             clientId: CLIENT_ID,
             clientSecret: CLIENT_SECRET,
             grantType: GRANT_TYPE,
         };
-        console.log(1)
         let random32String = generateUID();
-        console.log(2)
         let headers = {
             'Content-Type': 'application/json',
             'REQUEST-ID': random32String,
             'TIMESTAMP': new Date().toISOString(),
             'X-CM-ID': 'sbx',
         } 
-        console.log(3)
         let url = process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_SESSION.trim();
-        console.log(4, url)
         const response = await axios.post(
             url,
             params,
@@ -30,17 +25,13 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
                 headers: headers
             }
         );
-        console.log(5)
-        console.log("M3 Step-1 Session API  /hiecm/gateway/v3/sessions Response", response.data)
         if (response.data.accessToken) {
-            console.log(6)
             await checkBridgeUrl(response.data.accessToken, GET_URL, req, res, random32String);
             return;
         } else {
             return res.status(response.status).json({ "status": response.status, "error": "getting error from api " + response.data, step: 1 });
         }
     } catch (error: any) {
-        console.log("M3 Session API  /hiecm/gateway/v3/sessions error-1", error.response)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -55,7 +46,6 @@ export const userOnboardingByĂbha = async (req: any, res: any) => {
 
 export const checkBridgeUrl = async (token: string, brdgeurl: string, req: any, res: any, random32String: any) => {
     try {
-        console.log("M3 Session API  /hiecm/gateway/v3/bridge-services  checkBridgeUrl Step-2");
         let random32String1 = generateUID();
         let headers = {
             "Content-Type": "application/json",
@@ -66,29 +56,22 @@ export const checkBridgeUrl = async (token: string, brdgeurl: string, req: any, 
         }
 
         let url = process.env.ABDM_BASE_URL + ENDPOINTS.GET_ABHA_BRIDGE_URL.trim();
-        console.log("M3  checkBridgeUrl API URL", url)
         const response = await axios.get(
             url,
             {
                 headers: headers
             }
         );
-        console.log("M3 /hiecm/gateway/v3/bridge-services API RESPONSE  status ", response.status)
-        console.log("M3 /hiecm/gateway/v3/bridge-services API RESPONSE  checkBridgeUrl Step-2.2 data", response.data)
         if (response?.data?.bridge?.url != brdgeurl) {
           await setBridgeUrl(token, req, res, random32String);
           return;
         } else {
-          console.log(
-            "M3 /hiecm/gateway/v3/bridge-services Step-2 else response",
-          );
           await setBridgeUrl(token, req, res, random32String);
           return;
           //return res.status(response.status).json({ "status": response.status, "error": "getting error from api" + response.data, step: 2 });
         }
 
     } catch (error: any) {
-        console.log("M3 /hiecm/gateway/v3/bridge-services API error Response ", error.response)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -106,9 +89,6 @@ export const setBridgeUrl = async (token: string, req: any, res: any, random32St
     try {
 
         let url = process.env.ABDM_BASE_URL + ENDPOINTS.SET_BRIDGE_URL
-        console.log("M3 Step-3 /hiecm/gateway/v3/bridge/url setBridgeUrl  Token", token)
-        console.log("M3 Step-3 API BASE URL", url)
-
         let headers = {
             "Content-Type": "application/json",
             "REQUEST-ID": generateUID(),
@@ -123,10 +103,7 @@ export const setBridgeUrl = async (token: string, req: any, res: any, random32St
                 headers: headers
             }
         );
-        console.log("M3 Step-3  /hiecm/gateway/v3/bridge/url setBridgeUrl status ", response.status)
-        console.log("M3 Step-3 /hiecm/gateway/v3/bridge/url setBridgeUrl Response1", response.data)
         if (response.status == 202 || response.status == 200) {
-            console.log("M3 Step-3 Response")
             await registrationService(token, req, res, url);
             return;
         } else {
@@ -134,7 +111,6 @@ export const setBridgeUrl = async (token: string, req: any, res: any, random32St
         }
 
     } catch (error: any) {
-        console.log("M3 /hiecm/gateway/v3/bridge/url setBridgeUrl  error-3", error.response)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -149,7 +125,6 @@ export const setBridgeUrl = async (token: string, req: any, res: any, random32St
 
 export const registrationService = async (token: string, req: any, res: any, url: any) => {
     try {
-        console.log("M3 /MutipleHRPAddUpdateServices registrationService Step-4")
         let headers = {
             "Content-Type": "application/json",
             "Authorization": "Bearer " + token
@@ -172,8 +147,6 @@ export const registrationService = async (token: string, req: any, res: any, url
                 headers: headers,
             }
         );
-        console.log("step-5 M3 /MutipleHRPAddUpdateServices registrationService API  status", response)
-        console.log("Step-5 M3 /MutipleHRPAddUpdateServices registrationService  API Response", response.data)
         if (response?.status == 202 || response?.status == 200) {
             await consentRequestInitiate(req, res, token);
             //return res.status(200).json({ "status": response.status, "cust_status": "Pending", "message": "Your data in process. please wait for some time..." })
@@ -182,7 +155,6 @@ export const registrationService = async (token: string, req: any, res: any, url
         }
 
     } catch (error: any) {
-        console.log("M3 M3 /MutipleHRPAddUpdateServices registrationService  error.response", error.response)
         if (error.response) {
             return res
                 .status(403)
@@ -197,7 +169,6 @@ export const registrationService = async (token: string, req: any, res: any, url
 
 export const consentRequestInitiate = async (req: any, res: any, token?: any) => {
     try {
-        console.log("[CONSENT_M3] consentRequestInitiate start");
         const input = req.body;
 
         if (!input.abha_id || !input.facilityId) {
@@ -219,9 +190,6 @@ export const consentRequestInitiate = async (req: any, res: any, token?: any) =>
             purposeText: input.purposeText,
             patientData: input.patientData,
         });
-
-        console.log("[CONSENT_M3] Consent request initiated:", result.requestId);
-
         return res.status(result.status).json({
             status: "REQUESTED",
             statusCode: result.status,

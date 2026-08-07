@@ -529,9 +529,6 @@ export const generateLinkOTP = async (
       `Discovery: SMS delivery failed for transaction ${transactionId}, mobile ${mobile}: ${result.error}. OTP ${otp} stored in DB.`,
     );
   } else {
-    console.log(
-      `Discovery: OTP sent for transaction ${transactionId}, mobile ${mobile} (provider: ${(process.env.SMS_PROVIDER || "twilio").toLowerCase()})`,
-    );
   }
 
   return otp;

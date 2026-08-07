@@ -30,9 +30,6 @@ export const proxyRequest = async (req: Request, res: Response) => {
       validateStatus: () => true,
       timeout: 30000,
     };
-
-    console.log(`[Proxy] ${req.method} ${targetUrl}`);
-
     const response = await axios(axiosConfig);
 
     const excludeResponseHeaders = [

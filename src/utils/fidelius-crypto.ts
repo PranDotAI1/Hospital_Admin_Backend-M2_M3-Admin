@@ -212,12 +212,13 @@ export const encrypt = (
 
   // 5. Encrypt
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  let encrypted = cipher.update(data, "utf8", "hex");
-  encrypted += cipher.final("hex");
-  const tag = cipher.getAuthTag().toString("hex");
+  const dataBuf = Buffer.from(data, "utf8");
+  const encryptedBuf = cipher.update(dataBuf);
+  const finalBuf = cipher.final();
+  const tagBuf = cipher.getAuthTag();
 
   return {
-    encryptedData: Buffer.from(encrypted + tag, "hex").toString("base64"),
+    encryptedData: Buffer.concat([encryptedBuf, finalBuf, tagBuf]).toString("base64"),
     keyMaterial: senderKeys,
   };
 };
@@ -258,8 +259,9 @@ export const decrypt = (
 
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
-  let decrypted = decipher.update(ciphertext, undefined, "utf8");
-  decrypted += decipher.final("utf8");
-
-  return decrypted;
+  
+  const decryptedBuf = decipher.update(ciphertext);
+  const finalBuf = decipher.final();
+  
+  return Buffer.concat([decryptedBuf, finalBuf]).toString("utf8");
 };

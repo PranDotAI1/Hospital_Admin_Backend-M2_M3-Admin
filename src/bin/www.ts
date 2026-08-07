@@ -52,8 +52,6 @@ function onListening(): void {
     return;
   }
   const bind = typeof addr === "string" ? `pipe ${addr}` : `port ${addr.port}`;
-  console.log(`Listening on ${bind}`);
-
   // Automatically configure the ABDM bridge URL on every server start
   setBridgeUrlOnStartup();
 
@@ -78,8 +76,6 @@ function onListening(): void {
 }
 
 async function gracefulShutdown(signal: string): Promise<void> {
-  console.log(`\n${signal} received. Starting graceful shutdown...`);
-
   server.close(() => {
     console.log("HTTP server closed.");
   });
@@ -87,7 +83,6 @@ async function gracefulShutdown(signal: string): Promise<void> {
   try {
     const { shutdownQueues } = require("../services/abdm.queue.service");
     await shutdownQueues();
-    console.log("BullMQ queues and workers shut down.");
   } catch (_) {}
 
   try {
@@ -101,8 +96,6 @@ async function gracefulShutdown(signal: string): Promise<void> {
     process.exit(1);
   }, 15_000);
   timeout.unref();
-
-  console.log("Graceful shutdown complete. Exiting.");
   process.exit(0);
 }
 

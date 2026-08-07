@@ -56,10 +56,10 @@ export const encryptHealthData = (
   plainHealthData: string,
   hiuKeyMaterial: ABDMKeyMaterial,
 ): EncryptedPayload => {
-  console.log(
-    `[ENCRYPTION] Starting encryption for ABDM data push (Node.js)...`,
-  );
-  console.log(`[ENCRYPTION] Data size: ${plainHealthData.length} chars`);
+  // console.log(
+  //   `[ENCRYPTION] Starting encryption for ABDM data push (Node.js)...`,
+  // );
+  // console.log(`[ENCRYPTION] Data size: ${plainHealthData.length} chars`);
 
   // Use Native Node.js Implementation
   const result = encrypt(
@@ -118,13 +118,23 @@ export const decryptHealthData = (
   console.log(`[DECRYPTION] Decrypting with Node.js implementation...`);
 
   try {
-    const decryptedString = decrypt(
+    let decryptedString = decrypt(
       encryptedData,
       requesterPrivateKey,
       requesterNonce,
       senderPublicKey, // Could be raw or X509
       senderNonce,
     );
+
+    // Sanitize: Remove trailing null bytes and escape raw control characters
+    // that might cause "InvalidBSON" or "Not null terminated string" in MongoDB.
+    decryptedString = decryptedString.replace(/\0+$/, "");
+    decryptedString = decryptedString.replace(/[\u0000-\u001F]/g, (match) => {
+      if (match === '\n') return '\\n';
+      if (match === '\r') return '\\r';
+      if (match === '\t') return '\\t';
+      return ''; // Strip other control chars like \0
+    });
 
     // Parse the inner JSON (FHIR Bundle)
     const fhirBundle = JSON.parse(decryptedString);
