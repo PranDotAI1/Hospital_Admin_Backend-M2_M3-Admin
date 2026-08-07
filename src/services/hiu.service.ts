@@ -30,7 +30,7 @@ import {
 import { AbdmTokenService } from "./abdm.token.service";
 
 const LOG_PREFIX = "[HIU_SERVICE]";
-const HIU_DATA_PUSH_URL = `${process.env.ABDM_CALLBACK_URL || "https://admin.pran.ai"}/api/v3/hiu/health-information/transfer`;
+const HIU_DATA_PUSH_URL = `${process.env.ABDM_CALLBACK_URL || "https://bhims.pranamm.ai"}/api/v3/hiu/health-information/transfer`;
 const SKIP_OWN_FACILITY = false;
 
 export const requestHealthInformation = async (
