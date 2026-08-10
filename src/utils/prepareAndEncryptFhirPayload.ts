@@ -5,8 +5,8 @@ import {
   generateKeyMaterial as generateFideliusKeys,
 } from "./fidelius-crypto";
 
-export const ABMD_PUBLIC_KEY =
-  "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAstWB95C5pHLXiYW59qyO4Xb+59KYVm9Hywbo77qETZVAyc6VIsxU+UWhd/k/YtjZibCznB+HaXWX9TVTFs9Nwgv7LRGq5uLczpZQDrU7dnGkl/urRA8p0Jv/f8T0MZdFWQgks91uFffeBmJOb58u68ZRxSYGMPe4hb9XXKDVsgoSJaRNYviH7RgAI2QhTCwLEiMqIaUX3p1SAc178ZlN8qHXSSGXvhDR1GKM+y2DIyJqlzfik7lD14mDY/I4lcbftib8cv7llkybtjX1AayfZp4XpmIXKWv8nRM488/jOAF81Bi13paKgpjQUUuwq9tb5Qd/DChytYgBTBTJFe7irDFCmTIcqPr8+IMB7tXA3YXPp3z605Z6cGoYxezUm2Nz2o6oUmarDUntDhq/PnkNergmSeSvS8gD9DHBuJkJWZweG3xOPXiKQAUBr92mdFhJGm6fitO5jsBxgpmulxpG0oKDy9lAOLWSqK92JMcbMNHn4wRikdI9HSiXrrI7fLhJYTbyU3I4v5ESdEsayHXuiwO/1C8y56egzKSw44GAtEpbAkTNEEfK5H5R0QnVBIXOvfeF4tzGvmkfOO6nNXU3o/WAdOyV3xSQ9dqLY5MEL4sJCGY1iJBIAQ452s8v0ynJG5Yq+8hNhsCVnklCzAlsIzQpnSVDUVEzv17grVAw078CAwEAAQ==";
+// export const ABMD_PUBLIC_KEY =
+//   "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAstWB95C5pHLXiYW59qyO4Xb+59KYVm9Hywbo77qETZVAyc6VIsxU+UWhd/k/YtjZibCznB+HaXWX9TVTFs9Nwgv7LRGq5uLczpZQDrU7dnGkl/urRA8p0Jv/f8T0MZdFWQgks91uFffeBmJOb58u68ZRxSYGMPe4hb9XXKDVsgoSJaRNYviH7RgAI2QhTCwLEiMqIaUX3p1SAc178ZlN8qHXSSGXvhDR1GKM+y2DIyJqlzfik7lD14mDY/I4lcbftib8cv7llkybtjX1AayfZp4XpmIXKWv8nRM488/jOAF81Bi13paKgpjQUUuwq9tb5Qd/DChytYgBTBTJFe7irDFCmTIcqPr8+IMB7tXA3YXPp3z605Z6cGoYxezUm2Nz2o6oUmarDUntDhq/PnkNergmSeSvS8gD9DHBuJkJWZweG3xOPXiKQAUBr92mdFhJGm6fitO5jsBxgpmulxpG0oKDy9lAOLWSqK92JMcbMNHn4wRikdI9HSiXrrI7fLhJYTbyU3I4v5ESdEsayHXuiwO/1C8y56egzKSw44GAtEpbAkTNEEfK5H5R0QnVBIXOvfeF4tzGvmkfOO6nNXU3o/WAdOyV3xSQ9dqLY5MEL4sJCGY1iJBIAQ452s8v0ynJG5Yq+8hNhsCVnklCzAlsIzQpnSVDUVEzv17grVAw078CAwEAAQ==";
 
 /**
  * ABDM Health Data Encryption Utility
@@ -181,92 +181,4 @@ export const buildDataPushPayload = (
     ],
     keyMaterial: encrypted.keyMaterial,
   };
-};
-
-// ============================================================================
-// Legacy Exports (for backward compatibility)
-// ============================================================================
-
-export const generateX25519KeyPair = () => {
-  console.warn(
-    "WARNING: generateX25519KeyPair() is deprecated for ABDM. Use pyfidelius.",
-  );
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("x25519");
-  return {
-    publicKey: publicKey.export({ type: "spki", format: "der" }),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }),
-  };
-};
-
-export const deriveSharedSecret = () => {
-  throw new Error(
-    "deriveSharedSecret() is deprecated. Use encryptHealthData() with pyfidelius.",
-  );
-};
-
-export const deriveAESKey = () => {
-  throw new Error(
-    "deriveAESKey() is deprecated. Use encryptHealthData() with pyfidelius.",
-  );
-};
-
-export const encryptWithAESGCM = () => {
-  throw new Error(
-    "encryptWithAESGCM() is deprecated. Use encryptHealthData() with pyfidelius.",
-  );
-};
-
-export const getFinalData = (transactionId: any) => {
-  console.warn(
-    "WARNING: getFinalData() is deprecated. Use buildDataPushPayload().",
-  );
-  return {
-    pageNumber: 0,
-    pageCount: 1,
-    transactionId,
-    entries: [],
-    keyMaterial: {},
-  };
-};
-
-export const createFhirBundle = () => {
-  console.warn(
-    "WARNING: createFhirBundle() is deprecated. Use FhirBundleService.",
-  );
-  return { resourceType: "Bundle", type: "document", entry: [] };
-};
-
-export const encryptString = async (plainText: string) => {
-  try {
-    const keyData = ABMD_PUBLIC_KEY.replace(/-----BEGIN PUBLIC KEY-----/, "")
-      .replace(/-----END PUBLIC KEY-----/, "")
-      .replace(/\n/g, "");
-    const binaryDer = Uint8Array.from(atob(keyData), (c) => c.charCodeAt(0));
-    const publicKey = await crypto.subtle.importKey(
-      "spki",
-      binaryDer.buffer,
-      {
-        name: "RSA-OAEP",
-        hash: { name: "SHA-1" },
-      },
-      true,
-      ["encrypt"],
-    );
-
-    const encoder = new TextEncoder();
-    const encodedData = encoder.encode(plainText);
-    const encryptedData = await crypto.subtle.encrypt(
-      { name: "RSA-OAEP" },
-      publicKey,
-      encodedData,
-    );
-
-    const encryptedBase64 = btoa(
-      String.fromCharCode(...new Uint8Array(encryptedData)),
-    );
-    return encryptedBase64;
-  } catch (err) {
-    console.error("Encryption Error:", err);
-    throw new Error("Failed to encrypt string.");
-  }
 };

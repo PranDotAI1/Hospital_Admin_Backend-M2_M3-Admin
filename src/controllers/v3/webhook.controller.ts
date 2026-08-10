@@ -149,86 +149,16 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
       );
     }
 
-    // Fallback: process directly (same as before)
-    if (body.consent?.consentDetail) {
-      const consentDetail = body.consent.consentDetail;
-      const consentStatus = body.consent.status || "GRANTED";
-      const signature = body.consent.signature;
-
-      if (signature) {
-        consentDetail.signature = signature;
-      }
-
-      const resolvedConsentRequestId =
-        consentDetail.consentRequestId || paramRequestId;
-
-      const isPHRPull = consentDetail.purpose?.code === "PATRQT";
-
-      let usePHRCollection = isPHRPull;
-      if (!isPHRPull) {
-        const consentReq = resolvedConsentRequestId
-          ? await ConsentRequestModel.findOne({
-              $or: [
-                { consentRequestId: resolvedConsentRequestId },
-                { requestId: resolvedConsentRequestId },
-              ],
-            })
-              .select("requestPurpose")
-              .lean()
-          : null;
-        usePHRCollection = consentReq?.requestPurpose === "PHR";
-      }
-
-      if (isPHRPull) {
-      }
-
-      const artefact = await ConsentService.storeArtefactDetails(
-        consentDetail,
-        consentStatus,
-        resolvedConsentRequestId,
-        usePHRCollection,
+    // Fallback: process directly using shared function
+    try {
+      const { processConsentOnFetchCallback } = await import(
+        "../../services/consent.service"
       );
-
-      if (artefact) {
-        const consentId = consentDetail.consentId || body.consent.id;
-
-        if (consentId) {
-          await ConsentRequestModel.updateOne(
-            {
-              $or: [
-                { consentArtefacts: consentId },
-                { consentRequestId: consentId },
-              ],
-            },
-            {
-              $set: {
-                status: consentStatus,
-              },
-            },
-          );
-        }
-        AbdmLogger.logAccepted({
-          consentId: artefact.artefactId,
-          sourceType: "CALLBACK",
-        });
-
-        if (consentStatus === "GRANTED" && !usePHRCollection) {
-          if (
-            artefact.consentRequestId &&
-            artefact.consentRequestId !== artefact.artefactId
-          ) {
-            // AUTO-TRIGGER removed from on-fetch fallback path.
-            // triggerHiuDataFetchAsync is called ONLY from handleHipNotify.
-          } else {
-            console.warn(
-              `${LOG_PREFIX} [AUTO-TRIGGER] Skipping for ${artefact.artefactId}: artefact has no valid consentRequestId link (self-ref or null). Will not auto-fetch.`,
-            );
-          }
-        }
-      }
-    } else {
-      console.warn(
-        `${LOG_PREFIX} on-fetch callback has no consent.consentDetail`,
+      await processConsentOnFetchCallback(body, paramRequestId);
+    } catch (fallbackErr: any) {
+      console.error(
+        `${LOG_PREFIX} Fallback processing failed:`,
+        fallbackErr.message,
       );
     }
   } catch (error: any) {

@@ -7,7 +7,7 @@ import {
 } from "../../services/discovery.service";
 import { CareContextModel, CareContextStatus } from "../../models/CareContext";
 import { PatientModel } from "../../models/Patient";
-import { CareContextService } from "../../services/carecontext.service";
+import { CareContextService, resolveCanonicalHiType } from "../../services/carecontext.service";
 import {
   STATUS_CODE,
   generateUID,
@@ -19,10 +19,15 @@ import {
 } from "../../utils/constant";
 import { AbdmTokenService } from "../../services/abdm.token.service";
 
-// In-memory cache for ABHA data extracted during discover, keyed by transactionId.
+// Redis-based cache for ABHA data extracted during discover, keyed by transactionId.
 // Link/init doesn't carry ABHA number in its body (only abhaAddress), so we need
 // to retrieve it from the discover step via the shared transactionId.
-const discoveryAbhaCache = new Map<
+// Falls back to in-memory Map if Redis is unavailable.
+const DISCOVERY_CACHE_PREFIX = "abdm:discover:";
+const CACHE_TTL_SECONDS = 15 * 60; // 15 minutes
+
+// Fallback in-memory cache (for when Redis is unavailable)
+const fallbackCache = new Map<
   string,
   {
     abhaAddress?: string;
@@ -32,9 +37,17 @@ const discoveryAbhaCache = new Map<
     ts: number;
   }
 >();
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-const cacheDiscoveryAbha = (
+const getRedis = () => {
+  try {
+    const { getRedisConnection } = require("../../services/abdm.queue.service");
+    return getRedisConnection();
+  } catch {
+    return null;
+  }
+};
+
+const cacheDiscoveryAbha = async (
   txnId: string,
   abhaAddress?: string,
   abhaNumber?: string,
@@ -42,45 +55,75 @@ const cacheDiscoveryAbha = (
   patientId?: string,
 ) => {
   if (!txnId) return;
-  const existing = discoveryAbhaCache.get(txnId);
-  discoveryAbhaCache.set(txnId, {
-    abhaAddress: abhaAddress ?? existing?.abhaAddress,
-    abhaNumber: abhaNumber ?? existing?.abhaNumber,
-    patientName: patientName ?? existing?.patientName,
-    patientId: patientId ?? existing?.patientId,
-    ts: Date.now(),
-  });
-  // Evict stale entries (fire-and-forget, max 100 checked per call)
-  let checked = 0;
-  for (const [key, val] of discoveryAbhaCache) {
-    if (++checked > 100) break;
-    if (Date.now() - val.ts > CACHE_TTL_MS) discoveryAbhaCache.delete(key);
+  const redis = getRedis();
+  const key = `${DISCOVERY_CACHE_PREFIX}${txnId}`;
+
+  if (redis) {
+    // Try to get existing data to merge
+    let existing: any = null;
+    try {
+      const existingStr = await redis.get(key);
+      if (existingStr) existing = JSON.parse(existingStr);
+    } catch (_) {}
+
+    const data = {
+      abhaAddress: abhaAddress ?? existing?.abhaAddress,
+      abhaNumber: abhaNumber ?? existing?.abhaNumber,
+      patientName: patientName ?? existing?.patientName,
+      patientId: patientId ?? existing?.patientId,
+    };
+    await redis.set(key, JSON.stringify(data), "EX", CACHE_TTL_SECONDS);
+  } else {
+    // Fallback to in-memory
+    const existing = fallbackCache.get(txnId);
+    fallbackCache.set(txnId, {
+      abhaAddress: abhaAddress ?? existing?.abhaAddress,
+      abhaNumber: abhaNumber ?? existing?.abhaNumber,
+      patientName: patientName ?? existing?.patientName,
+      patientId: patientId ?? existing?.patientId,
+      ts: Date.now(),
+    });
+    // Evict stale entries
+    const now = Date.now();
+    for (const [k, v] of fallbackCache) {
+      if (now - v.ts > CACHE_TTL_SECONDS * 1000) fallbackCache.delete(k);
+    }
   }
 };
 
-const getCachedDiscoveryAbha = (
+const getCachedDiscoveryAbha = async (
   txnId: string,
-):
-  | {
-      abhaAddress?: string;
-      abhaNumber?: string;
-      patientName?: string;
-      patientId?: string;
-    }
-  | undefined => {
+): Promise<{
+  abhaAddress?: string;
+  abhaNumber?: string;
+  patientName?: string;
+  patientId?: string;
+} | undefined> => {
   if (!txnId) return undefined;
-  const entry = discoveryAbhaCache.get(txnId);
-  if (!entry) return undefined;
-  if (Date.now() - entry.ts > CACHE_TTL_MS) {
-    discoveryAbhaCache.delete(txnId);
+  const redis = getRedis();
+  const key = `${DISCOVERY_CACHE_PREFIX}${txnId}`;
+
+  if (redis) {
+    try {
+      const data = await redis.get(key);
+      if (data) return JSON.parse(data);
+    } catch (_) {}
     return undefined;
+  } else {
+    // Fallback to in-memory
+    const entry = fallbackCache.get(txnId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.ts > CACHE_TTL_SECONDS * 1000) {
+      fallbackCache.delete(txnId);
+      return undefined;
+    }
+    return {
+      abhaAddress: entry.abhaAddress,
+      abhaNumber: entry.abhaNumber,
+      patientName: entry.patientName,
+      patientId: entry.patientId,
+    };
   }
-  return {
-    abhaAddress: entry.abhaAddress,
-    abhaNumber: entry.abhaNumber,
-    patientName: entry.patientName,
-    patientId: entry.patientId,
-  };
 };
 
 export const onDiscover = async (req: Request, res: Response) => {
@@ -139,24 +182,34 @@ export const onDiscover = async (req: Request, res: Response) => {
         const allMatchedBy = new Set<string>();
         results.forEach((r) => r.matchedBy.forEach((t) => allMatchedBy.add(t)));
         onDiscoverPayload.matchedBy = Array.from(allMatchedBy);
-        const patientResults = results
-          .map((result) => {
-            const careContextsList = result.careContexts
+        const patientResults: any[] = [];
+        results.forEach((result) => {
+          const grouped = new Map<string, typeof result.careContexts>();
+          result.careContexts.forEach((cc) => {
+            const type = (cc as any).hiType || "OPConsultation";
+            if (!grouped.has(type)) grouped.set(type, []);
+            grouped.get(type)!.push(cc);
+          });
+
+          for (const [type, ccs] of grouped) {
+            const careContextsList = ccs
               .slice(0, 20)
               .map((cc) => ({
                 referenceNumber: cc.referenceNumber,
                 display: cc.display,
               }));
 
-            return {
-              referenceNumber: result.referenceNumber,
-              display: result.display,
-              careContexts: careContextsList,
-              hiType: "OPConsultation",
-              count: careContextsList.length,
-            };
-          })
-          .filter((p) => p.count > 0); // ABDM requires count between 1-20
+            if (careContextsList.length > 0) {
+              patientResults.push({
+                referenceNumber: result.referenceNumber,
+                display: result.display,
+                careContexts: careContextsList,
+                hiType: type,
+                count: careContextsList.length,
+              });
+            }
+          }
+        });
 
         if (patientResults.length > 0) {
           onDiscoverPayload.patient = patientResults;
@@ -190,7 +243,7 @@ export const onDiscover = async (req: Request, res: Response) => {
                   cachedPatientId = discoverPatient._id.toString();
                 }
               }
-              cacheDiscoveryAbha(
+              await cacheDiscoveryAbha(
                 txnIdFromRequest,
                 cachedAddr,
                 cachedNum,
@@ -318,7 +371,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
       }
       // Priority 2: Cached patientId from discover step (same transactionId)
       if (!dbPatient && txnId) {
-        const cachedDiscover = getCachedDiscoveryAbha(txnId);
+        const cachedDiscover = await getCachedDiscoveryAbha(txnId);
         if (cachedDiscover?.patientId) {
           dbPatient = (await PatientModel.findById(
             cachedDiscover.patientId,
@@ -354,13 +407,13 @@ export const onLinkInit = async (req: Request, res: Response) => {
 
         // Link/init body from ABDM typically only has abhaAddress, not ABHA number.
         // Retrieve ABHA number from the discover step's cached data (same transactionId).
-        const cached = getCachedDiscoveryAbha(txnId);
+        const cached = await getCachedDiscoveryAbha(txnId);
         const abhaNumber = abhaNumFromProfile || cached?.abhaNumber;
 
         // Store the ABDM profile name in cache so link/confirm can use it
         const abdmName = profile.name?.trim();
         if (txnId && abdmName) {
-          cacheDiscoveryAbha(txnId, undefined, undefined, abdmName);
+          await cacheDiscoveryAbha(txnId, undefined, undefined, abdmName);
         }
 
         // NOTE: ABHA data is NOT persisted here. Link/init only sends OTP.
@@ -486,7 +539,7 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           }
           // Update name from ABDM profile (cached from onDiscover where ABDM sends it)
           if (DISCOVERY_UPDATE_PATIENT_NAME) {
-            const cachedForConfirm = getCachedDiscoveryAbha(finalTransactionId);
+            const cachedForConfirm = await getCachedDiscoveryAbha(finalTransactionId);
             const abdmName = cachedForConfirm?.patientName;
             const storedName = (patient as any).name?.trim();
             if (abdmName && abdmName !== storedName) {
@@ -541,20 +594,19 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           const patientName =
             patient.name || `${patient.f_name} ${patient.l_name || ""}`.trim();
 
-          // Group contexts by hiType to support multiple types in one confirmation
+          // Group contexts by hiType (canonical field — one CC = one group).
+          // NEVER iterate cc.hiTypes (the array) — it can be contaminated.
+          // Use cc.hiType (singular) as the ONLY grouping key.
           const contextsByType = new Map<string, typeof linkedContexts>();
 
           for (const cc of linkedContexts) {
-            const types =
-              cc.hiTypes && cc.hiTypes.length > 0
-                ? cc.hiTypes
-                : ["Prescription"]; // Default fallback
-            for (const type of types) {
-              if (!contextsByType.has(type)) {
-                contextsByType.set(type, []);
-              }
-              contextsByType.get(type)?.push(cc);
+            // Use hiType (canonical). Safe for legacy CCs.
+            const type = await resolveCanonicalHiType(cc);
+
+            if (!contextsByType.has(type)) {
+              contextsByType.set(type, []);
             }
+            contextsByType.get(type)!.push(cc);
           }
 
           onConfirmPayload.patient = [];

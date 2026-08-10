@@ -21,6 +21,7 @@ import {
 } from "../utils/constant";
 import { HiuService } from "./hiu.service";
 import { ExternalHealthRecordModel } from "../models/ExternalHealthRecord";
+import { AbdmLogger } from "../utils/abdm.logger";
 
 const LOG_PREFIX = "[CONSENT]";
 
@@ -515,10 +516,37 @@ export const handleHipNotify = async (
 };
 const _activeFetchArtefacts = new Set<string>();
 
+// Redis-based dedup for auto-trigger (cross-instance safe)
+const FETCH_DEDUP_PREFIX = "abdm:autofetch:dedup:";
+const FETCH_DEDUP_TTL_SECONDS = 3600; // 1 hour
+
+const getRedis = () => {
+  try {
+    const { getRedisConnection } = require("./abdm.queue.service");
+    return getRedisConnection();
+  } catch {
+    return null;
+  }
+};
+
+const tryAcquireFetchLock = async (artefactId: string): Promise<boolean> => {
+  const redis = getRedis();
+  if (!redis) return true; // Allow if Redis unavailable (fallback to in-memory)
+  const result = await redis.set(
+    `${FETCH_DEDUP_PREFIX}${artefactId}`,
+    Date.now().toString(),
+    "EX",
+    FETCH_DEDUP_TTL_SECONDS,
+    "NX",
+  );
+  return result === "OK";
+};
+
 /**
  * Auto-trigger HIU data fetch for each consent artefact.
  * Runs asynchronously (fire-and-forget) to not block the main consent flow.
  * Includes deduplication to prevent duplicate requests.
+ * Uses Redis for cross-instance dedup; falls back to in-memory if Redis unavailable.
  */
 export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
   if (!artefactIds || artefactIds.length === 0) return;
@@ -530,11 +558,19 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
   (async () => {
     for (const artefactId of artefactIds) {
       try {
+        // Redis-based dedup (cross-instance safe)
+        const lockAcquired = await tryAcquireFetchLock(artefactId);
+        if (!lockAcquired) {
+          continue;
+        }
+
+        // Fallback in-memory dedup (same instance)
         if (_activeFetchArtefacts.has(artefactId)) {
           continue;
         }
         _activeFetchArtefacts.add(artefactId);
         setTimeout(() => _activeFetchArtefacts.delete(artefactId), 120_000);
+
         // DEDUPLICATION: Check if we already have a request for this artefact
         // We check for ANY request in the last 1 HOUR to prevent rapid loops
         // OR any successfully TRANSFERRED request ever (don't re-fetch if we have data)
@@ -642,11 +678,14 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         console.error(
           `${LOG_PREFIX} [AUTO-TRIGGER] Failed for ${artefactId}:`,
           error.message,
+          error.stack,
         );
         // Continue with other artefacts even if one fails
       }
     }
-  })();
+  })().catch((err: any) => {
+    console.error(`${LOG_PREFIX} [AUTO-TRIGGER] Unhandled error in async loop:`, err.message, err.stack);
+  });
 };
 
 /**
@@ -735,9 +774,10 @@ const createArtefactStub = async (
  * This is REQUIRED by the ABDM spec -- without it, ABDM considers the
  * notification undelivered.
  *
- * When ABDM calls our webhook, it often sends an Authorization header. Use
- * callbackAuthToken when provided to avoid 403 from our own token refresh
- * (e.g. rate limit or credential issues).
+ * Always use AbdmTokenService.getToken() for outbound calls to ABDM.
+ * The callbackAuthToken is the incoming Authorization header from ABDM's webhook call -
+ * it's ABDM's token for authenticating TO US, not a token for us to authenticate TO ABDM.
+ * Only fall back to callback token if session token acquisition fails.
  */
 export const sendHipOnNotifyAck = async (
   consentId: string,
@@ -747,13 +787,21 @@ export const sendHipOnNotifyAck = async (
 ): Promise<boolean> => {
   try {
     let abdmToken: string;
-    if (callbackAuthToken && callbackAuthToken.trim()) {
-      abdmToken = callbackAuthToken.trim();
-      if (!abdmToken.toLowerCase().startsWith("bearer ")) {
-        abdmToken = `Bearer ${abdmToken}`;
-      }
-    } else {
+    try {
       abdmToken = await AbdmTokenService.getToken();
+    } catch (tokenError: any) {
+      // Fallback: if session token acquisition fails, try callback token
+      if (callbackAuthToken && callbackAuthToken.trim()) {
+        abdmToken = callbackAuthToken.trim();
+        if (!abdmToken.toLowerCase().startsWith("bearer ")) {
+          abdmToken = `Bearer ${abdmToken}`;
+        }
+        console.warn(
+          `${LOG_PREFIX} Session token failed, falling back to callback auth: ${tokenError.message}`,
+        );
+      } else {
+        throw tokenError;
+      }
     }
     const requestId = generateUID();
 
@@ -791,6 +839,111 @@ export const sendHipOnNotifyAck = async (
 };
 
 // ============================================================================
+// Shared callback processing functions
+// ============================================================================
+
+/**
+ * Process consent on-fetch callback (shared by BullMQ worker and direct fallback).
+ * Extracts the common logic to avoid duplication.
+ */
+export const processConsentOnFetchCallback = async (
+  body: any,
+  paramRequestId?: string,
+): Promise<void> => {
+  if (body.error) {
+    console.error(`${LOG_PREFIX} Consent fetch error:`, JSON.stringify(body.error));
+    return;
+  }
+
+  if (!body.consent?.consentDetail) return;
+
+  const consentDetail = body.consent.consentDetail;
+  const consentStatus = body.consent.status || "GRANTED";
+  if (body.consent.signature) consentDetail.signature = body.consent.signature;
+
+  const resolvedConsentRequestId = consentDetail.consentRequestId || paramRequestId;
+  const isPHRPull = consentDetail.purpose?.code === "PATRQT";
+  let usePHRCollection = isPHRPull;
+
+  if (!isPHRPull && resolvedConsentRequestId) {
+    const consentReq = await ConsentRequestModel.findOne({
+      $or: [{ consentRequestId: resolvedConsentRequestId }, { requestId: resolvedConsentRequestId }],
+    }).select("requestPurpose").lean();
+    usePHRCollection = consentReq?.requestPurpose === "PHR";
+  }
+
+  const artefact = await storeArtefactDetails(
+    consentDetail, consentStatus, resolvedConsentRequestId, usePHRCollection,
+  );
+
+  if (artefact) {
+    const consentId = consentDetail.consentId || body.consent.id;
+    if (consentId) {
+      await ConsentRequestModel.updateOne(
+        { $or: [{ consentArtefacts: consentId }, { consentRequestId: consentId }] },
+        { $set: { status: consentStatus } },
+      );
+    }
+    if (consentStatus === "GRANTED" && !usePHRCollection &&
+        artefact.consentRequestId && artefact.consentRequestId !== artefact.artefactId) {
+      // Auto-trigger is handled by handleHipNotify, not here
+    }
+    AbdmLogger.logAccepted({ consentId: artefact.artefactId, sourceType: "CALLBACK" });
+  }
+};
+
+/**
+ * Process consent on-status callback (shared by BullMQ worker and direct fallback).
+ */
+export const processConsentOnStatusCallback = async (
+  body: any,
+): Promise<void> => {
+  const { ConsentArtefactModel, ConsentArtefactStatus } = await import("../models/ConsentArtefact");
+  const { PHRConsentArtefactModel } = await import("../models/PHRConsentArtefact");
+  const { ExternalHealthRecordModel } = await import("../models/ExternalHealthRecord");
+  const { ConsentRequestModel } = await import("../models/ConsentRequest");
+
+  if (body.error || !body.consentRequest?.id) return;
+
+  const reqId = body.consentRequest.id;
+  const eventTs = body.timestamp ? new Date(body.timestamp) : new Date();
+  const statusUpdate: any = { status: body.consentRequest.status || "UNKNOWN", lastCheckedAt: new Date() };
+  const broadQuery = { $or: [{ consentRequestId: reqId }, { artefactId: reqId }] };
+
+  if (body.consentRequest.status === "GRANTED") statusUpdate.grantedAt = eventTs;
+
+  const revokeStatuses = ["REVOKED", "EXPIRED", "DENIED"];
+  if (revokeStatuses.includes(body.consentRequest.status)) {
+    const statusEnum = body.consentRequest.status === "REVOKED" ? ConsentArtefactStatus.REVOKED
+      : body.consentRequest.status === "EXPIRED" ? ConsentArtefactStatus.EXPIRED
+      : ConsentArtefactStatus.DENIED;
+    const setFields: any = { status: statusEnum };
+    if (body.consentRequest.status !== "EXPIRED") {
+      const tsField = body.consentRequest.status === "REVOKED" ? "revokedAt" : "deniedAt";
+      setFields[tsField] = eventTs;
+      statusUpdate[tsField] = eventTs;
+    }
+    await ConsentArtefactModel.updateMany(broadQuery, { $set: setFields });
+    await PHRConsentArtefactModel.updateMany(broadQuery, { $set: setFields });
+    const affectedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+    if (affectedIds.length > 0) {
+      await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: affectedIds } });
+    }
+  }
+
+  const updateResult = await ConsentRequestModel.updateOne(
+    { $or: [{ consentRequestId: reqId }, { requestId: body.response?.requestId }] },
+    { $set: statusUpdate },
+  );
+
+  if (body.consentRequest.status === "GRANTED" &&
+      body.consentRequest.consentArtefacts?.length > 0 &&
+      updateResult.matchedCount > 0) {
+    // Auto-trigger is handled by handleHipNotify, not here
+  }
+};
+
+// ============================================================================
 // 3. Fetch Consent Artefact Details
 // ============================================================================
 
@@ -807,13 +960,21 @@ export const fetchConsentArtefact = async (
 ): Promise<IConsentArtefact | null> => {
   try {
     let abdmToken: string;
-    if (callbackAuthToken && callbackAuthToken.trim()) {
-      abdmToken = callbackAuthToken.trim();
-      if (!abdmToken.toLowerCase().startsWith("bearer ")) {
-        abdmToken = `Bearer ${abdmToken}`;
-      }
-    } else {
+    try {
       abdmToken = await AbdmTokenService.getToken();
+    } catch (tokenError: any) {
+      // Fallback: if session token acquisition fails, try callback token
+      if (callbackAuthToken && callbackAuthToken.trim()) {
+        abdmToken = callbackAuthToken.trim();
+        if (!abdmToken.toLowerCase().startsWith("bearer ")) {
+          abdmToken = `Bearer ${abdmToken}`;
+        }
+        console.warn(
+          `${LOG_PREFIX} fetchConsentArtefact: session token failed, falling back to callback auth: ${tokenError.message}`,
+        );
+      } else {
+        throw tokenError;
+      }
     }
     const requestId = generateUID();
 
@@ -1248,6 +1409,7 @@ export const storeArtefactDetails = async (
 /**
  * Asynchronously fetch full details for each artefact.
  * Non-blocking -- errors are logged but don't propagate.
+ * Includes unhandled rejection catch for visibility.
  */
 const fetchArtefactDetailsAsync = (
   artefacts: Array<{ id: string }>,
@@ -1265,10 +1427,13 @@ const fetchArtefactDetailsAsync = (
         console.error(
           `${LOG_PREFIX} Async fetch failed for artefact ${art.id}:`,
           error.message,
+          error.stack,
         );
       }
     }
-  })();
+  })().catch((err: any) => {
+    console.error(`${LOG_PREFIX} [ASYNC_FETCH] Unhandled error in async loop:`, err.message, err.stack);
+  });
 };
 
 // ============================================================================

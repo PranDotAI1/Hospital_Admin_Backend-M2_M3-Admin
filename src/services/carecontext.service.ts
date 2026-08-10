@@ -40,6 +40,88 @@ const normalizeAbhaAddress = (value: string | undefined): string => {
   return value.trim().toLowerCase();
 };
 
+export const resolveCanonicalHiType = async (
+  careContext: ICareContext | any,
+  skipDetection: boolean = false,
+): Promise<HIType> => {
+  // Priority 1: hiType field (canonical, set at creation time)
+  if (careContext.hiType) {
+    console.log(
+      `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P1(hiType field)=${careContext.hiType} rawHiTypes=${JSON.stringify(careContext.hiTypes)}`,
+    );
+    return careContext.hiType as HIType;
+  }
+
+  // Priority 2: If hiTypes has exactly one element, it's unambiguous
+  if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1) {
+    console.log(
+      `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P2(single hiTypes)=${careContext.hiTypes[0]}`,
+    );
+    return careContext.hiTypes[0] as HIType;
+  }
+
+  if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 1) {
+    console.warn(
+      `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} CONTAMINATED rawHiTypes=${JSON.stringify(careContext.hiTypes)} hiType=${careContext.hiType}`,
+    );
+  }
+
+  // Priority 3: Detect from visit data (expensive but accurate)
+  if (!skipDetection && careContext.visitId) {
+    try {
+      const detectedTypes = await detectHiTypesForVisit(careContext.visitId);
+
+      if (detectedTypes.length > 0) {
+        // If hiTypes array exists, find the intersection with detected types.
+        if (
+          Array.isArray(careContext.hiTypes) &&
+          careContext.hiTypes.length > 0
+        ) {
+          const validTypes = detectedTypes.filter((dt: HIType) =>
+            careContext.hiTypes.includes(dt),
+          );
+
+          if (validTypes.length > 0) {
+            // Prioritize specific types (e.g. WellnessRecord) over generic OPConsultation
+            const specific = validTypes.find(
+              (t: HIType) => t !== "OPConsultation",
+            );
+            return (specific || validTypes[0]) as HIType;
+          }
+        }
+
+        // No intersection — use the most specific detected type
+        // (prefer non-OPConsultation since OPConsultation is the generic fallback)
+        const specific = detectedTypes.find(
+          (t: HIType) => t !== "OPConsultation",
+        );
+        return (specific || detectedTypes[0]) as HIType;
+      }
+    } catch (err: any) {
+      console.warn(
+        "resolveCanonicalHiType: detection failed (non-blocking):",
+        err.message,
+      );
+    }
+  }
+
+  // Priority 4: Last resort — safest ABDM default
+  return "OPConsultation";
+};
+
+export const resolveCanonicalHiTypeSync = (
+  careContext: ICareContext | any,
+  fallback: HIType = "OPConsultation",
+): HIType => {
+  if (careContext.hiType) {
+    return careContext.hiType as HIType;
+  }
+  if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1) {
+    return careContext.hiTypes[0] as HIType;
+  }
+  return fallback;
+};
+
 /** ABDM generate-token accepts only: M, F, O, D, T, U. Map common values to these. */
 const normalizeGenderForAbdm = (
   value: string | undefined,
@@ -363,35 +445,12 @@ export const createCareContextForVisit = async (
     // Generate display text (no confidential data per ABDM spec)
     const display = generateDisplayText("OPD Visit", department, visitDate);
 
-    // Deprecated combined model guard: keep one CareContext = one HI type.
-    // Resolve type from actual visit data + requested types; never trust array order.
-    const requestedTypes = Array.from(new Set(hiTypes || [])) as HIType[];
-    const detectedTypes = await detectHiTypesForVisit(visitId);
-    const matchedTypes = requestedTypes.filter((t) =>
-      detectedTypes.includes(t),
-    );
-
+    // INVARIANT: One CareContext = exactly one HI type.
+    // The caller specifies the hiType — honor it directly.
+    // Do NOT call detectHiTypesForVisit here; it scans ALL clinical data
+    // and can return multiple types, causing contamination.
     const normalizedHiType: HIType =
-      matchedTypes.find((t) => t !== "OPConsultation") ||
-      matchedTypes[0] ||
-      detectedTypes.find((t) => t !== "OPConsultation") ||
-      detectedTypes[0] ||
-      requestedTypes.find((t) => t !== "OPConsultation") ||
-      requestedTypes[0] ||
-      "OPConsultation";
-
-    if (requestedTypes.length > 1 || matchedTypes.length > 1) {
-      console.warn(
-        "CareContext: createCareContextForVisit received multiple hiTypes; resolved single type",
-        {
-          requestedTypes,
-          detectedTypes,
-          matchedTypes,
-          normalizedHiType,
-          visitId: String(visitId),
-        },
-      );
-    }
+      (hiTypes && hiTypes.length > 0 ? hiTypes[0] : null) || "OPConsultation";
 
     // Create care context record
     const careContext = await CareContextModel.create({
@@ -490,29 +549,22 @@ export const createOrUpdateCareContextForVisit = async (
     const existingContext = await CareContextModel.findOne(lookupQuery);
 
     if (existingContext) {
-      if (!SEPARATE_CARECONTEXT_PER_HITYPE) {
-        // Legacy: merge hiType into the existing context
-        const alreadyHasType =
-          Array.isArray(existingContext.hiTypes) &&
-          existingContext.hiTypes.includes(hiType);
-        if (!alreadyHasType) {
-          await CareContextModel.updateOne(
-            { _id: existingContext._id },
-            { $addToSet: { hiTypes: hiType } },
-          );
-          existingContext.hiTypes = [
-            ...(existingContext.hiTypes || []),
-            hiType,
-          ];
-        } else {
-        }
-      } else {
-      }
+      // INVARIANT: One CareContext = one hiType. Never merge types.
+      // In SEPARATE_CARECONTEXT_PER_HITYPE mode (default), the lookup
+      // already matched by { patientId, visitId, hiType }, so this
+      // context is exactly the right one. Just return it.
+      console.log(
+        `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: REUSING cc=${existingContext.careContextReference} requestedHiType=${hiType} existing.hiType=${existingContext.hiType} existing.hiTypes=${JSON.stringify(existingContext.hiTypes)} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
+      );
 
       // Existing context may still need sync actions after clinical updates.
       triggerLinkingActions(existingContext, patient);
       return existingContext;
     }
+
+    console.log(
+      `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: CREATING new cc for patientId=${patientId} visitId=${visitId} hiType=${hiType} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
+    );
 
     // ── Create new CareContext ──
     const visit = await ScanShareVisitModel.findById(visitId);
@@ -565,21 +617,14 @@ export const createOrUpdateCareContextForVisit = async (
             dupKeyMsg.includes("patientId_1_visitId_1_hiType_1");
 
           if (isCompoundDup) {
-            if (SEPARATE_CARECONTEXT_PER_HITYPE) {
-              const raceContext = await CareContextModel.findOne({
-                patientId,
-                visitId,
-                hiType,
-              });
-              if (raceContext) return raceContext;
-            } else {
-              const raceContext = await CareContextModel.findOneAndUpdate(
-                { patientId, visitId },
-                { $addToSet: { hiTypes: hiType } },
-                { new: true },
-              );
-              if (raceContext) return raceContext;
-            }
+            // Race condition: another request created this CC concurrently.
+            // Find and return the existing one (no type merging).
+            const raceContext = await CareContextModel.findOne(
+              SEPARATE_CARECONTEXT_PER_HITYPE
+                ? { patientId, visitId, hiType }
+                : { patientId, visitId },
+            );
+            if (raceContext) return raceContext;
             return null;
           }
 
@@ -779,6 +824,21 @@ export const linkCareContext = async (
     }
 
     const normalizedAbhaAddr = normalizeAbhaAddress(patient.abhaaddress);
+
+    const resolvedHiType = await resolveCanonicalHiType(careContext);
+
+    if (!careContext.hiType && resolvedHiType) {
+      await CareContextModel.updateOne(
+        { _id: careContext._id },
+        { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
+      );
+      careContext.hiType = resolvedHiType as import("../models/CareContext").HIType;
+    }
+
+    console.log(
+      `[HITYPE-DEBUG] linkCareContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} — LINK PAYLOAD hiType=${resolvedHiType}`,
+    );
+
     const payload = {
       abhaNumber: abhaNumber14,
       abhaAddress: normalizedAbhaAddr,
@@ -794,12 +854,22 @@ export const linkCareContext = async (
               display: careContext.display,
             },
           ],
-          hiType:
-            careContext.hiType || careContext.hiTypes[0] || "Prescription",
+          hiType: resolvedHiType,
           count: 1,
         },
       ],
     };
+
+    console.info(
+      "[ABDM Payload] link/carecontext constructed",
+      JSON.stringify({
+        endpoint: "link/carecontext",
+        careContextRef: careContext.careContextReference,
+        patientRef: patient.uhid || patient._id.toString(),
+        hiType: resolvedHiType,
+        careContexts: [careContext.careContextReference],
+      }),
+    );
 
     // Update status to LINKING
     careContext.linkingStatus = CareContextStatus.LINKING;
@@ -972,58 +1042,36 @@ export const notifyContext = async (
     const abdmToken = authToken || (await AbdmTokenService.getToken());
     const requestId = generateUID();
 
-    // Resolve the primary hiType for ABDM notify payload.
-    // The CareContext may have multiple hiTypes (one per visit), but ABDM link/notify
-    // needs a single primary type. Use hiType field (set at creation time).
-    let resolvedHiType = careContext.hiType || careContext.hiTypes?.[0];
-    if (!resolvedHiType && careContext.visitId) {
-      try {
-        const detectedTypes = await detectHiTypesForVisit(careContext.visitId);
-        const specific = detectedTypes.find((t) => t !== "OPConsultation");
-        resolvedHiType =
-          specific || detectedTypes[0] || careContext.hiTypes?.[0];
-        if (resolvedHiType && !careContext.hiType) {
-          // Set primary hiType if not set yet
-          await CareContextModel.updateOne(
-            { _id: careContext._id },
-            { $set: { hiType: resolvedHiType } },
-          );
-        }
-      } catch (detectErr: any) {
-        console.warn(
-          "CareContext notifyContext: hiType detection failed (non-blocking):",
-          detectErr.message,
-        );
-      }
-    }
-    if (!resolvedHiType) {
-      console.error(
-        "CareContext notifyContext: Unable to resolve a single hiType; skipping notify",
-        {
-          careContextId: String(careContext._id),
-          hiType: careContext.hiType,
-          hiTypes: careContext.hiTypes,
-        },
-      );
-      return false;
-    }
+    // Resolve the canonical hiType using centralized resolver.
+    // NEVER use hiTypes[0] — it can be wrong for contaminated legacy CCs.
+    const resolvedHiType = await resolveCanonicalHiType(careContext);
 
-    // Ensure primary hiType is set on the CareContext.
+    // Persist the resolved type back to DB if it wasn't set
+    // (fixes legacy CCs and prevents re-detection on future calls)
     if (!careContext.hiType && resolvedHiType) {
       await CareContextModel.updateOne(
         { _id: careContext._id },
-        { $set: { hiType: resolvedHiType } },
+        { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
       );
     }
 
-    // When SEPARATE_CARECONTEXT_PER_HITYPE is on, each CC represents exactly one hiType.
-    // Only send [resolvedHiType] so ABDM/ABHA shows a single type per CC.
-    // Old legacy CCs may have accumulated multiple entries in hiTypes[] — ignore them.
-    const notifyHiTypes: string[] = SEPARATE_CARECONTEXT_PER_HITYPE
-      ? [resolvedHiType]
-      : Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
-        ? careContext.hiTypes
-        : [resolvedHiType];
+    // ALWAYS send exactly [resolvedHiType] — never the raw hiTypes array.
+    // Even in legacy mode, sending multiple types per CC is wrong per ABDM spec.
+    const notifyHiTypes: string[] = [resolvedHiType];
+    console.log(
+      `[HITYPE-DEBUG] notifyContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} SENDING notify.hiTypes=${JSON.stringify(notifyHiTypes)}`,
+    );
+
+    console.info(
+      "[ABDM Payload] context/notify constructed",
+      JSON.stringify({
+        endpoint: "context/notify",
+        careContextRef: careContext.careContextReference,
+        patientRef: patient.uhid || patient._id.toString(),
+        hiType: resolvedHiType,
+        careContexts: [careContext.careContextReference],
+      }),
+    );
 
     const payload = {
       notification: {

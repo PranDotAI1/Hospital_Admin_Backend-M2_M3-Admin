@@ -296,10 +296,26 @@ export const handleHiuTransfer = async (
     console.error(
       `${LOG_PREFIX} No HIU request found after 3 retries for transactionId: ${transactionId} or consent: ${consentArtefactId}`,
     );
+    try {
+      const { UnmatchedEventModel } = await import("../models/UnmatchedEvent");
+      await UnmatchedEventModel.create({
+        eventType: "HIU_TRANSFER",
+        transactionId,
+        payload: { entries, senderKeyMaterial, consentArtefactId },
+        receivedAt: new Date(),
+        retryCount: 0,
+        status: "PENDING",
+        error: "HIU request not found after retries",
+      });
+      console.warn(`${LOG_PREFIX} Saved unmatched HIU transfer to UnmatchedEvent for manual replay`);
+    } catch (saveErr: any) {
+      console.error(`${LOG_PREFIX} Failed to save unmatched event:`, saveErr.message);
+    }
     throw new Error("Transaction not found"); // ABDM might retry
   }
 
   const { privateKey, nonce: myNonce } = hiuRequest.keyMaterial;
+  const decryptedPrivateKey = (hiuRequest as any).keyMaterial?.decryptedPrivateKey || privateKey;
   const { dhPublicKey, nonce: senderNonce } = senderKeyMaterial;
 
   // --- PRE-FETCH CONSENT ARTEFACT FOR VALIDATION ---

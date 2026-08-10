@@ -26,7 +26,7 @@ import * as fs from "fs";
 import { AbdmLogger } from "../utils/abdm.logger";
 import { ICombinedBundleOptionalData } from "./fhir.bundle.service";
 import { generateFhirBundle } from "./fhir.bundle.builders";
-
+// import { resolveCanonicalHiType } from "./carecontext.service";
 import {
   buildDataPushPayload,
   ABDMKeyMaterial,
@@ -228,7 +228,10 @@ const acknowledgeHealthInfoRequest = async (
     );
     // Log full error response for debugging (no PHI — this is ABDM's error object, not patient data)
     if (body) {
-      console.error(`${LOG_PREFIX} on-request ACK error response:`, JSON.stringify(body));
+      console.error(
+        `${LOG_PREFIX} on-request ACK error response:`,
+        JSON.stringify(body),
+      );
     }
     if (status === 403 && authToken) {
       try {
@@ -627,7 +630,7 @@ const pushHealthData = async (
 
     if (contextHiTypes.length === 0) {
       console.warn(
-        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no hiTypes on CareContext`,
+        `${LOG_PREFIX} Skipping ${careContext.careContextReference}: no canonical hiType on CareContext (hiType=${careContext.hiType}, hiTypes=${JSON.stringify(careContext.hiTypes)})`,
       );
       return false;
     }
@@ -898,7 +901,10 @@ const pushHealthData = async (
       try {
         await sendFailedTransferNotification(consentId, transactionId);
       } catch (notifyErr: any) {
-        console.error(`${LOG_PREFIX} Failed to send FAILED notification:`, notifyErr.message);
+        console.error(
+          `${LOG_PREFIX} Failed to send FAILED notification:`,
+          notifyErr.message,
+        );
       }
       return false;
     }
@@ -1050,9 +1056,7 @@ const processHealthInfoRequest = async (
   // PM2 clusters / multiple server instances.
   let useRedisLock = false;
   try {
-    const { acquireConsentLock } = await import(
-      "./abdm.queue.service"
-    );
+    const { acquireConsentLock } = await import("./abdm.queue.service");
 
     // Acquire distributed lock keyed on transactionId
     const lockAcquired = await acquireConsentLock(transactionId);
@@ -1095,10 +1099,7 @@ const processHealthInfoRequest = async (
   const existingProcessing = await CareContextModel.findOne({
     transactionId: transactionId,
     dataTransferStatus: {
-      $in: [
-        DataTransferStatus.ACKNOWLEDGED,
-        DataTransferStatus.TRANSFERRED,
-      ],
+      $in: [DataTransferStatus.ACKNOWLEDGED, DataTransferStatus.TRANSFERRED],
     },
   }).lean();
 
@@ -1196,8 +1197,18 @@ const processHealthInfoRequest = async (
     // (Invalid Transaction Id) because it hasn't set up the transaction yet.
     // The inline retry logic (2s/4s/8s backoff) in pushHealthData provides
     // additional resilience for edge cases.
-    const STABILIZATION_DELAY_MS = 5000;
-    await new Promise((resolve) => setTimeout(resolve, STABILIZATION_DELAY_MS));
+    const STABILIZATION_DELAY_MS = parseInt(
+      process.env.ABDM_STABILIZATION_DELAY_MS || "1500",
+      10,
+    );
+    if (STABILIZATION_DELAY_MS > 0) {
+      console.log(
+        `${LOG_PREFIX} Stabilization delay: ${STABILIZATION_DELAY_MS}ms`,
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, STABILIZATION_DELAY_MS),
+      );
+    }
 
     // Step 2: Find care contexts for this consent
     careContexts = await findCareContextsForConsent(consentId, dateRange);
@@ -1242,6 +1253,13 @@ const processHealthInfoRequest = async (
           "--disable-gpu",
         ],
       });
+    } catch (launchErr: any) {
+      console.error(
+        `${LOG_PREFIX} Failed to launch Puppeteer:`,
+        launchErr.message,
+      );
+    }
+    try {
       for (const cc of careContexts) {
         try {
           const success = await pushHealthData(
@@ -1256,12 +1274,14 @@ const processHealthInfoRequest = async (
           );
           pushResults.push({
             ...cc,
-            dataTransferStatus: success ? DataTransferStatus.TRANSFERRED : DataTransferStatus.FAILED
+            dataTransferStatus: success
+              ? DataTransferStatus.TRANSFERRED
+              : DataTransferStatus.FAILED,
           });
         } catch (err: any) {
           pushResults.push({
             ...cc,
-            dataTransferStatus: DataTransferStatus.FAILED
+            dataTransferStatus: DataTransferStatus.FAILED,
           });
           
           // ── GUARANTEED DELIVERY ──
@@ -1301,7 +1321,7 @@ const processHealthInfoRequest = async (
     }
 
     // Step 4: Notify ABDM about the transfer using in-memory results
-    // This prevents race conditions where a concurrent abandoned transaction 
+    // This prevents race conditions where a concurrent abandoned transaction
     // overwrites the DB status to FAILED right before we read it.
     await notifyHealthInfoTransfer(
       consentId,
@@ -1377,13 +1397,20 @@ const sendFailedTransferNotification = async (
       transactionId,
     }).lean();
 
-    const statusResponses = careContexts.length > 0
-      ? careContexts.map((cc: any) => ({
-          careContextReference: cc.careContextReference,
-          hiStatus: "ERRORED",
-          description: "Data push permanently failed after all retries",
-        }))
-      : [{ careContextReference: "unknown", hiStatus: "ERRORED", description: "Data push permanently failed" }];
+    const statusResponses =
+      careContexts.length > 0
+        ? careContexts.map((cc: any) => ({
+            careContextReference: cc.careContextReference,
+            hiStatus: "ERRORED",
+            description: "Data push permanently failed after all retries",
+          }))
+        : [
+            {
+              careContextReference: "unknown",
+              hiStatus: "ERRORED",
+              description: "Data push permanently failed",
+            },
+          ];
 
     const payload = {
       notification: {

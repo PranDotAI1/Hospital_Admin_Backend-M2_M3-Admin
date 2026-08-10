@@ -75,6 +75,18 @@ export const getHiuTransferQueue = (): Queue<HiuTransferJobData> => {
 const LOCK_PREFIX = "abdm:lock:consent:";
 const LOCK_TTL_SECONDS = 120; // Must exceed max processing time
 
+// In-memory store of lock values per consentId (for safe release)
+const lockValues = new Map<string, string>();
+
+// Lua script for safe lock release: only delete if value matches our process ID
+const RELEASE_LOCK_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+else
+  return 0
+end
+`;
+
 /**
  * Attempt to acquire a distributed lock for a consent ID.
  * Uses Redis SET NX EX (atomic set-if-not-exists with expiry).
@@ -84,24 +96,35 @@ export const acquireConsentLock = async (
   consentId: string,
 ): Promise<boolean> => {
   const redis = getRedisConnection();
+  const lockValue = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const result = await redis.set(
     `${LOCK_PREFIX}${consentId}`,
-    Date.now().toString(),
+    lockValue,
     "EX",
     LOCK_TTL_SECONDS,
     "NX",
   );
-  return result === "OK";
+  if (result === "OK") {
+    lockValues.set(consentId, lockValue);
+    return true;
+  }
+  return false;
 };
 
 /**
  * Release the distributed lock for a consent ID.
+ * Uses Lua script to atomically check-and-delete only if the lock value matches our process ID.
+ * This prevents deleting another process's lock if ours expired and they re-acquired it.
  */
 export const releaseConsentLock = async (
   consentId: string,
 ): Promise<void> => {
   const redis = getRedisConnection();
-  await redis.del(`${LOCK_PREFIX}${consentId}`);
+  const lockValue = lockValues.get(consentId);
+  if (lockValue) {
+    await redis.eval(RELEASE_LOCK_SCRIPT, 1, `${LOCK_PREFIX}${consentId}`, lockValue);
+    lockValues.delete(consentId);
+  }
 };
 
 // ============================================================================

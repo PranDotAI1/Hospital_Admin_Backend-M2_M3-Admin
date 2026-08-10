@@ -3725,16 +3725,21 @@ export const generateFhirBundlesForCareContext = (
   patient: IPatient,
   visit: IScanShareVisit,
   careContext: ICareContext,
-  optionalData?: ICombinedBundleOptionalData, // Add optionalData
+  optionalData?: ICombinedBundleOptionalData,
 ): any[] => {
-  const hiTypes = careContext.hiTypes;
-  if (!hiTypes || hiTypes.length === 0) {
+  // Use hiType (singular canonical field) — NEVER iterate hiTypes array.
+  const hiType = careContext.hiType
+    || (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1
+      ? careContext.hiTypes[0]
+      : null);
+
+  if (!hiType) {
     return [
       buildOPConsultationBundle(patient, visit, careContext, optionalData),
     ];
   }
 
-  return hiTypes.map((hiType) =>
-    generateFhirBundle(hiType, patient, visit, careContext, optionalData),
-  );
+  return [
+    generateFhirBundle(hiType as HIType, patient, visit, careContext, optionalData),
+  ];
 };

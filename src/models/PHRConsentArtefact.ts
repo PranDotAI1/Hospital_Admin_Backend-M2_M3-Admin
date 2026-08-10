@@ -76,11 +76,14 @@ const PHRConsentArtefactSchema = new Schema<IConsentArtefact>(
 );
 
 PHRConsentArtefactSchema.index({ patientAbhaAddress: 1, status: 1 });
+PHRConsentArtefactSchema.index({ consentRequestId: 1, status: 1 }); // For query performance
 PHRConsentArtefactSchema.index({ artefactId: 1 }); // Fast lookups for consent validation and data push
 
 // Compound index for idempotency
+// Dropped consentRequestId from compound index since it can be null
+// Use artefactId + sourceType for uniqueness; consentRequestId has separate non-unique index for queries
 PHRConsentArtefactSchema.index(
-  { artefactId: 1, consentRequestId: 1, sourceType: 1 },
+  { artefactId: 1, sourceType: 1 },
   { unique: true, sparse: true, name: "idx_phr_artefact_dedup_compound" },
 );
 
