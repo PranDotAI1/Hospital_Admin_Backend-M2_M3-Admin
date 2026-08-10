@@ -49,6 +49,81 @@ const buildBroadArtefactQuery = (
 };
 
 /**
+ * When ABDM sends HIP notify with only an artefact ID (no consentRequestId),
+ * look up the artefact to find which ConsentRequest owns it.
+ * Returns the consentRequestId stored on the artefact, or undefined if not found.
+ */
+const resolveConsentRequestIdFromArtefact = async (
+  artefactId: string,
+): Promise<string | undefined> => {
+  const artefact = await ConsentArtefactModel.findOne({ artefactId })
+    .select("consentRequestId")
+    .lean();
+  if (artefact?.consentRequestId) return artefact.consentRequestId;
+  const phrArtefact = await PHRConsentArtefactModel.findOne({ artefactId })
+    .select("consentRequestId")
+    .lean();
+  return phrArtefact?.consentRequestId;
+};
+
+/**
+ * Update ConsentRequest status with fallback: first tries dbLookupId,
+ * then cross-references artefact IDs to find the parent ConsentRequest.
+ */
+const updateConsentRequestStatus = async (
+  dbLookupId: string | undefined,
+  artefactIds: string[],
+  updateFields: Record<string, any>,
+  logPrefix: string,
+  statusLabel: string,
+): Promise<void> => {
+  if (!dbLookupId && artefactIds.length === 0) return;
+
+  const orConditions: any[] = [];
+  if (dbLookupId) {
+    orConditions.push(
+      { consentRequestId: dbLookupId },
+      { requestId: dbLookupId },
+      { consentArtefacts: dbLookupId },
+    );
+  }
+  // Also search by each artefact ID in consentArtefacts array
+  if (artefactIds.length > 0) {
+    orConditions.push({ consentArtefacts: { $in: artefactIds } });
+  }
+
+  const updateResult = await ConsentRequestModel.updateOne(
+    { $or: orConditions },
+    { $set: updateFields },
+  );
+
+  if (updateResult.matchedCount > 0) return; // Success
+
+  // Fallback: cross-reference via ConsentArtefact.consentRequestId
+  // (HIP notify only sends artefact ID, not consentRequestId)
+  const idsToCheck = artefactIds.length > 0 ? artefactIds : dbLookupId ? [dbLookupId] : [];
+  for (const artefactId of idsToCheck) {
+    const resolvedConsentRequestId = await resolveConsentRequestIdFromArtefact(artefactId);
+    if (resolvedConsentRequestId && resolvedConsentRequestId !== dbLookupId) {
+      const retryResult = await ConsentRequestModel.updateOne(
+        {
+          $or: [
+            { consentRequestId: resolvedConsentRequestId },
+            { requestId: resolvedConsentRequestId },
+          ],
+        },
+        { $set: updateFields },
+      );
+      if (retryResult.matchedCount > 0) {
+        console.log(`${logPrefix} ${statusLabel}: resolved ConsentRequest via artefact cross-reference (artefactId=${artefactId} → consentRequestId=${resolvedConsentRequestId})`);
+        return;
+      }
+    }
+  }
+  console.warn(`${logPrefix} ${statusLabel}: ConsentRequest not found even after artefact cross-reference. dbLookupId=${dbLookupId}, artefactIds=${artefactIds.join(",")}`);
+};
+
+/**
  * Resolve all artefact IDs that match a query, merging with any explicitly
  * provided artefactIds AND any IDs listed in the parent ConsentRequest's
  * consentArtefacts array. Deduplicates the result.
@@ -393,23 +468,18 @@ export const handleHipNotify = async (
           $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
         },
       );
-      if (dbLookupId) {
-        await ConsentRequestModel.updateOne(
-          {
-            $or: [
-              { consentRequestId: dbLookupId },
-              { consentArtefacts: dbLookupId },
-            ],
-          },
-          { $set: { status: "REVOKED", revokedAt } },
-        );
-      }
+      await updateConsentRequestStatus(
+        dbLookupId,
+        idsToRevoke,
+        { status: "REVOKED", revokedAt },
+        LOG_PREFIX,
+        "REVOKED",
+      );
       // Delete external health records for ALL resolved artefacts
       if (idsToRevoke.length > 0) {
-        const deleteResult = await ExternalHealthRecordModel.deleteMany({
+        await ExternalHealthRecordModel.deleteMany({
           consentArtefactId: { $in: idsToRevoke },
         });
-      } else {
       }
     }
 
@@ -433,10 +503,18 @@ export const handleHipNotify = async (
         $set: { status: ConsentArtefactStatus.EXPIRED },
       });
       if (idsToExpire.length > 0) {
-        const expiredResult = await ExternalHealthRecordModel.deleteMany({
+        await ExternalHealthRecordModel.deleteMany({
           consentArtefactId: { $in: idsToExpire },
         });
       }
+      // Update ConsentRequest status to EXPIRED
+      await updateConsentRequestStatus(
+        dbLookupId,
+        idsToExpire,
+        { status: "EXPIRED", expiredAt: notification.timestamp ? new Date(notification.timestamp) : new Date() },
+        LOG_PREFIX,
+        "EXPIRED",
+      );
     }
 
     if (status === "DENIED") {
@@ -469,31 +547,23 @@ export const handleHipNotify = async (
         if (deleteResult.deletedCount > 0) {
         }
       }
-      if (dbLookupId) {
-        await ConsentRequestModel.updateOne(
-          {
-            $or: [
-              { consentRequestId: dbLookupId },
-              { consentArtefacts: dbLookupId },
-            ],
-          },
-          { $set: { status: "DENIED", deniedAt } },
-        );
-      }
-    }
-
-    // Update the ConsentRequest record
-    if (dbLookupId) {
-      await ConsentRequestModel.updateOne(
-        {
-          $or: [
-            { consentRequestId: dbLookupId },
-            { consentArtefacts: dbLookupId },
-          ],
-        },
-        { $set: updateData },
+      await updateConsentRequestStatus(
+        dbLookupId,
+        idsToDeny,
+        { status: "DENIED", deniedAt },
+        LOG_PREFIX,
+        "DENIED",
       );
     }
+
+    // Update the ConsentRequest record (GRANTED / status sync)
+    await updateConsentRequestStatus(
+      dbLookupId,
+      artefactIds,
+      updateData,
+      LOG_PREFIX,
+      status,
+    );
 
     // Send on-notify ACK with the ARTEFACT ID (not consentRequestId)
     await sendHipOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
@@ -932,7 +1002,13 @@ export const processConsentOnStatusCallback = async (
   }
 
   const updateResult = await ConsentRequestModel.updateOne(
-    { $or: [{ consentRequestId: reqId }, { requestId: body.response?.requestId }] },
+    {
+      $or: [
+        { consentRequestId: reqId },
+        { requestId: reqId },
+        { requestId: body.response?.requestId },
+      ],
+    },
     { $set: statusUpdate },
   );
 
@@ -1645,10 +1721,30 @@ export const initiateConsentRequest = async (
         if (data.status) updatePayload.status = data.status;
 
         if (existingPatient) {
-          await PatientModel.updateOne(
-            { _id: existingPatient._id },
-            { $set: updatePayload },
-          );
+          // Guard: if another patient already owns this abhaaddress (unique index),
+          // remove it from the update to avoid E11000 duplicate key errors.
+          if (updatePayload.abhaaddress) {
+            const conflictingPatient = await PatientModel.findOne({
+              abhaaddress: updatePayload.abhaaddress,
+              _id: { $ne: existingPatient._id },
+              isMerged: { $ne: true },
+              status: { $ne: "merged" },
+            })
+              .select("_id")
+              .lean();
+            if (conflictingPatient) {
+              console.warn(
+                `${LOG_PREFIX} Skipping abhaaddress update for patient ${existingPatient._id} — abhaaddress "${updatePayload.abhaaddress}" already assigned to another patient ${conflictingPatient._id}`,
+              );
+              delete updatePayload.abhaaddress;
+            }
+          }
+          if (Object.keys(updatePayload).length > 0) {
+            await PatientModel.updateOne(
+              { _id: existingPatient._id },
+              { $set: updatePayload },
+            );
+          }
         } else {
           // Do NOT auto-create a new patient here. Ghost patients with no UHID,
           // gender "Unknown", and a claimed ABHA address cause duplicate-key

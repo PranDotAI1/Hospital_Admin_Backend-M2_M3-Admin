@@ -141,7 +141,13 @@ async function processConsentOnStatus(data: ConsentOnStatusJobData) {
   }
 
   const updateResult = await ConsentRequestModel.updateOne(
-    { $or: [{ consentRequestId: reqId }, { requestId: body.response?.requestId }] },
+    {
+      $or: [
+        { consentRequestId: reqId },
+        { requestId: reqId },
+        { requestId: body.response?.requestId },
+      ],
+    },
     { $set: statusUpdate },
   );
 
@@ -156,9 +162,11 @@ export const enqueueConsentNotify = async (
   data: Omit<ConsentNotifyJobData, "type">,
 ): Promise<string | null> => {
   const queue = getWebhookIngestionQueue();
-  const dedupKey = data.notification?.consentId || data.notification?.consentRequestId || data.requestId;
+  const baseKey = data.notification?.consentId || data.notification?.consentRequestId || data.requestId;
+  const status = (data.notification?.status || "UNKNOWN").toUpperCase();
+  const minuteBucket = Math.floor(Date.now() / 60000);
   const job = await queue.add("consent-notify", { ...data, type: "consent-notify" as const }, {
-    jobId: `cn-${dedupKey}`,
+    jobId: `cn-${baseKey}-${status}-${minuteBucket}`,
   });
   return job.id || null;
 };
