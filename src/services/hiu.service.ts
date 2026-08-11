@@ -721,9 +721,9 @@ const resolveHiTypeForExternalRecord = (
         ? String(entryHiTypeRaw).trim()
         : null);
     if (normalised) {
-      console.log(
-        `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P1(entry.hiType)=${normalised}`,
-      );
+      // console.log(
+      //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P1(entry.hiType)=${normalised}`,
+      // );
       return [normalised];
     }
   }
@@ -731,9 +731,9 @@ const resolveHiTypeForExternalRecord = (
   // Priority 2: FHIR Composition.type.coding — structured code, not keyword sniffing.
   const compositionCode = extractHiTypeFromCompositionCode(bundle);
   if (compositionCode) {
-    console.log(
-      `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P2(Composition.type.coding)=${compositionCode}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P2(Composition.type.coding)=${compositionCode}`,
+    // );
     return [compositionCode];
   }
 
@@ -742,9 +742,9 @@ const resolveHiTypeForExternalRecord = (
   const artefactTypes: string[] = consentArtefact?.hiTypes || [];
   const validArtefactTypes = artefactTypes.filter((t) => VALID_HI_TYPES.has(t));
   if (validArtefactTypes.length === 1) {
-    console.log(
-      `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P3(single consentArtefact.hiType)=${validArtefactTypes[0]}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P3(single consentArtefact.hiType)=${validArtefactTypes[0]}`,
+    // );
     return [validArtefactTypes[0]];
   }
 
@@ -755,9 +755,9 @@ const resolveHiTypeForExternalRecord = (
     if (sniffed.length > 1 && validArtefactTypes.length > 0) {
       const intersection = sniffed.filter((t) => validArtefactTypes.includes(t));
       if (intersection.length === 1) {
-        console.log(
-          `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff∩consent)=${intersection[0]}`,
-        );
+        // console.log(
+        //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff∩consent)=${intersection[0]}`,
+        // );
         return [intersection[0]];
       }
       // If still multiple, prefer the most specific (non-OPConsultation).
@@ -771,9 +771,9 @@ const resolveHiTypeForExternalRecord = (
       }
     }
     // Single sniffed result or prefer first.
-    console.log(
-      `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff)=${sniffed[0]}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff)=${sniffed[0]}`,
+    // );
     return [sniffed[0]];
   }
 

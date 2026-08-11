@@ -46,17 +46,17 @@ export const resolveCanonicalHiType = async (
 ): Promise<HIType> => {
   // Priority 1: hiType field (canonical, set at creation time)
   if (careContext.hiType) {
-    console.log(
-      `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P1(hiType field)=${careContext.hiType} rawHiTypes=${JSON.stringify(careContext.hiTypes)}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P1(hiType field)=${careContext.hiType} rawHiTypes=${JSON.stringify(careContext.hiTypes)}`,
+    // );
     return careContext.hiType as HIType;
   }
 
   // Priority 2: If hiTypes has exactly one element, it's unambiguous
   if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1) {
-    console.log(
-      `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P2(single hiTypes)=${careContext.hiTypes[0]}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P2(single hiTypes)=${careContext.hiTypes[0]}`,
+    // );
     return careContext.hiTypes[0] as HIType;
   }
 
@@ -553,18 +553,18 @@ export const createOrUpdateCareContextForVisit = async (
       // In SEPARATE_CARECONTEXT_PER_HITYPE mode (default), the lookup
       // already matched by { patientId, visitId, hiType }, so this
       // context is exactly the right one. Just return it.
-      console.log(
-        `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: REUSING cc=${existingContext.careContextReference} requestedHiType=${hiType} existing.hiType=${existingContext.hiType} existing.hiTypes=${JSON.stringify(existingContext.hiTypes)} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
-      );
+      // console.log(
+      //   `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: REUSING cc=${existingContext.careContextReference} requestedHiType=${hiType} existing.hiType=${existingContext.hiType} existing.hiTypes=${JSON.stringify(existingContext.hiTypes)} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
+      // );
 
       // Existing context may still need sync actions after clinical updates.
       triggerLinkingActions(existingContext, patient);
       return existingContext;
     }
 
-    console.log(
-      `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: CREATING new cc for patientId=${patientId} visitId=${visitId} hiType=${hiType} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: CREATING new cc for patientId=${patientId} visitId=${visitId} hiType=${hiType} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
+    // );
 
     // ── Create new CareContext ──
     const visit = await ScanShareVisitModel.findById(visitId);
@@ -835,9 +835,9 @@ export const linkCareContext = async (
       careContext.hiType = resolvedHiType as import("../models/CareContext").HIType;
     }
 
-    console.log(
-      `[HITYPE-DEBUG] linkCareContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} — LINK PAYLOAD hiType=${resolvedHiType}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] linkCareContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} — LINK PAYLOAD hiType=${resolvedHiType}`,
+    // );
 
     const payload = {
       abhaNumber: abhaNumber14,
@@ -1058,20 +1058,11 @@ export const notifyContext = async (
     // ALWAYS send exactly [resolvedHiType] — never the raw hiTypes array.
     // Even in legacy mode, sending multiple types per CC is wrong per ABDM spec.
     const notifyHiTypes: string[] = [resolvedHiType];
-    console.log(
-      `[HITYPE-DEBUG] notifyContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} SENDING notify.hiTypes=${JSON.stringify(notifyHiTypes)}`,
-    );
+    // console.log(
+    //   `[HITYPE-DEBUG] notifyContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} SENDING notify.hiTypes=${JSON.stringify(notifyHiTypes)}`,
+    // );
 
-    console.info(
-      "[ABDM Payload] context/notify constructed",
-      JSON.stringify({
-        endpoint: "context/notify",
-        careContextRef: careContext.careContextReference,
-        patientRef: patient.uhid || patient._id.toString(),
-        hiType: resolvedHiType,
-        careContexts: [careContext.careContextReference],
-      }),
-    );
+    console.info(`[ABDM] context/notify payload constructed for cc=${careContext.careContextReference}, type=${resolvedHiType}`);
 
     const payload = {
       notification: {

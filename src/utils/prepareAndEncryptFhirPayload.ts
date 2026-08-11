@@ -115,7 +115,7 @@ export const decryptHealthData = (
   senderPublicKey: string,
   senderNonce: string,
 ): { decryptedData: any } => {
-  console.log(`[DECRYPTION] Decrypting with Node.js implementation...`);
+  // console.log(`[DECRYPTION] Decrypting with Node.js implementation...`);
 
   try {
     let decryptedString = decrypt(
