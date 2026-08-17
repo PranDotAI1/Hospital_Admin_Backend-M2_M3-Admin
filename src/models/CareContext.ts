@@ -189,25 +189,24 @@ const CareContextSchema = new Schema<ICareContext>(
 CareContextSchema.pre("validate", function (next) {
   const doc = this as ICareContext;
 
-  if (doc.hiType && (!Array.isArray(doc.hiTypes) || doc.hiTypes.length === 0)) {
-    // hiType set but hiTypes empty → seed hiTypes
+  if (doc.hiType) {
+    // hiType is the source of truth — force hiTypes to match exactly.
     doc.hiTypes = [doc.hiType];
   } else if (
-    !doc.hiType &&
     Array.isArray(doc.hiTypes) &&
-    doc.hiTypes.length > 0
+    doc.hiTypes.length === 1
   ) {
-    // hiTypes set but no hiType → pick first as primary
+    // Exactly one type in array — unambiguous. Adopt as primary.
     doc.hiType = doc.hiTypes[0] as HIType;
-  }
-
-  // Ensure hiType is always present in hiTypes
-  if (
-    doc.hiType &&
+  } else if (
     Array.isArray(doc.hiTypes) &&
-    !doc.hiTypes.includes(doc.hiType)
+    doc.hiTypes.length > 1
   ) {
-    doc.hiTypes.unshift(doc.hiType);
+    // SAFETY: Multiple types but no primary hiType — this is a legacy
+    // contaminated CC. Do NOT blindly pick hiTypes[0] because it may be
+    // the wrong type (e.g., ["OPConsultation", "WellnessRecord"] where
+    // the real type is WellnessRecord). Leave as-is — the data push
+    // logic handles this via notifyContext's detectHiTypesForVisit.
   }
 
   return next();

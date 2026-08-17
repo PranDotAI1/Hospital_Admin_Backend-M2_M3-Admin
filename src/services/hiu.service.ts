@@ -30,7 +30,7 @@ import {
 import { AbdmTokenService } from "./abdm.token.service";
 
 const LOG_PREFIX = "[HIU_SERVICE]";
-const HIU_DATA_PUSH_URL = `${process.env.ABDM_CALLBACK_URL || "https://admin.pran.ai"}/api/v3/hiu/health-information/transfer`;
+const HIU_DATA_PUSH_URL = `${process.env.ABDM_CALLBACK_URL || "https://bhims.pranamm.ai"}/api/v3/hiu/health-information/transfer`;
 const SKIP_OWN_FACILITY = false;
 
 export const requestHealthInformation = async (
@@ -79,11 +79,6 @@ export const requestHealthInformation = async (
         `Requested date range (${dateRange.from.toISOString()} - ${dateRange.to.toISOString()}) is outside the approved consent range (${consentRange.from.toISOString()} - ${consentRange.to.toISOString()})`,
       );
     }
-
-    console.log(
-      `${LOG_PREFIX} Date Range Clamped: Requested [${requestedFrom.toISOString()} - ${requestedTo.toISOString()}] -> Final [${finalFrom.toISOString()} - ${finalTo.toISOString()}]`,
-    );
-
     const finalDateRange = { from: finalFrom, to: finalTo };
 
     const keys = generateKeyMaterial();
@@ -110,11 +105,6 @@ export const requestHealthInformation = async (
       status: HIURequestStatus.INITIATED,
       storeAsExternalRecord,
     });
-
-    console.log(
-      `${LOG_PREFIX} Created HIU request ${requestId} for consent ${consentArtefactId}`,
-    );
-
     const payload = {
       requestId,
       timestamp: new Date().toISOString(),
@@ -135,7 +125,7 @@ export const requestHealthInformation = async (
               Date.now() + 2 * 24 * 60 * 60 * 1000,
             ).toISOString(), // 2 days
             parameters: "Curve25519",
-            keyValue: keys.publicKey, // 88 chars (Standard) or 412 chars (X509) - python output
+            keyValue: keys.x509PublicKey, // X509/SPKI format required by ABDM spec
           },
           nonce: keys.nonce,
         },
@@ -157,11 +147,6 @@ export const requestHealthInformation = async (
         },
       },
     );
-
-    console.log(
-      `${LOG_PREFIX} Sent request to ABDM. Status: ${response.status}`,
-    );
-
     // Update status
     await HIURequestModel.updateOne(
       { requestId },
@@ -223,9 +208,6 @@ export const handleHiuOnRequest = async (
     body.transactionId ??
     hiRequest?.transactionId;
   if (transactionId) {
-    console.log(
-      `${LOG_PREFIX} Request ${requestId} acknowledged. TransactionId: ${transactionId}`,
-    );
     await HIURequestModel.updateOne(
       { requestId },
       {
@@ -256,10 +238,6 @@ export const handleHiuTransfer = async (
   senderKeyMaterial: ABDMKeyMaterial,
   consentArtefactId?: string, // Optional: passed from transfer payload if available
 ): Promise<void> => {
-  console.log(
-    `${LOG_PREFIX} Received data transfer for transaction ${transactionId}, entries: ${entries.length}`,
-  );
-
   // 0. Try Redis bridge first (instant, sub-ms) — populated by handleHiuOnRequest
   let hiuRequest: import("../models/HIURequest").IHIURequest | null = null;
   try {
@@ -270,9 +248,6 @@ export const handleHiuTransfer = async (
         requestId: bridgedRequestId,
       });
       if (hiuRequest) {
-        console.log(
-          `${LOG_PREFIX} Found HIU request via Redis bridge: ${hiuRequest.requestId}`,
-        );
       }
     }
   } catch (_) {
@@ -283,72 +258,14 @@ export const handleHiuTransfer = async (
   if (!hiuRequest) {
     hiuRequest = await HIURequestModel.findOne({ transactionId });
     if (hiuRequest) {
-      console.log(
-        `${LOG_PREFIX} Found HIU request by transactionId: ${hiuRequest.requestId}, storeAsExternalRecord: ${hiuRequest.storeAsExternalRecord}`,
-      );
     }
   }
 
-  if (!hiuRequest && consentArtefactId) {
-    console.log(
-      `${LOG_PREFIX} TransactionId lookup failed, trying by consentArtefactId: ${consentArtefactId}`,
-    );
-    // Fallback: find the most recent HIU request for this consent
-    hiuRequest = await HIURequestModel.findOne({
-      consentArtefactId,
-      status: {
-        $in: [HIURequestStatus.INITIATED, HIURequestStatus.ACKNOWLEDGED],
-      },
-    }).sort({ createdAt: -1 });
 
-    if (hiuRequest) {
-      // Update the record with the transactionId for future lookups
-      await HIURequestModel.updateOne(
-        { _id: hiuRequest._id },
-        { $set: { transactionId } },
-      );
-      console.log(
-        `${LOG_PREFIX} Found HIU request by consent, updated transactionId: ${hiuRequest.requestId}`,
-      );
-    }
-  }
 
-  // 3rd fallback: Find most recent HIU request without a transactionId (within last 5 mins)
-  // This handles the edge case where the same facility is both HIP and HIU
-  if (!hiuRequest) {
-    console.log(
-      `${LOG_PREFIX} Trying fallback: recent HIU request without transactionId`,
-    );
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-
-    // Query for requests where transactionId is null, undefined, or doesn't exist
-    hiuRequest = await HIURequestModel.findOne({
-      $or: [
-        { transactionId: { $exists: false } },
-        { transactionId: null },
-        { transactionId: "" },
-      ],
-      // Include REQUESTED status - this is what requests have after being sent to ABDM
-      status: {
-        $in: [
-          HIURequestStatus.INITIATED,
-          HIURequestStatus.REQUESTED,
-          HIURequestStatus.ACKNOWLEDGED,
-        ],
-      },
-      createdAt: { $gt: fiveMinutesAgo },
-    }).sort({ createdAt: -1 });
-
-    if (hiuRequest) {
-      await HIURequestModel.updateOne(
-        { _id: hiuRequest._id },
-        { $set: { transactionId, status: HIURequestStatus.ACKNOWLEDGED } },
-      );
-      console.log(
-        `${LOG_PREFIX} Found recent HIU request without transactionId: ${hiuRequest.requestId}`,
-      );
-    }
-  }
+  // NOTE: "Recent request without transactionId" fallback REMOVED.
+  // It was matching the WRONG HIURequest when multiple consents were active simultaneously,
+  // causing data to be stored against incorrect consents.
 
   // --- RETRY WITH BACKOFF: Race condition fix ---
   // ABDM can push the /transfer callback BEFORE the /on-request callback
@@ -366,64 +283,12 @@ export const handleHiuTransfer = async (
       // Retry: Direct transactionId lookup (on-request may have stored it by now)
       hiuRequest = await HIURequestModel.findOne({ transactionId });
       if (hiuRequest) {
-        console.log(
-          `${LOG_PREFIX} Found HIU request on retry #${attempt} by transactionId: ${hiuRequest.requestId}`,
-        );
         break;
       }
 
-      // Retry: Consent-based fallback
-      if (consentArtefactId) {
-        hiuRequest = await HIURequestModel.findOne({
-          consentArtefactId,
-          status: {
-            $in: [
-              HIURequestStatus.INITIATED,
-              HIURequestStatus.REQUESTED,
-              HIURequestStatus.ACKNOWLEDGED,
-            ],
-          },
-        }).sort({ createdAt: -1 });
-        if (hiuRequest) {
-          await HIURequestModel.updateOne(
-            { _id: hiuRequest._id },
-            { $set: { transactionId } },
-          );
-          console.log(
-            `${LOG_PREFIX} Found HIU request on retry #${attempt} by consent: ${hiuRequest.requestId}`,
-          );
-          break;
-        }
-      }
 
-      // Retry: Recent request without transactionId
-      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-      hiuRequest = await HIURequestModel.findOne({
-        $or: [
-          { transactionId: { $exists: false } },
-          { transactionId: null },
-          { transactionId: "" },
-        ],
-        status: {
-          $in: [
-            HIURequestStatus.INITIATED,
-            HIURequestStatus.REQUESTED,
-            HIURequestStatus.ACKNOWLEDGED,
-          ],
-        },
-        createdAt: { $gt: tenMinutesAgo },
-      }).sort({ createdAt: -1 });
-
-      if (hiuRequest) {
-        await HIURequestModel.updateOne(
-          { _id: hiuRequest._id },
-          { $set: { transactionId, status: HIURequestStatus.ACKNOWLEDGED } },
-        );
-        console.log(
-          `${LOG_PREFIX} Found HIU request on retry #${attempt} (recent without txnId): ${hiuRequest.requestId}`,
-        );
-        break;
-      }
+      // NOTE: "Recent request without transactionId" retry fallback REMOVED.
+      // It was matching the WRONG HIURequest when multiple consents were active.
     }
   }
 
@@ -431,10 +296,26 @@ export const handleHiuTransfer = async (
     console.error(
       `${LOG_PREFIX} No HIU request found after 3 retries for transactionId: ${transactionId} or consent: ${consentArtefactId}`,
     );
+    try {
+      const { UnmatchedEventModel } = await import("../models/UnmatchedEvent");
+      await UnmatchedEventModel.create({
+        eventType: "HIU_TRANSFER",
+        transactionId,
+        payload: { entries, senderKeyMaterial, consentArtefactId },
+        receivedAt: new Date(),
+        retryCount: 0,
+        status: "PENDING",
+        error: "HIU request not found after retries",
+      });
+      console.warn(`${LOG_PREFIX} Saved unmatched HIU transfer to UnmatchedEvent for manual replay`);
+    } catch (saveErr: any) {
+      console.error(`${LOG_PREFIX} Failed to save unmatched event:`, saveErr.message);
+    }
     throw new Error("Transaction not found"); // ABDM might retry
   }
 
   const { privateKey, nonce: myNonce } = hiuRequest.keyMaterial;
+  const decryptedPrivateKey = (hiuRequest as any).keyMaterial?.decryptedPrivateKey || privateKey;
   const { dhPublicKey, nonce: senderNonce } = senderKeyMaterial;
 
   // --- PRE-FETCH CONSENT ARTEFACT FOR VALIDATION ---
@@ -526,11 +407,6 @@ export const handleHiuTransfer = async (
   const allowedCareContexts = new Set(
     consentArtefact?.careContexts?.map((cc) => cc.careContextReference) || [],
   );
-
-  console.log(
-    `${LOG_PREFIX} Validating against ${allowedCareContexts.size} allowed care contexts for consent ${hiuRequest.consentArtefactId} (found in ${artefactSource} collection)`,
-  );
-
   if (allowedCareContexts.size === 0) {
     console.warn(
       `${LOG_PREFIX} ⚠️ Artefact found but has 0 care contexts! Artefact source: ${artefactSource}, requestPurpose: ${(consentArtefact as any).requestPurpose || "unknown"}`,
@@ -562,21 +438,7 @@ export const handleHiuTransfer = async (
       if (entry.content) {
         // Decrypt
         // Note: entry.careContextReference tells us which record this is
-
-        console.log(
-          `${LOG_PREFIX} Decrypting entry for ${entry.careContextReference}...`,
-        );
-
         // Debug: Log key material details
-        console.log(`${LOG_PREFIX} Decryption params:`, {
-          contentLength: entry.content?.length || 0,
-          myPrivateKeyLength: privateKey?.length || 0,
-          myNonceLength: myNonce?.length || 0,
-          senderPubKeyLength: dhPublicKey?.keyValue?.length || 0,
-          senderPubKeyPrefix: dhPublicKey?.keyValue?.substring(0, 20) || "N/A",
-          senderNonceLength: senderNonce?.length || 0,
-        });
-
         const { decryptedData } = decryptHealthData(
           entry.content,
           privateKey,
@@ -584,11 +446,6 @@ export const handleHiuTransfer = async (
           dhPublicKey.keyValue,
           senderNonce,
         );
-
-        console.log(
-          `${LOG_PREFIX} Decryption success for ${entry.careContextReference}`,
-        );
-
         // Extract source HIP info from FHIR bundle
         const { hipId, hipName } = extractSourceHipInfo(decryptedData);
 
@@ -601,35 +458,17 @@ export const handleHiuTransfer = async (
           (X_HIP_ID && hipId.includes(X_HIP_ID));
 
         if (SKIP_OWN_FACILITY && isOurFacility) {
-          console.log(
-            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: source HIP is our facility (${hipId}). SKIP_OWN_FACILITY is enabled.`,
-          );
           continue;
         }
 
         if (isOurFacility) {
-          console.log(
-            `${LOG_PREFIX} Storing ExternalHealthRecord from our own facility (${hipId}). SKIP_OWN_FACILITY is disabled.`,
-          );
         }
 
         // Only store in external_health_records when this fetch was for our HIMS (user-approved records we hold). Do NOT store when the request was "pull records" (patient updating his PHR) – consent was for his PHR view, not for us to store and show in HIMS (compliance risk).
-        console.log(
-          `${LOG_PREFIX} Checking storeAsExternalRecord for ${entry.careContextReference}: requestId=${hiuRequest.requestId}, storeAsExternalRecord=${hiuRequest.storeAsExternalRecord}`,
-        );
         if (hiuRequest.storeAsExternalRecord !== true) {
-          console.log(
-            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: storeAsExternalRecord is not set (e.g. PHR pull records). External records only for HIMS-use fetches.`,
-          );
           continue;
         }
-        console.log(
-          `${LOG_PREFIX} ✓ storeAsExternalRecord=true, proceeding to store record for ${entry.careContextReference}`,
-        );
         if (consentArtefact.requestPurpose === "PHR") {
-          console.log(
-            `${LOG_PREFIX} Skipping ExternalHealthRecord for ${entry.careContextReference}: consent requestPurpose is PHR. Not for HIMS.`,
-          );
           continue;
         }
 
@@ -643,8 +482,10 @@ export const handleHiuTransfer = async (
           .select("_id")
           .lean();
 
-        // --- UPSERT BY CONSENT ARTEFACT ID + CARE CONTEXT ---
-        // This prevents duplicates when the same data is transferred multiple times (e.g. retries)
+        // --- UPSERT BY CONSENT + CARE CONTEXT ---
+        // One record per consent per care context. Different consents for the
+        // same patient store separate records (they have independent erase dates,
+        // date ranges, etc.). Retries within the same consent update in place.
         await ExternalHealthRecordModel.findOneAndUpdate(
           {
             consentArtefactId: hiuRequest.consentArtefactId, // Key 1
@@ -663,7 +504,12 @@ export const handleHiuTransfer = async (
               sourceHipName: hipName,
 
               fhirBundle: decryptedData,
-              hiTypes: extractHiTypesFromBundle(decryptedData),
+              hiTypes: resolveHiTypeForExternalRecord(
+                entry,
+                decryptedData,
+                consentArtefact,
+                entry.careContextReference,
+              ),
 
               // Ensure dateRange is stored as Date (consent-approved range for this fetch)
               dateRange: {
@@ -682,10 +528,6 @@ export const handleHiuTransfer = async (
             },
           },
           { upsert: true, new: true },
-        );
-
-        console.log(
-          `${LOG_PREFIX} Stored external record from ${hipName || hipId} for ${entry.careContextReference}`,
         );
       }
     } catch (err: any) {
@@ -776,11 +618,174 @@ const extractSourceHipInfo = (
 };
 
 /**
- * Extract HI types from a FHIR bundle by inspecting resource types and titles.
+ * PRIORITY-BASED hiType resolver for ExternalHealthRecord (HIU side).
  *
- * SAFE FHIR PARSING: validates bundle structure, skips malformed entries,
- * and only looks at valid resource sections.
+ * Priority:
+ *  1. entry.hiType from the ABDM transfer payload — the sending HIP declared
+ *     the type. This is the authoritative source per ABDM v3 spec.
+ *  2. FHIR Composition.type.coding — structured FHIR code, not keyword-sniffing.
+ *  3. consentArtefact.hiTypes when there is exactly one — consent-scoped
+ *     and unambiguous (patient approved exactly one type for this consent).
+ *  4. extractHiTypesFromBundle() keyword-sniff — last-resort fallback only.
+ *
+ * Always returns a single-element array to match ABDM's "one CC = one hiType"
+ * contract. If nothing resolves, returns ["OPConsultation"] as the ABDM default.
  */
+
+/** ABDM FHIR Composition type code → hiType mapping (ABDM NDHM FHIR IG). */
+const COMPOSITION_TYPE_CODE_MAP: Record<string, string> = {
+  // LOINC codes used by ABDM
+  "11503-0": "OPConsultation", // Medical records
+  "57133-1": "OPConsultation", // Referral note
+  "34133-9": "OPConsultation", // Summarization of episode note
+  "18842-5": "DischargeSummary", // Discharge summary
+  "56445-0": "Prescription",    // Medication summary
+  "52040-3": "DiagnosticReport", // DXA Bone density
+  "11502-2": "DiagnosticReport", // Lab report
+  "18748-4": "DiagnosticReport", // Diagnostic imaging study
+  "11369-6": "ImmunizationRecord", // Immunization history
+  "51845-0": "OPConsultation", // Outpatient consultation
+  // ABDM / NDHM custom codes (as used by Indian HIPs)
+  "425173008": "OPConsultation",
+  "408443003": "OPConsultation",
+  "440545006": "Prescription",
+  "721981007": "DiagnosticReport",
+  "373942005": "DischargeSummary",
+  "41000179103": "ImmunizationRecord",
+  "371525003": "OPConsultation", // Clinical procedure report
+};
+
+/** Map ABDM hiType strings the sending HIP might use (handles minor casing/alias variants). */
+const NORMALISE_ABDM_HITYPE: Record<string, string> = {
+  opconsultation: "OPConsultation",
+  prescription: "Prescription",
+  diagnosticreport: "DiagnosticReport",
+  dischargesummary: "DischargeSummary",
+  immunizationrecord: "ImmunizationRecord",
+  healthdocumentrecord: "HealthDocumentRecord",
+  wellnessrecord: "WellnessRecord",
+};
+
+const VALID_HI_TYPES = new Set([
+  "OPConsultation",
+  "Prescription",
+  "DiagnosticReport",
+  "DischargeSummary",
+  "ImmunizationRecord",
+  "HealthDocumentRecord",
+  "WellnessRecord",
+]);
+
+/**
+ * Extract FHIR Composition.type.coding based hiType.
+ * Uses the official ABDM FHIR IG code map — no keyword sniffing.
+ */
+const extractHiTypeFromCompositionCode = (bundle: any): string | null => {
+  if (!bundle || !Array.isArray(bundle.entry)) return null;
+  for (const e of bundle.entry) {
+    const resource = e?.resource;
+    if (resource?.resourceType !== "Composition") continue;
+    const codings: any[] = resource.type?.coding || [];
+    for (const coding of codings) {
+      const code = String(coding?.code || "").trim();
+      if (COMPOSITION_TYPE_CODE_MAP[code]) {
+        return COMPOSITION_TYPE_CODE_MAP[code];
+      }
+    }
+    // Also check .text as last resort within this strategy
+    const text = (resource.type?.text || "").toLowerCase().trim();
+    if (text.includes("prescription")) return "Prescription";
+    if (text.includes("discharge")) return "DischargeSummary";
+    if (text.includes("diagnostic") || text.includes("lab")) return "DiagnosticReport";
+    if (text.includes("immunization")) return "ImmunizationRecord";
+    if (text.includes("wellness")) return "WellnessRecord";
+    if (text.includes("health document")) return "HealthDocumentRecord";
+  }
+  return null;
+};
+
+const resolveHiTypeForExternalRecord = (
+  entry: any,
+  bundle: any,
+  consentArtefact: any,
+  ccRef: string,
+): string[] => {
+  // Priority 1: entry.hiType from the ABDM transfer payload.
+  // Per ABDM v3 data-flow spec, each entry in the transfer SHOULD carry
+  // the hiType the sending HIP used. This is the most authoritative source.
+  const entryHiTypeRaw = entry?.hiType || entry?.hi_type || entry?.hitype;
+  if (entryHiTypeRaw) {
+    const normalised =
+      NORMALISE_ABDM_HITYPE[String(entryHiTypeRaw).toLowerCase().trim()] ||
+      (VALID_HI_TYPES.has(String(entryHiTypeRaw).trim())
+        ? String(entryHiTypeRaw).trim()
+        : null);
+    if (normalised) {
+      // console.log(
+      //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P1(entry.hiType)=${normalised}`,
+      // );
+      return [normalised];
+    }
+  }
+
+  // Priority 2: FHIR Composition.type.coding — structured code, not keyword sniffing.
+  const compositionCode = extractHiTypeFromCompositionCode(bundle);
+  if (compositionCode) {
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P2(Composition.type.coding)=${compositionCode}`,
+    // );
+    return [compositionCode];
+  }
+
+  // Priority 3: consentArtefact.hiTypes — if the consent was granted for exactly
+  // one type, we know this entry must belong to that type.
+  const artefactTypes: string[] = consentArtefact?.hiTypes || [];
+  const validArtefactTypes = artefactTypes.filter((t) => VALID_HI_TYPES.has(t));
+  if (validArtefactTypes.length === 1) {
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P3(single consentArtefact.hiType)=${validArtefactTypes[0]}`,
+    // );
+    return [validArtefactTypes[0]];
+  }
+
+  // Priority 4: keyword-sniff as last resort (existing logic).
+  const sniffed = extractHiTypesFromBundle(bundle);
+  if (sniffed.length > 0) {
+    // If sniffed returns multiple, use consent artefact to narrow it down.
+    if (sniffed.length > 1 && validArtefactTypes.length > 0) {
+      const intersection = sniffed.filter((t) => validArtefactTypes.includes(t));
+      if (intersection.length === 1) {
+        // console.log(
+        //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff∩consent)=${intersection[0]}`,
+        // );
+        return [intersection[0]];
+      }
+      // If still multiple, prefer the most specific (non-OPConsultation).
+      const specific = intersection.find((t) => t !== "OPConsultation") ||
+        sniffed.find((t) => t !== "OPConsultation");
+      if (specific) {
+        console.warn(
+          `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff-specific)=${specific} (from multiple sniffed=${JSON.stringify(sniffed)})`,
+        );
+        return [specific];
+      }
+    }
+    // Single sniffed result or prefer first.
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff)=${sniffed[0]}`,
+    // );
+    return [sniffed[0]];
+  }
+
+  // Ultimate fallback: ABDM default.
+  console.warn(
+    `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} FALLBACK→OPConsultation (no source resolved)`,
+  );
+  return ["OPConsultation"];
+};
+
+
+/** Extract HI types from a FHIR bundle by inspecting resource types and titles (last-resort fallback). */
 const extractHiTypesFromBundle = (bundle: any): string[] => {
   try {
     const types = new Set<string>();
@@ -877,8 +882,6 @@ export const retryFailedConsents = async (): Promise<{
   retried: number;
   results: Array<{ consentId: string; status: string; error?: string }>;
 }> => {
-  console.log(`${LOG_PREFIX} Starting retry of failed consents...`);
-
   // Find valid consent artefacts that:
   // 1. Status is GRANTED (still valid)
   // 2. Don't have a successful HIU request (TRANSFERRED status)
@@ -888,11 +891,6 @@ export const retryFailedConsents = async (): Promise<{
   })
     .select("artefactId consentRequestId patientAbhaAddress rawConsentDetail")
     .lean();
-
-  console.log(
-    `${LOG_PREFIX} Found ${validConsents.length} valid consent artefacts`,
-  );
-
   const results: Array<{ consentId: string; status: string; error?: string }> =
     [];
   let retriedCount = 0;
@@ -905,9 +903,6 @@ export const retryFailedConsents = async (): Promise<{
     });
 
     if (existingSuccess) {
-      console.log(
-        `${LOG_PREFIX} Consent ${consent.artefactId} already has successful transfer, skipping`,
-      );
       results.push({
         consentId: consent.artefactId,
         status: "ALREADY_TRANSFERRED",
@@ -930,7 +925,6 @@ export const retryFailedConsents = async (): Promise<{
     }
 
     try {
-      console.log(`${LOG_PREFIX} Retrying consent ${consent.artefactId}...`);
       // Skip self-referencing ghost artefacts
       if (consent.artefactId === (consent as any).consentRequestId) {
         console.warn(
@@ -962,10 +956,6 @@ export const retryFailedConsents = async (): Promise<{
     // Small delay between requests to avoid rate limiting
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-
-  console.log(
-    `${LOG_PREFIX} Retry complete. Retried ${retriedCount} consents.`,
-  );
   return { retried: retriedCount, results };
 };
 
@@ -994,12 +984,6 @@ export const searchPatient = async (
         unverifiedIdentifiers: [],
       },
     };
-
-    console.log(
-      `${LOG_PREFIX} Searching for patient:`,
-      JSON.stringify(payload),
-    );
-
     const abdmToken = await AbdmTokenService.getToken();
     await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/v3/care-contexts/discover`,
@@ -1015,8 +999,6 @@ export const searchPatient = async (
         },
       },
     );
-
-    console.log(`${LOG_PREFIX} Search request sent. RequestId: ${requestId}`);
     return requestId;
   } catch (error: any) {
     console.error(
@@ -1051,9 +1033,6 @@ export const initiateHipAuth = async (
         },
       },
     };
-
-    console.log(`${LOG_PREFIX} Initiating HIP Auth:`, JSON.stringify(payload));
-
     const abdmToken = await AbdmTokenService.getToken();
     await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/user-initiated-linking/v3/auth/init`,
@@ -1068,10 +1047,6 @@ export const initiateHipAuth = async (
           Authorization: abdmToken,
         },
       },
-    );
-
-    console.log(
-      `${LOG_PREFIX} Auth Init request sent. RequestId: ${requestId}`,
     );
     return requestId;
   } catch (error: any) {
@@ -1101,9 +1076,6 @@ export const confirmHipAuth = async (
         authCode,
       },
     };
-
-    console.log(`${LOG_PREFIX} Confirming HIP Auth:`, JSON.stringify(payload));
-
     const abdmToken = await AbdmTokenService.getToken();
     await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/user-initiated-linking/v3/auth/confirm`,
@@ -1118,10 +1090,6 @@ export const confirmHipAuth = async (
           Authorization: abdmToken,
         },
       },
-    );
-
-    console.log(
-      `${LOG_PREFIX} Auth Confirm request sent. RequestId: ${requestId}`,
     );
     return requestId;
   } catch (error: any) {

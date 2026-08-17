@@ -115,7 +115,6 @@ const updateCareContext = async (
     if (careContext) {
       CareContextService.notifyContext(careContext as any).then((notified) => {
         if (notified) {
-          console.log("Billing: Context notified for Invoice");
         } else {
           console.warn("Billing: Context notify failed (check link token)");
         }

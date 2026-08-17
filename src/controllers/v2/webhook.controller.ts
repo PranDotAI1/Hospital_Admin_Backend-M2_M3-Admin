@@ -7,9 +7,6 @@ import { AbdmLogger } from "../../utils/abdm.logger";
 export const linkTokenGeneration = async (req: any, res: any) => {
   try {
     const baseUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
-    console.log("[LINK_TOKEN] Legacy link token generation start");
-    console.log("[LINK_TOKEN] URL:", baseUrl);
-
     let postData = req.body;
     AbdmLogger.logPayloadDebug("[LINK_TOKEN] Request:", postData);
 
@@ -20,7 +17,6 @@ export const linkTokenGeneration = async (req: any, res: any) => {
       .limit(1);
 
     if (latestRecord) {
-      console.log("[LINK_TOKEN] Found HealthRecord, updating token");
       await HealthRecordModel.updateOne(
         { _id: latestRecord._id },
         {
@@ -32,10 +28,6 @@ export const linkTokenGeneration = async (req: any, res: any) => {
         },
       );
     } else {
-      console.log(
-        "[LINK_TOKEN] No HealthRecord found for:",
-        postData.abhaAddress,
-      );
     }
 
     await carecontext(req, res, postData.linkToken, latestRecord);
@@ -56,7 +48,6 @@ export const carecontext = async (
   linkToken: any,
   latestRecord: any,
 ) => {
-  console.log("[CARECONTEXT_LEGACY] careContext api start");
   try {
     let postData = {
       abhaNumber: latestRecord.hidn_number,
@@ -125,12 +116,6 @@ export const carecontext = async (
 export const onCarecontext = async (req: any, res: any) => {
   try {
     let request = req.body;
-
-    console.log(
-      "[CARECONTEXT_LEGACY] on_carecontext callback:",
-      JSON.stringify(request),
-    );
-
     let response = await HealthRecordModel.updateOne(
       { hid_address: request.abhaAddress },
       {
@@ -139,8 +124,6 @@ export const onCarecontext = async (req: any, res: any) => {
         },
       },
     );
-
-    console.log("[CARECONTEXT_LEGACY] on_carecontext update result:", response);
     return res.status(STATUS_CODE.SUCCESS).json({ status: "success" });
   } catch (error: any) {
     if (error.response) {
@@ -158,18 +141,6 @@ export const onCarecontext = async (req: any, res: any) => {
 export const healthInformation = async (req: any, res: any) => {
   try {
     // Log only metadata — never log full body (contains PHI: keyMaterial, patient data)
-    console.log(
-      "[HEALTH_INFO] Received health-information/request:",
-      JSON.stringify({
-        transactionId: req.body?.transactionId,
-        consentId: req.body?.hiRequest?.consent?.id,
-        dateRange: req.body?.hiRequest?.dateRange,
-        dataPushUrl: req.body?.hiRequest?.dataPushUrl
-          ? new URL(req.body.hiRequest.dataPushUrl).hostname
-          : undefined,
-      }),
-    );
-
     // Validate payload against Zod schema
     const parseResult = HealthInformationRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -192,10 +163,6 @@ export const healthInformation = async (req: any, res: any) => {
     const input = req.body;
     const requestId =
       input.requestId || req.headers["request-id"] || generateUID();
-    console.log(
-      `[HEALTH_INFO] Using requestId=${requestId} (body=${input.requestId}, header=${req.headers["request-id"]})`,
-    );
-
     if (!input?.hiRequest?.consent?.id || !input?.transactionId) {
       console.error(
         "[HEALTH_INFO] Missing required fields: consent.id or transactionId",

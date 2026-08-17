@@ -40,6 +40,7 @@ interface DiscoveryPatientInfo {
 interface DiscoveryCareContext {
   referenceNumber: string;
   display: string;
+  hiType?: string; // Included so onDiscover can group correctly by actual type
 }
 
 interface DiscoveryPatientResult {
@@ -145,9 +146,16 @@ const buildDiscoveryResult = async (
   return {
     referenceNumber: referenceNumber,
     display: `${displayName}'s records`,
+    // Include hiType from the CC's canonical field.
+    // onDiscover groups by (cc as any).hiType || "OPConsultation" — without
+    // this field every CC defaults to OPConsultation in the on-discover
+    // response, so ABDM stores ALL CCs as OPConsultation. This is wrong and
+    // causes PHR to show two hiTypes when the correct type arrives later via
+    // the HIP-initiated link/notify flow.
     careContexts: careContexts.map((cc) => ({
       referenceNumber: cc.careContextReference,
       display: cc.display,
+      hiType: (cc as any).hiType || undefined,
     })),
     matchedBy,
   };
@@ -529,9 +537,6 @@ export const generateLinkOTP = async (
       `Discovery: SMS delivery failed for transaction ${transactionId}, mobile ${mobile}: ${result.error}. OTP ${otp} stored in DB.`,
     );
   } else {
-    console.log(
-      `Discovery: OTP sent for transaction ${transactionId}, mobile ${mobile} (provider: ${(process.env.SMS_PROVIDER || "twilio").toLowerCase()})`,
-    );
   }
 
   return otp;

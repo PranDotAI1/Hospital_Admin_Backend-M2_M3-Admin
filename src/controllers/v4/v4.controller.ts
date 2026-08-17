@@ -8,8 +8,6 @@ import { UserModel } from "../../models/User";
 // M4 ONBOARDING
 export const generateOTP = async (req: any, res: any) => {
     try {
-        console.log("Step-1 M4 Start here -- generate token api call -----------")
-
         let data = await UserModel.findOne({ aadhaar: req.body.aadhaar });
         if (!req.body.aadhaar) {
             return res.status(STATUS_CODE.ERROR).json({ status: false, msg: "Aadhaar card can not blank" });
@@ -25,21 +23,17 @@ export const generateOTP = async (req: any, res: any) => {
 
 
         let url = process.env.M4_AUTH_BASE_URL + ENDPOINTS.M4_SESSION_API_URL;
-        console.log("Step-2 M4 Auth URL", url)
-
         const response = await axios.post(
             `${url}`,
             params,
             {}
         );
-        console.log("Step-3 M4 Auth API Response", response.data)
         if (response.data.accessToken) {
             await generateOtpViaAadharNumber(req, res, response.data.accessToken);
         } else {
             return res.status(response.status).json({ api_url: url, "status": response.status, "error": MSG.API_ERROR + response.data });
         }
     } catch (error: any) {
-        console.log("M4 Auth API Error-1 catch block", error)
         return res.status(STATUS_CODE.ERROR).json({ msg: "ABHA server not responding", status: error, error: error.message, });
     }
 };
@@ -47,14 +41,7 @@ export const generateOTP = async (req: any, res: any) => {
 // HPRID(Health care ID) Generate Aadhaar OTP via API Call
 export const generateOtpViaAadharNumber = async (req: any, res: any, token: string) => {
     try {
-        console.log("Step-1 M4 Genarete OTP via Aadhar Start here -----------")
-
-        console.log("Step-1.1 M4 Genarete OTP Request Paramters -----------", req.body)
-
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_GENERATE_OTP_VIA_AADHAR;
-
-        console.log("Step-2 M4 Genarete OTP via Aadhar URL", url)
-
         const response = await axios.post(
             `${url}`,
             { aadhaar: req.body.aadhaar },
@@ -65,8 +52,6 @@ export const generateOtpViaAadharNumber = async (req: any, res: any, token: stri
                 },
             }
         );
-        console.log("Step-3  M4 Genarete OTP API Status ", response.status)
-        console.log("Step-4  M4 Genarete OTP API Data ", response.data)
         if (response.status == STATUS_CODE.SUCCESS) {
             let responseData = response.data;
             responseData.access_token = token;
@@ -85,7 +70,6 @@ export const generateOtpViaAadharNumber = async (req: any, res: any, token: stri
         }
 
     } catch (error: any) {
-        console.log("M4 OTP Generated API Error-1 catch block", error.response)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -102,11 +86,7 @@ export const generateOtpViaAadharNumber = async (req: any, res: any, token: stri
 export const verifyOTP = async (req: any, res: any) => {
     try {
         let input = req.body;
-        console.log("Step-1 M4 Verfiy OTP start here -----------")
-
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_VEFIRY_OTP;
-        console.log("Step-2 M4 Verfiy OTP URL", url)
-
         let data = await UserModel.findOne({ aadhaar: input.aadhaar });
 
         let postData = {
@@ -134,14 +114,12 @@ export const verifyOTP = async (req: any, res: any) => {
                 },
             }
         );
-        console.log("Step-3 M4  Verfiy OTP  API Response", response.data)
         if (response.status == STATUS_CODE.SUCCESS) {
             await checkHipExistance(req, res, token, data?.version_m4.txnId);
         } else {
             return res.status(response.status).json({ api_url: url, "status": response.status, "error": "invalid or exipred OTP" });
         }
     } catch (error: any) {
-        console.log("M4 Auth API Error-1 catch block", error.message)
         return res.status(STATUS_CODE.ERROR).json({ status: error.response.status, apierror: error.message, error: "invalid or exipred OTP,please enter the OTP within 30 seconds" });
     }
 };
@@ -149,8 +127,6 @@ export const verifyOTP = async (req: any, res: any) => {
 
 export const checkHipExistance = async (req: any, res: any, token: string, txnId: string) => {
     try {
-        console.log("Step-1 Check HIP existance start here -----------")
-
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_CHECK_HPID_EXISTANCE;
 
         let postData = {
@@ -167,9 +143,6 @@ export const checkHipExistance = async (req: any, res: any, token: string, txnId
                 },
             }
         );
-        console.log("Step-2 Check HIP existance  status ", response.status)
-        console.log("Step-3 Check HIP existance Response", response.data)
-
         if (response.status == STATUS_CODE.SUCCESS) {
 
             const updateFields: any = {};
@@ -191,7 +164,6 @@ export const checkHipExistance = async (req: any, res: any, token: string, txnId
         }
 
     } catch (error: any) {
-        console.log("M4 checkHipExistance API Error-1 catch block", error)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -209,11 +181,7 @@ export const checkHipExistance = async (req: any, res: any, token: string, txnId
 export const verifyMobileNumber = async (req: any, res: any) => {
     try {
         let input = req.body;
-        console.log("Step-1 M4 Verfiy Mobile  start here -----------")
-
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_VERFIY_MOBILE_NUMBER;
-        console.log("Step-2 M4 Verfiy Mobile URL", url)
-
         let data = await UserModel.findOne({ aadhaar: input.aadhaar });
 
         if (!data) {
@@ -221,8 +189,6 @@ export const verifyMobileNumber = async (req: any, res: any) => {
         }
 
         let token = req.headers['authorization'] || req.headers['Authorization'] || data?.version_m4?.access_token
-        console.log("token", token)
-
         if (!token || token == "") {
             return res.status(401).json({ "status": 403, "message": "Please send bearer access token in header" });
         }
@@ -231,8 +197,6 @@ export const verifyMobileNumber = async (req: any, res: any) => {
             mobileNumber: input.mobileNumber,
             txnId: data?.version_m4.txnId
         }
-        console.log("postData", postData)
-
         const response = await axios.post(
             `${url}`,
             postData,
@@ -252,7 +216,6 @@ export const verifyMobileNumber = async (req: any, res: any) => {
             return res.status(response.status).json({ api_url: url, "status": response.status, "error": "Not verifed you mobile number" });
         }
     } catch (error: any) {
-        console.log("M4 M4 Verfiy Error-1 catch block", error)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -270,11 +233,7 @@ export const verifyMobileNumber = async (req: any, res: any) => {
 export const getSuggestionOfUsernameFromHprid = async (req: any, res: any) => {
     try {
         let input = req.body;
-        console.log("Step-1 M4 Get suggestion user name  start here -----------")
-
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_GET_SUGGESTION_USERNAME_FROM_HPRID;
-        console.log("Step-2 M4 Get suggestion user name URL", url)
-
         let data = await UserModel.findOne({ aadhaar: input.aadhaar });
 
         if (!data) {
@@ -282,8 +241,6 @@ export const getSuggestionOfUsernameFromHprid = async (req: any, res: any) => {
         }
 
         let token = req.headers['authorization'] || req.headers['Authorization'] || data?.version_m4?.access_token
-        console.log("token", token)
-
         if (!token || token == "") {
             return res.status(401).json({ "status": 403, "message": "Please send bearer access token in header" });
         }
@@ -291,8 +248,6 @@ export const getSuggestionOfUsernameFromHprid = async (req: any, res: any) => {
         let postData = {
             txnId: data?.version_m4.txnId
         }
-        console.log("postData", postData)
-
         const response = await axios.post(
             `${url}`,
             postData,
@@ -312,7 +267,6 @@ export const getSuggestionOfUsernameFromHprid = async (req: any, res: any) => {
             return res.status(response.status).json({ api_url: url, "status": response.status, "error": "getting error from api" });
         }
     } catch (error: any) {
-        console.log("M4 M4 Verfiy Error-1 catch block", error)
         if (error.response) {
             return res
                 .status(error.response.status)
@@ -329,13 +283,8 @@ export const getSuggestionOfUsernameFromHprid = async (req: any, res: any) => {
 export const createHprIdWithAadhaarOtp = async (req: any, res: any) => {
     try {
         let input = req.body;
-        console.log("Step-1 M4 createHprIdWithAadhaarOtp start here -----------", input)
-
         let url = process.env.M4_API_BASE_URL + ENDPOINTS.M4_CREATE_PRE_VERFIED_HPRID;
-        console.log("Step-2 M4 createHprIdWithAadhaarOtp  URL", url)
-
         let data: any = await UserModel.findOne({ aadhaar: input.aadhar });
-        console.log("datadata", data)
         if (!data) {
             return res.status(STATUS_CODE.NOT_FOUND).json({ "status": STATUS_CODE.NOT_FOUND, "message": "Aadhaar number not found" });
         }
@@ -364,8 +313,6 @@ export const createHprIdWithAadhaarOtp = async (req: any, res: any) => {
             hpCategoryCode: 1,
             hpSubCategoryCode: 1
         }
-
-        console.log("postData", postData);
         const response = await axios.post(
             `${url}`,
             postData,
@@ -391,7 +338,6 @@ export const createHprIdWithAadhaarOtp = async (req: any, res: any) => {
             return res.status(response.status).json({ api_url: url, "status": response.status, "error": "getting error from api" });
         }
     } catch (error: any) {
-        console.log("M4 M4 Verfiy Error-1 catch block", error)
         return res.status(STATUS_CODE.UNAUTHORIZED).json({ status: error.response.status, error: error.message + " error", "token": "Token invalid" });
     }
 };

@@ -18,16 +18,8 @@ import { ExternalHealthRecordModel } from "../models/ExternalHealthRecord";
 export const setBridgeUrlOnStartup = async () => {
   try {
     if (!GET_URL) {
-      console.log(
-        "[STARTUP] ABDM_CALLBACK_URL is not set. Skipping bridge URL setup.",
-      );
       return;
     }
-
-    console.log(
-      `[STARTUP] Starting ABDM Bridge URL Configuration -> ${GET_URL}`,
-    );
-
     const sessionParams = {
       clientId: CLIENT_ID,
       clientSecret: CLIENT_SECRET,
@@ -77,7 +69,6 @@ export const setBridgeUrlOnStartup = async () => {
     );
 
     if (bridgeResponse.status === 200 || bridgeResponse.status === 202) {
-      console.log("[STARTUP] Successfully set ABDM Bridge URL.");
     } else {
       console.error(
         `[STARTUP] Failed to set bridge URL. Status: ${bridgeResponse.status}`,
@@ -127,11 +118,7 @@ export const purgeRevokedExternalRecords = async () => {
       const result = await ExternalHealthRecordModel.deleteMany({
         consentArtefactId: { $in: staleIds },
       });
-      console.log(
-        `[STARTUP] Purged ${result.deletedCount} external records for ${staleIds.length} non-GRANTED/expired artefact(s)`,
-      );
     } else {
-      console.log("[STARTUP] No stale external health records found.");
     }
   } catch (error: any) {
     console.error(
@@ -147,38 +134,40 @@ export const purgeRevokedExternalRecords = async () => {
  */
 export const startDataErasureCron = () => {
   const ONE_HOUR = 60 * 60 * 1000;
-  
+
   const purgeExpiredData = async () => {
     try {
       const now = new Date();
-      
+
       const expiredMain = await ConsentArtefactModel.distinct("artefactId", {
-        "permission.dataEraseAt": { $lt: now }
+        "permission.dataEraseAt": { $lt: now },
       });
       const expiredPHR = await PHRConsentArtefactModel.distinct("artefactId", {
-        "permission.dataEraseAt": { $lt: now }
+        "permission.dataEraseAt": { $lt: now },
       });
-      
+
       const expiredIds = [...expiredMain, ...expiredPHR];
-      
+
       if (expiredIds.length > 0) {
         const result = await ExternalHealthRecordModel.deleteMany({
-          consentArtefactId: { $in: expiredIds }
+          consentArtefactId: { $in: expiredIds },
         });
-        
+
         if (result.deletedCount > 0) {
-          console.log(`[DATA_ERASURE] Purged ${result.deletedCount} external records for ${expiredIds.length} expired consent(s) based on dataEraseAt`);
         }
       }
     } catch (error: any) {
-      console.error("[DATA_ERASURE] Error during data erasure cron:", error.message);
+      console.error(
+        "[DATA_ERASURE] Error during data erasure cron:",
+        error.message,
+      );
     }
   };
 
   // Run once on startup, then every hour
   purgeExpiredData();
   const timer = setInterval(purgeExpiredData, ONE_HOUR);
-  
+
   // Make sure the timer doesn't block node process exit
   timer.unref();
 };

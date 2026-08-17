@@ -1,5 +1,5 @@
 import { Queue, Worker, Job, QueueEvents } from "bullmq";
-import { createBullMQConnection, getRedisConnection } from "../config/redis";
+import { getBullMQConnectionOpts, getRedisConnection } from "../config/redis";
 import type { HealthInfoRequest } from "./health-information.service";
 
 const LOG_PREFIX = "[ABDM_QUEUE]";
@@ -22,9 +22,11 @@ export interface HipPushJobData {
 
 export interface HiuTransferJobData {
   transactionId: string;
-  entries: any[];
-  keyMaterial: any;
+  payloadId?: string; // Reference to MongoDB document for large payloads
+  entries?: any[];    // Optional, legacy direct payload
+  keyMaterial?: any;  // Optional, legacy direct payload
   consentArtefactId?: string;
+  pageNumber?: number;
 }
 
 // ============================================================================
@@ -37,7 +39,7 @@ let _hiuTransferQueue: Queue<HiuTransferJobData> | null = null;
 export const getHipPushQueue = (): Queue<HipPushJobData> => {
   if (!_hipPushQueue) {
     _hipPushQueue = new Queue<HipPushJobData>(HIP_PUSH_QUEUE, {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
@@ -53,7 +55,7 @@ export const getHipPushQueue = (): Queue<HipPushJobData> => {
 export const getHiuTransferQueue = (): Queue<HiuTransferJobData> => {
   if (!_hiuTransferQueue) {
     _hiuTransferQueue = new Queue<HiuTransferJobData>(HIU_TRANSFER_QUEUE, {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 3000 },
@@ -73,6 +75,18 @@ export const getHiuTransferQueue = (): Queue<HiuTransferJobData> => {
 const LOCK_PREFIX = "abdm:lock:consent:";
 const LOCK_TTL_SECONDS = 120; // Must exceed max processing time
 
+// In-memory store of lock values per consentId (for safe release)
+const lockValues = new Map<string, string>();
+
+// Lua script for safe lock release: only delete if value matches our process ID
+const RELEASE_LOCK_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+else
+  return 0
+end
+`;
+
 /**
  * Attempt to acquire a distributed lock for a consent ID.
  * Uses Redis SET NX EX (atomic set-if-not-exists with expiry).
@@ -82,24 +96,35 @@ export const acquireConsentLock = async (
   consentId: string,
 ): Promise<boolean> => {
   const redis = getRedisConnection();
+  const lockValue = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const result = await redis.set(
     `${LOCK_PREFIX}${consentId}`,
-    Date.now().toString(),
+    lockValue,
     "EX",
     LOCK_TTL_SECONDS,
     "NX",
   );
-  return result === "OK";
+  if (result === "OK") {
+    lockValues.set(consentId, lockValue);
+    return true;
+  }
+  return false;
 };
 
 /**
  * Release the distributed lock for a consent ID.
+ * Uses Lua script to atomically check-and-delete only if the lock value matches our process ID.
+ * This prevents deleting another process's lock if ours expired and they re-acquired it.
  */
 export const releaseConsentLock = async (
   consentId: string,
 ): Promise<void> => {
   const redis = getRedisConnection();
-  await redis.del(`${LOCK_PREFIX}${consentId}`);
+  const lockValue = lockValues.get(consentId);
+  if (lockValue) {
+    await redis.eval(RELEASE_LOCK_SCRIPT, 1, `${LOCK_PREFIX}${consentId}`, lockValue);
+    lockValues.delete(consentId);
+  }
 };
 
 // ============================================================================
@@ -191,11 +216,6 @@ export const startHipPushWorker = (): Worker => {
     async (job: Job<HipPushJobData>) => {
       const { request, requestId, callbackAuth } = job.data;
       const consentId = request.hiRequest.consent.id;
-
-      console.log(
-        `${LOG_PREFIX} [HIP Worker] Processing job ${job.id} for consent: ${consentId}, attempt: ${job.attemptsMade + 1}`,
-      );
-
       // Dynamic import to avoid circular dependencies
       const { default: HealthInformationService } = await import(
         "./health-information.service"
@@ -206,22 +226,16 @@ export const startHipPushWorker = (): Worker => {
         requestId,
         callbackAuth,
       );
-
-      console.log(
-        `${LOG_PREFIX} [HIP Worker] Job ${job.id} completed for consent: ${consentId}`,
-      );
     },
     {
-      connection: createBullMQConnection(),
-      concurrency: 2, 
-      stalledInterval: 300000, 
-      lockDuration: 300000,
-      drainDelay: 300,
+      connection: getBullMQConnectionOpts(),
+      concurrency: 2, // Max 2 concurrent Puppeteer-based pushes
+      // No rate limiter — ABDM spec requires immediate processing of
+      // health-information/request. Concurrency cap is sufficient protection.
     },
   );
 
   _hipWorker.on("completed", (job) => {
-    console.log(`${LOG_PREFIX} [HIP Worker] Job ${job.id} completed`);
   });
 
   _hipWorker.on("failed", async (job, err) => {
@@ -282,27 +296,59 @@ export const startHiuTransferWorker = (): Worker => {
   _hiuWorker = new Worker<HiuTransferJobData>(
     HIU_TRANSFER_QUEUE,
     async (job: Job<HiuTransferJobData>) => {
-      const { transactionId, entries, keyMaterial, consentArtefactId } =
+      let { transactionId, entries, keyMaterial, consentArtefactId, payloadId } =
         job.data;
 
-      console.log(
-        `${LOG_PREFIX} [HIU Worker] Processing job ${job.id} for transaction: ${transactionId}, entries: ${entries.length}`,
-      );
+      if (payloadId) {
+        const { HIUTransferPayloadModel } = await import(
+          "../models/HIUTransferPayload"
+        );
+        try {
+          const payload = await HIUTransferPayloadModel.findById(payloadId);
+          if (payload) {
+            entries = payload.entries;
+            keyMaterial = payload.keyMaterial;
+          } else {
+            throw new Error(`HIUTransferPayload with ID ${payloadId} not found in DB`);
+          }
+        } catch (dbErr: any) {
+          console.error(`${LOG_PREFIX} [HIU Worker] DB Error loading payloadId ${payloadId}:`, dbErr.message);
+          
+          // Emergency Fallback: Try reading raw from MongoDB without strict BSON validation
+          try {
+            const mongoose = (await import("mongoose")).default;
+            if (!mongoose.connection.db) {
+              throw new Error("Mongoose connection db is not initialized.");
+            }
+            const rawDoc = await mongoose.connection.db
+              .collection("hiu_transfer_payloads")
+              .findOne({ _id: new mongoose.Types.ObjectId(payloadId) }, { enableUtf8Validation: false } as any);
 
+            
+            if (rawDoc) {
+              console.warn(`${LOG_PREFIX} [HIU Worker] SUCCESSFUL RAW READ. Document keys:`, Object.keys(rawDoc));
+              // Convert binary or weird strings to safe base64
+              entries = rawDoc.entries;
+              keyMaterial = rawDoc.keyMaterial;
+            } else {
+              throw new Error("Not found in raw collection");
+            }
+          } catch (rawErr: any) {
+            console.error(`${LOG_PREFIX} [HIU Worker] Raw fallback also failed:`, rawErr.message);
+            throw dbErr;
+          }
+        }
+      }
       const { handleHiuTransfer } = await import("./hiu.service");
       await handleHiuTransfer(
         transactionId,
-        entries,
+        entries || [],
         keyMaterial,
         consentArtefactId,
       );
-
-      console.log(
-        `${LOG_PREFIX} [HIU Worker] Job ${job.id} completed for transaction: ${transactionId}`,
-      );
     },
     {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       concurrency: 3,
       stalledInterval: 300000,
       lockDuration: 300000,
@@ -311,7 +357,6 @@ export const startHiuTransferWorker = (): Worker => {
   );
 
   _hiuWorker.on("completed", (job) => {
-    console.log(`${LOG_PREFIX} [HIU Worker] Job ${job.id} completed`);
   });
 
   _hiuWorker.on("failed", (job, err) => {
@@ -367,10 +412,6 @@ export const enqueueHipPush = async (
     removeOnComplete: { age: 3600 },      // Clean up completed jobs after 1 hour
     removeOnFail: { age: 7 * 86400 },     // Keep failed jobs for 7 days (audit trail)
   });
-
-  console.log(
-    `${LOG_PREFIX} Enqueued HIP push job ${job.id} for consent: ${consentId}, txn: ${transactionId}`,
-  );
   return job.id || null;
 };
 
@@ -382,14 +423,18 @@ export const enqueueHiuTransfer = async (
   data: HiuTransferJobData,
 ): Promise<string | null> => {
   const queue = getHiuTransferQueue();
+  // Job key: use payloadId when available (unique per transfer callback).
+  // ABDM sends multiple transfer callbacks with DIFFERENT care context entries
+  // but the SAME transactionId and pageNumber=0. Each callback saves a unique
+  // HIUTransferPayload document, so payloadId distinguishes them.
+  // Data-level dedup is handled by the unique index on ExternalHealthRecord.
+  const jobKey = data.payloadId
+    ? `hiu-${data.transactionId}-${data.payloadId}`
+    : `hiu-${data.transactionId}-p${data.pageNumber ?? 0}`;
   const job = await queue.add("hiu-transfer", data, {
-    jobId: `hiu-${data.transactionId}`, // Dedup by transactionId
+    jobId: jobKey,
     priority: 1, // HIU transfers are higher priority (already received data)
   });
-
-  console.log(
-    `${LOG_PREFIX} Enqueued HIU transfer job ${job.id} for txn: ${data.transactionId}`,
-  );
   return job.id || null;
 };
 
@@ -401,6 +446,9 @@ export const enqueueHiuTransfer = async (
  * Initialize all workers. Call once on server startup.
  */
 export const initializeWorkers = (): void => {
+  getHipPushQueue();
+  getHiuTransferQueue();
+
   startHipPushWorker();
   startHiuTransferWorker();
 
@@ -419,8 +467,6 @@ export const initializeWorkers = (): void => {
  * Gracefully close all queues and workers. Call on SIGTERM/SIGINT.
  */
 export const shutdownQueues = async (): Promise<void> => {
-  console.log(`${LOG_PREFIX} Shutting down queues and workers...`);
-
   const closePromises: Promise<void>[] = [];
 
   if (_hipWorker) {
@@ -447,5 +493,4 @@ export const shutdownQueues = async (): Promise<void> => {
   } catch (_) {}
 
   await Promise.allSettled(closePromises);
-  console.log(`${LOG_PREFIX} All queues and workers shut down`);
 };

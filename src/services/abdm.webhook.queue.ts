@@ -6,7 +6,7 @@
  */
 
 import { Queue, Worker, Job } from "bullmq";
-import { createBullMQConnection } from "../config/redis";
+import { getBullMQConnectionOpts } from "../config/redis";
 import { AbdmLogger } from "../utils/abdm.logger";
 
 const LOG_PREFIX = "[WEBHOOK_QUEUE]";
@@ -40,7 +40,7 @@ let _webhookQueue: Queue<WebhookJobData> | null = null;
 export const getWebhookIngestionQueue = (): Queue<WebhookJobData> => {
   if (!_webhookQueue) {
     _webhookQueue = new Queue<WebhookJobData>(WEBHOOK_INGESTION_QUEUE, {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 3000 },
@@ -58,14 +58,12 @@ let _webhookWorker: Worker<WebhookJobData> | null = null;
 export const startWebhookIngestionWorker = (): Worker => {
   if (_webhookWorker) return _webhookWorker;
 
+  getWebhookIngestionQueue();
+
   _webhookWorker = new Worker<WebhookJobData>(
     WEBHOOK_INGESTION_QUEUE,
     async (job: Job<WebhookJobData>) => {
       const { data } = job;
-      console.log(
-        `${LOG_PREFIX} Processing job ${job.id} (type=${data.type}), attempt ${job.attemptsMade + 1}`,
-      );
-
       switch (data.type) {
         case "consent-notify": {
           const { handleHipNotify } = await import("../services/consent.service");
@@ -81,10 +79,9 @@ export const startWebhookIngestionWorker = (): Worker => {
           break;
         }
       }
-      console.log(`${LOG_PREFIX} Job ${job.id} (type=${data.type}) completed`);
     },
     {
-      connection: createBullMQConnection(),
+      connection: getBullMQConnectionOpts(),
       concurrency: 3,
       stalledInterval: 300000,
       lockDuration: 300000,
@@ -93,7 +90,6 @@ export const startWebhookIngestionWorker = (): Worker => {
   );
 
   _webhookWorker.on("completed", (job) => {
-    console.log(`${LOG_PREFIX} Job ${job.id} completed`);
   });
   _webhookWorker.on("failed", (job, err) => {
     console.error(`${LOG_PREFIX} Job ${job?.id} failed (attempt ${job?.attemptsMade}):`, err.message);
@@ -107,50 +103,8 @@ export const startWebhookIngestionWorker = (): Worker => {
 };
 
 async function processConsentOnFetch(data: ConsentOnFetchJobData) {
-  const { ConsentService } = await import("../services/consent.service");
-  const { ConsentRequestModel } = await import("../models/ConsentRequest");
-  const body = data.body;
-
-  if (body.error) {
-    console.error(`${LOG_PREFIX} Consent fetch error:`, JSON.stringify(body.error));
-    return;
-  }
-
-  if (!body.consent?.consentDetail) return;
-
-  const consentDetail = body.consent.consentDetail;
-  const consentStatus = body.consent.status || "GRANTED";
-  if (body.consent.signature) consentDetail.signature = body.consent.signature;
-
-  const resolvedConsentRequestId = consentDetail.consentRequestId || data.paramRequestId;
-  const isPHRPull = consentDetail.purpose?.code === "PATRQT";
-  let usePHRCollection = isPHRPull;
-
-  if (!isPHRPull && resolvedConsentRequestId) {
-    const consentReq = await ConsentRequestModel.findOne({
-      $or: [{ consentRequestId: resolvedConsentRequestId }, { requestId: resolvedConsentRequestId }],
-    }).select("requestPurpose").lean();
-    usePHRCollection = consentReq?.requestPurpose === "PHR";
-  }
-
-  const artefact = await ConsentService.storeArtefactDetails(
-    consentDetail, consentStatus, resolvedConsentRequestId, usePHRCollection,
-  );
-
-  if (artefact) {
-    const consentId = consentDetail.consentId || body.consent.id;
-    if (consentId) {
-      await ConsentRequestModel.updateOne(
-        { $or: [{ consentArtefacts: consentId }, { consentRequestId: consentId }] },
-        { $set: { status: consentStatus } },
-      );
-    }
-    if (consentStatus === "GRANTED" && !usePHRCollection &&
-        artefact.consentRequestId && artefact.consentRequestId !== artefact.artefactId) {
-      ConsentService.triggerHiuDataFetchAsync([artefact.artefactId]);
-    }
-    AbdmLogger.logAccepted({ consentId: artefact.artefactId, sourceType: "CALLBACK" });
-  }
+  const { processConsentOnFetchCallback } = await import("../services/consent.service");
+  await processConsentOnFetchCallback(data.body, data.paramRequestId);
 }
 
 async function processConsentOnStatus(data: ConsentOnStatusJobData) {
@@ -190,14 +144,19 @@ async function processConsentOnStatus(data: ConsentOnStatusJobData) {
   }
 
   const updateResult = await ConsentRequestModel.updateOne(
-    { $or: [{ consentRequestId: reqId }, { requestId: body.response?.requestId }] },
+    {
+      $or: [
+        { consentRequestId: reqId },
+        { requestId: reqId },
+        { requestId: body.response?.requestId },
+      ],
+    },
     { $set: statusUpdate },
   );
 
   if (body.consentRequest.status === "GRANTED" &&
       body.consentRequest.consentArtefacts?.length > 0 &&
       updateResult.matchedCount > 0) {
-    ConsentService.triggerHiuDataFetchAsync(body.consentRequest.consentArtefacts.map((a: any) => a.id));
   }
 }
 
@@ -206,11 +165,12 @@ export const enqueueConsentNotify = async (
   data: Omit<ConsentNotifyJobData, "type">,
 ): Promise<string | null> => {
   const queue = getWebhookIngestionQueue();
-  const dedupKey = data.notification?.consentId || data.notification?.consentRequestId || data.requestId;
+  const baseKey = data.notification?.consentId || data.notification?.consentRequestId || data.requestId;
+  const status = (data.notification?.status || "UNKNOWN").toUpperCase();
+  const minuteBucket = Math.floor(Date.now() / 60000);
   const job = await queue.add("consent-notify", { ...data, type: "consent-notify" as const }, {
-    jobId: `cn-${dedupKey}-${Date.now()}`,
+    jobId: `cn-${baseKey}-${status}-${minuteBucket}`,
   });
-  console.log(`${LOG_PREFIX} Enqueued consent-notify job ${job.id}`);
   return job.id || null;
 };
 
@@ -220,9 +180,8 @@ export const enqueueConsentOnFetch = async (
   const queue = getWebhookIngestionQueue();
   const consentId = data.body?.consent?.consentDetail?.consentId || data.body?.consent?.id || "unknown";
   const job = await queue.add("consent-on-fetch", { ...data, type: "consent-on-fetch" as const }, {
-    jobId: `cof-${consentId}-${Date.now()}`,
+    jobId: `cof-${consentId}`,
   });
-  console.log(`${LOG_PREFIX} Enqueued consent-on-fetch job ${job.id}`);
   return job.id || null;
 };
 
@@ -232,9 +191,8 @@ export const enqueueConsentOnStatus = async (
   const queue = getWebhookIngestionQueue();
   const consentReqId = data.body?.consentRequest?.id || "unknown";
   const job = await queue.add("consent-on-status", { ...data, type: "consent-on-status" as const }, {
-    jobId: `cos-${consentReqId}-${Date.now()}`,
+    jobId: `cos-${consentReqId}`,
   });
-  console.log(`${LOG_PREFIX} Enqueued consent-on-status job ${job.id}`);
   return job.id || null;
 };
 
@@ -243,5 +201,4 @@ export const shutdownWebhookQueue = async (): Promise<void> => {
   if (_webhookWorker) { promises.push(_webhookWorker.close()); _webhookWorker = null; }
   if (_webhookQueue) { promises.push(_webhookQueue.close()); _webhookQueue = null; }
   await Promise.allSettled(promises);
-  console.log(`${LOG_PREFIX} Webhook queue and worker shut down`);
 };

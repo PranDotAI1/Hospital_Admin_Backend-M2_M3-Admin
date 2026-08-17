@@ -4,7 +4,6 @@ const LOG_PREFIX = "[CONSENT_CALLBACK]";
 
 export const getConsentRequestStatus = async (req: any, res: any) => {
   try {
-    console.log(`${LOG_PREFIX} getConsentRequestStatus: request received`, req.body);
     const input = req.body;
 
     const consentReqId = input.consentRequest?.id || input.consentRequestId;
@@ -14,9 +13,6 @@ export const getConsentRequestStatus = async (req: any, res: any) => {
         message: "Missing consent request ID. Provide consentRequest.id or consentRequestId.",
       });
     }
-
-    console.log(`${LOG_PREFIX} Checking status for consent: ${consentReqId}`);
-
     const result = await ConsentService.checkConsentStatus(consentReqId);
 
     return res.status(200).json({

@@ -1792,8 +1792,6 @@ export const generateCombinedBundleForCareContext = async (
 ): Promise<any> => {
   // allowedHiTypes is now passed explicitly by the caller (one per call from pushHealthData).
   // No override needed — trust the caller's filter.
-  console.log("allowedHiTypes", allowedHiTypes);
-
   // Seed for deterministic UUIDs to prevent PHR appending duplicates on subsequent syncs
   const contextBaseId = careContext._id.toString();
   const allowedHiTypesStr = (allowedHiTypes || []).join("-");
@@ -3097,9 +3095,6 @@ export const generateCombinedBundleForCareContext = async (
   }
 
   // Batch Generate PDFs
-  console.log(
-    `[FHIR-PDF] pdfRequests count: ${pdfRequests.length}, titles: ${pdfRequests.map((r) => r.title).join(", ")}`,
-  );
   if (pdfRequests.length > 0) {
     const addPdfDocRef = (
       buffer: Buffer,
@@ -3119,21 +3114,11 @@ export const generateCombinedBundleForCareContext = async (
       );
 
       bundleEntries.push(pdfDocRef);
-      console.log(
-        `[FHIR-PDF] Added DocumentReference to bundleEntries: fullUrl=${pdfDocRef.fullUrl}, docId=${pdfDocId}, title=${req.title}`,
-      );
     };
 
     try {
       const htmls = pdfRequests.map((r) => r.html);
-      console.log(
-        `[FHIR-PDF] Calling generateMultiplePdfs with ${htmls.length} HTMLs, browser=${!!browser}`,
-      );
       const buffers = await generateMultiplePdfs(htmls, browser);
-      console.log(
-        `[FHIR-PDF] generateMultiplePdfs returned ${buffers.length} buffers`,
-      );
-
       if (buffers.length !== pdfRequests.length) {
         console.warn(
           `[FHIR-PDF] Buffer count mismatch: expected=${pdfRequests.length}, got=${buffers.length}. Falling back to per-document generation.`,
@@ -3174,9 +3159,6 @@ export const generateCombinedBundleForCareContext = async (
                 browser,
               );
               addPdfDocRef(fallbackBuffer, req);
-              console.log(
-                `[FHIR-PDF] Added fallback Prescription DocumentReference for title=\"${req.title}\"`,
-              );
             } catch (fallbackErr: any) {
               console.error(
                 `[FHIR-PDF] Fallback PDF generation also failed for Prescription. Adding placeholder DocumentReference.`,
@@ -3197,9 +3179,6 @@ export const generateCombinedBundleForCareContext = async (
                 placeholderBase64,
               );
               bundleEntries.push(placeholderDocRef);
-              console.log(
-                `[FHIR-PDF] Added placeholder Prescription DocumentReference: fullUrl=${placeholderDocRef.fullUrl}`,
-              );
             }
           }
         }
@@ -4257,7 +4236,6 @@ export const generateCombinedBundleForCareContext = async (
   if (includeSectionByHiType("Immunization Record", allowedHiTypes)) {
     // Immunization Record — with FHIR Immunization resources (NRCES compliant)
     const imm = optionalData?.assessment?.immunization;
-    console.log("[FHIR] Immunization data:", JSON.stringify(imm));
     const vaccineEntries: Array<{
       name: string;
       code: string;
@@ -4542,9 +4520,6 @@ export const generateCombinedBundleForCareContext = async (
   // CLEANUP: Remove dangling references (e.g. failed PDF generation)
   // If a referenced resource wasn't added to bundleEntries (e.g. PDF gen failed), remove the reference from the section.
   const availableIds = new Set(bundleEntries.map((e) => e.fullUrl));
-  console.log(
-    `[FHIR-CLEANUP] availableIds (${availableIds.size}): ${JSON.stringify([...availableIds])}`,
-  );
   sections.forEach((section) => {
     if (section.entry) {
       const before = section.entry.length;
@@ -4555,15 +4530,9 @@ export const generateCombinedBundleForCareContext = async (
         availableIds.has(e.reference),
       );
       if (removed.length > 0) {
-        console.log(
-          `[FHIR-CLEANUP] Section "${section.title}": removed ${removed.length} dangling refs: ${JSON.stringify(removed)}`,
-        );
       }
       // Remove empty entry array — ABDM rejects sections with entry: []
       if (section.entry.length === 0) {
-        console.log(
-          `[FHIR-CLEANUP] Section "${section.title}": entry array now empty, deleting entry key`,
-        );
         delete section.entry;
       }
     }
@@ -4709,16 +4678,9 @@ export const generateCombinedBundleForCareContext = async (
     entryCount: s.entry?.length ?? 0,
     entryRefs: (s.entry || []).map((e: any) => e.reference),
   }));
-  console.log(`[FHIR] Bundle sections: ${JSON.stringify(sectionTitles)}`);
-  console.log(
-    `[FHIR] Bundle resourceTypes (${resourceTypes.length}): ${JSON.stringify(resourceTypes)}`,
-  );
-  console.log(`[FHIR] Section entries: ${JSON.stringify(sectionEntryDetails)}`);
   const docRefInBundle = bundleEntries.some(
     (e: any) => e.resource?.resourceType === "DocumentReference",
   );
-  console.log(`[FHIR] DocumentReference in bundle: ${docRefInBundle}`);
-
   return {
     resourceType: "Bundle",
     id: bundleId,

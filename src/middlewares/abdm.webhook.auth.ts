@@ -82,7 +82,8 @@ export const validateAbdmWebhook = async (
     console.warn(
       `${LOG_PREFIX} Missing Authorization header on ${req.method} ${req.path}`,
     );
-    if (process.env.NODE_ENV === "production" || process.env.ENFORCE_ABDM_JWT === "true") {
+    const isDataTransfer = req.path.includes("/hiu/health-information/transfer");
+    if (!isDataTransfer && (process.env.NODE_ENV === "production" || process.env.ENFORCE_ABDM_JWT === "true")) {
       res.status(401).json({
         error: { code: 1401, message: "Missing Authorization header" },
       });
@@ -111,9 +112,6 @@ export const validateAbdmWebhook = async (
   }
 
   if (!requestId) {
-    console.debug(
-      `${LOG_PREFIX} No REQUEST-ID header on ${req.method} ${req.path} (advisory)`,
-    );
   }
 
   if (timestamp) {

@@ -72,19 +72,11 @@ export const sendOTP = async (
     const from = getFromNumber();
     const to = toE164(mobile);
     const facility = getFacilityName();
-
-    console.log(`${LOG_PREFIX} Sending OTP SMS to ${to.slice(0, -4)}****`);
-
     const message = await client.messages.create({
       to,
       from,
       body: `${otp} is your OTP for linking health records with ${facility}. Valid for 10 minutes. Do not share this code.`,
     });
-
-    console.log(
-      `${LOG_PREFIX} SMS sent. SID: ${message.sid}, Status: ${message.status}`,
-    );
-
     return { success: true, sid: message.sid };
   } catch (error: any) {
     console.error(
@@ -126,11 +118,6 @@ export const sendOTPviaFast2SMS = async (
         : digits.slice(-10);
 
     const message = `${otp} is your OTP for linking health records with ${facility}. Valid for 10 minutes. Do not share this code.`;
-
-    console.log(
-      `${F2S_LOG_PREFIX} Sending OTP SMS to ****${localNumber.slice(-4)}`,
-    );
-
     const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
       params: {
         authorization: apiKey,
@@ -144,7 +131,6 @@ export const sendOTPviaFast2SMS = async (
 
     if (response.data?.return === true) {
       const requestId = response.data?.request_id;
-      console.log(`${F2S_LOG_PREFIX} SMS sent. RequestId: ${requestId}`);
       return { success: true, requestId };
     } else {
       const errMsg = JSON.stringify(response.data);

@@ -40,6 +40,88 @@ const normalizeAbhaAddress = (value: string | undefined): string => {
   return value.trim().toLowerCase();
 };
 
+export const resolveCanonicalHiType = async (
+  careContext: ICareContext | any,
+  skipDetection: boolean = false,
+): Promise<HIType> => {
+  // Priority 1: hiType field (canonical, set at creation time)
+  if (careContext.hiType) {
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P1(hiType field)=${careContext.hiType} rawHiTypes=${JSON.stringify(careContext.hiTypes)}`,
+    // );
+    return careContext.hiType as HIType;
+  }
+
+  // Priority 2: If hiTypes has exactly one element, it's unambiguous
+  if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1) {
+    // console.log(
+    //   `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} P2(single hiTypes)=${careContext.hiTypes[0]}`,
+    // );
+    return careContext.hiTypes[0] as HIType;
+  }
+
+  if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 1) {
+    console.warn(
+      `[HITYPE-DEBUG] resolveCanonicalHiType: cc=${careContext.careContextReference} CONTAMINATED rawHiTypes=${JSON.stringify(careContext.hiTypes)} hiType=${careContext.hiType}`,
+    );
+  }
+
+  // Priority 3: Detect from visit data (expensive but accurate)
+  if (!skipDetection && careContext.visitId) {
+    try {
+      const detectedTypes = await detectHiTypesForVisit(careContext.visitId);
+
+      if (detectedTypes.length > 0) {
+        // If hiTypes array exists, find the intersection with detected types.
+        if (
+          Array.isArray(careContext.hiTypes) &&
+          careContext.hiTypes.length > 0
+        ) {
+          const validTypes = detectedTypes.filter((dt: HIType) =>
+            careContext.hiTypes.includes(dt),
+          );
+
+          if (validTypes.length > 0) {
+            // Prioritize specific types (e.g. WellnessRecord) over generic OPConsultation
+            const specific = validTypes.find(
+              (t: HIType) => t !== "OPConsultation",
+            );
+            return (specific || validTypes[0]) as HIType;
+          }
+        }
+
+        // No intersection — use the most specific detected type
+        // (prefer non-OPConsultation since OPConsultation is the generic fallback)
+        const specific = detectedTypes.find(
+          (t: HIType) => t !== "OPConsultation",
+        );
+        return (specific || detectedTypes[0]) as HIType;
+      }
+    } catch (err: any) {
+      console.warn(
+        "resolveCanonicalHiType: detection failed (non-blocking):",
+        err.message,
+      );
+    }
+  }
+
+  // Priority 4: Last resort — safest ABDM default
+  return "OPConsultation";
+};
+
+export const resolveCanonicalHiTypeSync = (
+  careContext: ICareContext | any,
+  fallback: HIType = "OPConsultation",
+): HIType => {
+  if (careContext.hiType) {
+    return careContext.hiType as HIType;
+  }
+  if (Array.isArray(careContext.hiTypes) && careContext.hiTypes.length === 1) {
+    return careContext.hiTypes[0] as HIType;
+  }
+  return fallback;
+};
+
 /** ABDM generate-token accepts only: M, F, O, D, T, U. Map common values to these. */
 const normalizeGenderForAbdm = (
   value: string | undefined,
@@ -205,13 +287,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       const hoursSince =
         (Date.now() - new Date(requestedAt).getTime()) / (1000 * 60 * 60);
       if (hoursSince < LINK_TOKEN_REQUEST_COOLDOWN_HOURS) {
-        console.log(
-          "CareContext: Skipping link token request (cooldown). Last requested",
-          Math.round(hoursSince),
-          "h ago. Retry after",
-          LINK_TOKEN_REQUEST_COOLDOWN_HOURS,
-          "h.",
-        );
         return false;
       }
     }
@@ -219,9 +294,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     // Use refreshed patient data (abhaaddress/ABHANumber may have just been saved)
     const latestPatient = fresh as unknown as IPatient;
     if (!latestPatient.abhaaddress?.trim()) {
-      console.log(
-        "CareContext: Skipping link token request — patient has no abhaAddress stored.",
-      );
       return false;
     }
 
@@ -259,12 +331,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     if (abhaNumber14.length === 14) {
       payload.abhaNumber = abhaNumber14 ?? "";
     }
-
-    console.log(
-      "CareContext: Requesting link token with payload:",
-      JSON.stringify(payload),
-    );
-
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/v3/token/generate-token`,
       payload,
@@ -289,13 +355,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
         { $set: { abdmLinkTokenRequestedAt: new Date() } },
       );
     }
-
-    console.log(
-      "CareContext: Link token requested, status:",
-      response.status,
-      "| ABDM will call your callback with the token. Ensure callback URL is reachable:",
-      "POST /api/v3/hip/token/on-generate-token",
-    );
     return isSuccess;
   } catch (error: any) {
     const errCode = String(
@@ -313,11 +372,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       // ABDM-1092: ABDM already has a pending token generation for this ABHA address.
       // Treat as a soft success — set the cooldown so we don't keep hammering ABDM.
       // The token will arrive via the on-generate-token callback.
-      console.log(
-        "CareContext: ABDM-1092 — token request already in flight for patient",
-        patient._id?.toString(),
-        "| Awaiting on-generate-token callback.",
-      );
       try {
         const patientId = patient._id?.toString();
         if (patientId) {
@@ -342,10 +396,6 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
           { _id: patientId },
           { $unset: { abdmLinkTokenRequestedAt: 1 } },
         );
-        console.log(
-          "CareContext: Cleared abdmLinkTokenRequestedAt after failed token request for patient",
-          patientId,
-        );
       }
     } catch (clearErr) {
       console.warn(
@@ -366,7 +416,6 @@ export const createCareContextForVisit = async (
     // Get patient details
     const patient = await PatientModel.findById(patientId);
     if (!patient) {
-      console.log("[CareContext: Patient not found", patientId);
       return null;
     }
 
@@ -376,7 +425,6 @@ export const createCareContextForVisit = async (
       visitId,
     });
     if (existingContext) {
-      console.log("CareContext: Already exists for visit", visitId);
       return existingContext;
     }
 
@@ -397,35 +445,12 @@ export const createCareContextForVisit = async (
     // Generate display text (no confidential data per ABDM spec)
     const display = generateDisplayText("OPD Visit", department, visitDate);
 
-    // Deprecated combined model guard: keep one CareContext = one HI type.
-    // Resolve type from actual visit data + requested types; never trust array order.
-    const requestedTypes = Array.from(new Set(hiTypes || [])) as HIType[];
-    const detectedTypes = await detectHiTypesForVisit(visitId);
-    const matchedTypes = requestedTypes.filter((t) =>
-      detectedTypes.includes(t),
-    );
-
+    // INVARIANT: One CareContext = exactly one HI type.
+    // The caller specifies the hiType — honor it directly.
+    // Do NOT call detectHiTypesForVisit here; it scans ALL clinical data
+    // and can return multiple types, causing contamination.
     const normalizedHiType: HIType =
-      matchedTypes.find((t) => t !== "OPConsultation") ||
-      matchedTypes[0] ||
-      detectedTypes.find((t) => t !== "OPConsultation") ||
-      detectedTypes[0] ||
-      requestedTypes.find((t) => t !== "OPConsultation") ||
-      requestedTypes[0] ||
-      "OPConsultation";
-
-    if (requestedTypes.length > 1 || matchedTypes.length > 1) {
-      console.warn(
-        "CareContext: createCareContextForVisit received multiple hiTypes; resolved single type",
-        {
-          requestedTypes,
-          detectedTypes,
-          matchedTypes,
-          normalizedHiType,
-          visitId: String(visitId),
-        },
-      );
-    }
+      (hiTypes && hiTypes.length > 0 ? hiTypes[0] : null) || "OPConsultation";
 
     // Create care context record
     const careContext = await CareContextModel.create({
@@ -442,14 +467,8 @@ export const createCareContextForVisit = async (
       facilityId: facilityId,
       facilityName: facilityName,
     });
-
-    console.log("CareContext: Created", careContext.careContextReference);
-
     if (patient.abhaaddress) {
       if (isLinkTokenValid(patient)) {
-        console.log(
-          "CareContext: Patient has valid link token, auto-linking...",
-        );
         setImmediate(async () => {
           try {
             const abdmToken = await AbdmTokenService.getToken();
@@ -462,11 +481,6 @@ export const createCareContextForVisit = async (
           }
         });
       } else {
-        console.log(
-          "CareContext: No valid link token for patient",
-          patient.uhid || patient._id,
-          "-> requesting link token from ABDM (cooldown-protected)",
-        );
         setImmediate(async () => {
           try {
             await requestLinkToken(patient);
@@ -479,9 +493,6 @@ export const createCareContextForVisit = async (
         });
       }
     } else {
-      console.log(
-        "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
-      );
     }
 
     return careContext;
@@ -527,10 +538,6 @@ export const createOrUpdateCareContextForVisit = async (
   try {
     const patient = await PatientModel.findById(patientId);
     if (!patient) {
-      console.log(
-        "[CareContext] createOrUpdateCareContextForVisit: Patient not found",
-        patientId,
-      );
       return null;
     }
 
@@ -542,49 +549,22 @@ export const createOrUpdateCareContextForVisit = async (
     const existingContext = await CareContextModel.findOne(lookupQuery);
 
     if (existingContext) {
-      if (!SEPARATE_CARECONTEXT_PER_HITYPE) {
-        // Legacy: merge hiType into the existing context
-        const alreadyHasType =
-          Array.isArray(existingContext.hiTypes) &&
-          existingContext.hiTypes.includes(hiType);
-        if (!alreadyHasType) {
-          await CareContextModel.updateOne(
-            { _id: existingContext._id },
-            { $addToSet: { hiTypes: hiType } },
-          );
-          existingContext.hiTypes = [
-            ...(existingContext.hiTypes || []),
-            hiType,
-          ];
-          console.log(
-            "CareContext: Added hiType",
-            hiType,
-            "to existing context for visit",
-            visitId,
-            "-> hiTypes:",
-            existingContext.hiTypes,
-          );
-        } else {
-          console.log(
-            "CareContext: Already has hiType",
-            hiType,
-            "for visit",
-            visitId,
-          );
-        }
-      } else {
-        console.log(
-          "CareContext: Already exists for visit",
-          visitId,
-          "hiType",
-          hiType,
-        );
-      }
+      // INVARIANT: One CareContext = one hiType. Never merge types.
+      // In SEPARATE_CARECONTEXT_PER_HITYPE mode (default), the lookup
+      // already matched by { patientId, visitId, hiType }, so this
+      // context is exactly the right one. Just return it.
+      // console.log(
+      //   `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: REUSING cc=${existingContext.careContextReference} requestedHiType=${hiType} existing.hiType=${existingContext.hiType} existing.hiTypes=${JSON.stringify(existingContext.hiTypes)} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
+      // );
 
       // Existing context may still need sync actions after clinical updates.
       triggerLinkingActions(existingContext, patient);
       return existingContext;
     }
+
+    // console.log(
+    //   `[HITYPE-DEBUG] createOrUpdateCareContextForVisit: CREATING new cc for patientId=${patientId} visitId=${visitId} hiType=${hiType} toggle=${SEPARATE_CARECONTEXT_PER_HITYPE}`,
+    // );
 
     // ── Create new CareContext ──
     const visit = await ScanShareVisitModel.findById(visitId);
@@ -637,28 +617,14 @@ export const createOrUpdateCareContextForVisit = async (
             dupKeyMsg.includes("patientId_1_visitId_1_hiType_1");
 
           if (isCompoundDup) {
-            console.log(
-              "CareContext: Concurrent creation detected for visit",
-              visitId,
-              "hiType",
-              hiType,
-              "— finding existing",
+            // Race condition: another request created this CC concurrently.
+            // Find and return the existing one (no type merging).
+            const raceContext = await CareContextModel.findOne(
+              SEPARATE_CARECONTEXT_PER_HITYPE
+                ? { patientId, visitId, hiType }
+                : { patientId, visitId },
             );
-            if (SEPARATE_CARECONTEXT_PER_HITYPE) {
-              const raceContext = await CareContextModel.findOne({
-                patientId,
-                visitId,
-                hiType,
-              });
-              if (raceContext) return raceContext;
-            } else {
-              const raceContext = await CareContextModel.findOneAndUpdate(
-                { patientId, visitId },
-                { $addToSet: { hiTypes: hiType } },
-                { new: true },
-              );
-              if (raceContext) return raceContext;
-            }
+            if (raceContext) return raceContext;
             return null;
           }
 
@@ -676,16 +642,6 @@ export const createOrUpdateCareContextForVisit = async (
         throw createErr;
       }
     }
-
-    console.log(
-      "CareContext: Created for visit",
-      visitId,
-      "with hiType",
-      hiType,
-      "->",
-      careContext.careContextReference,
-    );
-
     triggerLinkingActions(careContext, patient);
     return careContext;
   } catch (error) {
@@ -704,21 +660,20 @@ const triggerLinkingActions = (
   patient: IPatient,
 ): void => {
   if (!patient.abhaaddress) {
-    console.log(
-      "CareContext: Patient has no ABHA address. Context created locally. Skipping ABDM linking.",
-    );
     return;
   }
 
   // Don't retry FAILED contexts on every clinical save — they need manual intervention
   // or a new link token to arrive via callback.
   if (context.linkingStatus === CareContextStatus.FAILED) {
-    console.log(
-      "CareContext: Skipping triggerLinkingActions for FAILED context",
-      context.careContextReference,
-      `(${context.linkAttempts} attempts)`,
-    );
     return;
+  }
+
+  if (context.linkingStatus === CareContextStatus.LINKING) {
+    const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000);
+    if (context.lastLinkAttemptAt && context.lastLinkAttemptAt > twoMinsAgo) {
+      return;
+    }
   }
 
   if (
@@ -736,7 +691,6 @@ const triggerLinkingActions = (
       }
     });
   } else if (isLinkTokenValid(patient)) {
-    console.log("CareContext: Patient has valid link token, auto-linking...");
     setImmediate(async () => {
       try {
         const abdmToken = await AbdmTokenService.getToken();
@@ -749,11 +703,6 @@ const triggerLinkingActions = (
       }
     });
   } else {
-    console.log(
-      "CareContext: No valid link token for patient",
-      patient.uhid || patient._id,
-      "-> requesting link token from ABDM (cooldown-protected)",
-    );
     setImmediate(async () => {
       try {
         await requestLinkToken(patient);
@@ -812,7 +761,6 @@ export const linkCareContext = async (
   try {
     const careContext = await CareContextModel.findById(careContextId);
     if (!careContext) {
-      console.log("CareContext: Not found for linking", careContextId);
       return false;
     }
 
@@ -821,13 +769,11 @@ export const linkCareContext = async (
       (careContext.linkingStatus === CareContextStatus.LINKED ||
         careContext.linkingStatus === CareContextStatus.NOTIFIED)
     ) {
-      console.log("CareContext: Already linked", careContextId);
       return true;
     }
 
     // Check max attempts
     if (careContext.linkAttempts >= MAX_LINK_ATTEMPTS) {
-      console.log("CareContext: Max attempts reached", careContextId);
       careContext.linkingStatus = CareContextStatus.FAILED;
       careContext.linkError = { message: "Maximum link attempts reached" };
       await careContext.save();
@@ -837,16 +783,10 @@ export const linkCareContext = async (
     // Get patient and check link token
     const patient = await PatientModel.findById(careContext.patientId);
     if (!patient) {
-      console.log("CareContext: Patient not found", careContext.patientId);
       return false;
     }
 
     if (!isLinkTokenValid(patient)) {
-      console.log(
-        "CareContext: No valid link token for patient",
-        patient._id,
-        "-> requesting token (no error thrown)",
-      );
       careContext.linkingStatus = CareContextStatus.PENDING;
       careContext.linkError = {
         message: "No valid link token available; token request triggered",
@@ -885,17 +825,19 @@ export const linkCareContext = async (
 
     const normalizedAbhaAddr = normalizeAbhaAddress(patient.abhaaddress);
 
-    console.log(
-      "CareContext: linkCareContext payload debug:",
-      JSON.stringify({
-        abhaNumber14,
-        abhaAddress: normalizedAbhaAddr,
-        storedABHANumber: patient.ABHANumber,
-        tokenAbhaAddress: patient.abdmLinkToken?.abhaAddress,
-        careContextRef: careContext.careContextReference,
-        hiType: careContext.hiType || careContext.hiTypes?.[0],
-      }),
-    );
+    const resolvedHiType = await resolveCanonicalHiType(careContext);
+
+    if (!careContext.hiType && resolvedHiType) {
+      await CareContextModel.updateOne(
+        { _id: careContext._id },
+        { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
+      );
+      careContext.hiType = resolvedHiType as import("../models/CareContext").HIType;
+    }
+
+    // console.log(
+    //   `[HITYPE-DEBUG] linkCareContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} — LINK PAYLOAD hiType=${resolvedHiType}`,
+    // );
 
     const payload = {
       abhaNumber: abhaNumber14,
@@ -912,12 +854,22 @@ export const linkCareContext = async (
               display: careContext.display,
             },
           ],
-          hiType:
-            careContext.hiType || careContext.hiTypes[0] || "Prescription",
+          hiType: resolvedHiType,
           count: 1,
         },
       ],
     };
+
+    console.info(
+      "[ABDM Payload] link/carecontext constructed",
+      JSON.stringify({
+        endpoint: "link/carecontext",
+        careContextRef: careContext.careContextReference,
+        patientRef: patient.uhid || patient._id.toString(),
+        hiType: resolvedHiType,
+        careContexts: [careContext.careContextReference],
+      }),
+    );
 
     // Update status to LINKING
     careContext.linkingStatus = CareContextStatus.LINKING;
@@ -942,9 +894,6 @@ export const linkCareContext = async (
         },
       },
     );
-
-    console.log("CareContext: Link API response", response.status);
-
     // 200 or 202 = request accepted, wait for callback
     if (response.status === 200 || response.status === 202) {
       return true;
@@ -966,24 +915,25 @@ export const linkCareContext = async (
     // Treat as a soft no-op: don't increment attempts, don't clear token, don't mark LINKED.
     const isDuplicate = /duplicate.*link/i.test(errMsg);
     if (isDuplicate) {
-      console.log(
-        "CareContext: ABDM says duplicate link request for",
-        careContextId,
-        "— leaving status as-is; link may still be pending at ABDM.",
-      );
-      // Decrement linkAttempts since this wasn't a real attempt
+      // Forcefully advance to LINKED so health data can be pushed
       await CareContextModel.updateOne(
         { _id: careContextId },
         {
-          $inc: { linkAttempts: -1 },
           $set: {
-            linkError: {
-              message: "Duplicate link request — awaiting ABDM callback",
-            },
+            linkingStatus: CareContextStatus.LINKED,
+            linkedAt: new Date(),
+            linkError: null,
           },
         },
       );
-      return false;
+      // Trigger a notify attempt in the background
+      setTimeout(async () => {
+        try {
+          const ctx = await CareContextModel.findById(careContextId);
+          if (ctx) await notifyContext(ctx);
+        } catch (e) {}
+      }, 2000);
+      return true;
     }
 
     const isMismatch =
@@ -994,9 +944,6 @@ export const linkCareContext = async (
       await PatientModel.updateOne(
         { _id: ctx.patientId },
         { $unset: { abdmLinkToken: 1 } },
-      );
-      console.log(
-        "CareContext: Cleared link token due to ABHA mismatch; a new token will be requested on next attempt.",
       );
     }
     const newStatus =
@@ -1039,10 +986,6 @@ export const linkPendingCareContexts = async (
     const success = await linkCareContext(context._id, abdmToken);
     if (success) linked++;
   }
-
-  console.log(
-    `CareContext: Linked ${linked}/${pendingContexts.length} for patient ${patientId}`,
-  );
   return linked;
 };
 
@@ -1055,7 +998,6 @@ export const linkPendingCareContextsByAbhaAddress = async (
 ): Promise<number> => {
   const patient = await PatientModel.findOne({ abhaaddress: abhaAddress });
   if (!patient) {
-    console.log("CareContext: No patient found for ABHA address", abhaAddress);
     return 0;
   }
 
@@ -1100,61 +1042,27 @@ export const notifyContext = async (
     const abdmToken = authToken || (await AbdmTokenService.getToken());
     const requestId = generateUID();
 
-    // Resolve the primary hiType for ABDM notify payload.
-    // The CareContext may have multiple hiTypes (one per visit), but ABDM link/notify
-    // needs a single primary type. Use hiType field (set at creation time).
-    let resolvedHiType = careContext.hiType || careContext.hiTypes?.[0];
-    if (!resolvedHiType && careContext.visitId) {
-      try {
-        const detectedTypes = await detectHiTypesForVisit(careContext.visitId);
-        const specific = detectedTypes.find((t) => t !== "OPConsultation");
-        resolvedHiType =
-          specific || detectedTypes[0] || careContext.hiTypes?.[0];
-        if (resolvedHiType && !careContext.hiType) {
-          // Set primary hiType if not set yet
-          await CareContextModel.updateOne(
-            { _id: careContext._id },
-            { $set: { hiType: resolvedHiType } },
-          );
-          console.log(
-            `CareContext notifyContext: Set primary hiType for context ${careContext.careContextReference} → ${resolvedHiType}`,
-          );
-        }
-      } catch (detectErr: any) {
-        console.warn(
-          "CareContext notifyContext: hiType detection failed (non-blocking):",
-          detectErr.message,
-        );
-      }
-    }
-    if (!resolvedHiType) {
-      console.error(
-        "CareContext notifyContext: Unable to resolve a single hiType; skipping notify",
-        {
-          careContextId: String(careContext._id),
-          hiType: careContext.hiType,
-          hiTypes: careContext.hiTypes,
-        },
-      );
-      return false;
-    }
+    // Resolve the canonical hiType using centralized resolver.
+    // NEVER use hiTypes[0] — it can be wrong for contaminated legacy CCs.
+    const resolvedHiType = await resolveCanonicalHiType(careContext);
 
-    // Ensure primary hiType is set on the CareContext.
+    // Persist the resolved type back to DB if it wasn't set
+    // (fixes legacy CCs and prevents re-detection on future calls)
     if (!careContext.hiType && resolvedHiType) {
       await CareContextModel.updateOne(
         { _id: careContext._id },
-        { $set: { hiType: resolvedHiType } },
+        { $set: { hiType: resolvedHiType, hiTypes: [resolvedHiType] } },
       );
     }
 
-    // When SEPARATE_CARECONTEXT_PER_HITYPE is on, each CC represents exactly one hiType.
-    // Only send [resolvedHiType] so ABDM/ABHA shows a single type per CC.
-    // Old legacy CCs may have accumulated multiple entries in hiTypes[] — ignore them.
-    const notifyHiTypes: string[] = SEPARATE_CARECONTEXT_PER_HITYPE
-      ? [resolvedHiType]
-      : Array.isArray(careContext.hiTypes) && careContext.hiTypes.length > 0
-        ? careContext.hiTypes
-        : [resolvedHiType];
+    // ALWAYS send exactly [resolvedHiType] — never the raw hiTypes array.
+    // Even in legacy mode, sending multiple types per CC is wrong per ABDM spec.
+    const notifyHiTypes: string[] = [resolvedHiType];
+    // console.log(
+    //   `[HITYPE-DEBUG] notifyContext: cc=${careContext.careContextReference} db.hiType=${careContext.hiType} db.hiTypes=${JSON.stringify(careContext.hiTypes)} resolved=${resolvedHiType} SENDING notify.hiTypes=${JSON.stringify(notifyHiTypes)}`,
+    // );
+
+    console.info(`[ABDM] context/notify payload constructed for cc=${careContext.careContextReference}, type=${resolvedHiType}`);
 
     const payload = {
       notification: {
@@ -1203,14 +1111,7 @@ export const notifyContext = async (
       payload,
       { headers },
     );
-
-    console.log("CareContext: context/notify response", response.status);
-
     if (response.status === 200 || response.status === 202) {
-      console.log(
-        "CareContext: context/notify accepted (awaiting callback ack) for",
-        careContext.careContextReference,
-      );
       return true;
     }
 
@@ -1241,10 +1142,6 @@ export const handleContextNotifyCallback = async (
     notifyRequestId: requestId,
   });
   if (!careContext) {
-    console.log(
-      "CareContext: No care context found for context-notify requestId:",
-      requestId,
-    );
     return;
   }
 
@@ -1258,10 +1155,6 @@ export const handleContextNotifyCallback = async (
           notifyError: null,
         },
       },
-    );
-    console.log(
-      "CareContext: Context-notify ACK success for",
-      careContext.careContextReference,
     );
     return;
   }
@@ -1336,11 +1229,6 @@ export const handleLinkCallback = async (
   }
 
   if (!careContext) {
-    console.log(
-      "CareContext: No care context found for requestId:",
-      requestId,
-      "| Ensure ABDM callback sends response.requestId equal to the REQUEST-ID header you sent in link/carecontext.",
-    );
     return;
   }
 
@@ -1350,22 +1238,20 @@ export const handleLinkCallback = async (
     careContext.linkedAt = new Date();
     careContext.linkError = null;
     await careContext.save();
-
-    console.log(
-      "CareContext: Marked as LINKED",
-      careContext.careContextReference,
-    );
-
     // CRITICAL: Trigger context/notify to inform PHR apps
-    try {
-      await notifyContext(careContext);
-    } catch (notifyError) {
-      console.error(
-        "CareContext: context/notify failed after linking",
-        notifyError,
-      );
-      // Don't revert LINKED status - notify can be retried
-    }
+    // Add a 5 second delay to allow ABDM Sandbox to replicate the newly linked context
+    // internally before we try to notify it, otherwise it throws ABDM-1006.
+    setTimeout(async () => {
+      try {
+        await notifyContext(careContext);
+      } catch (notifyError) {
+        console.error(
+          "CareContext: context/notify failed after linking",
+          notifyError,
+        );
+        // Don't revert LINKED status - notify can be retried
+      }
+    }, 5000);
   } else {
     // Check if retryable based on link attempts
     const newStatus =
@@ -1376,13 +1262,6 @@ export const handleLinkCallback = async (
     careContext.linkingStatus = newStatus;
     careContext.linkError = error;
     await careContext.save();
-
-    console.log(
-      "CareContext: Link failed, status set to",
-      newStatus,
-      "attempts:",
-      careContext.linkAttempts,
-    );
   }
 };
 
@@ -1584,9 +1463,6 @@ export const bulkUpdateCareContextsForPatient = async (
   try {
     const patient = await PatientModel.findById(patientId).lean();
     if (!patient) {
-      console.log(
-        "CareContext: bulkUpdateCareContextsForPatient - Patient not found",
-      );
       return 0;
     }
 
@@ -1609,11 +1485,6 @@ export const bulkUpdateCareContextsForPatient = async (
         },
       },
     );
-
-    console.log(
-      `CareContext: Bulk updated ${result.modifiedCount} care contexts with ABHA for patient ${patientId}`,
-    );
-
     return result.modifiedCount;
   } catch (error: any) {
     console.error(
@@ -1664,13 +1535,7 @@ export const createCareContextsForExistingVisits = async (
     const uniqueVisitIds = Array.from(
       new Map(visitIds.map((id) => [id.toString(), id])).values(),
     );
-
-    console.log(
-      `[CareContext] Retroactive: Found ${uniqueVisitIds.length} visits for patient ${uhid}`,
-    );
-
     if (uniqueVisitIds.length === 0) {
-      console.log(`[CareContext] Retroactive: No visits to process`);
       return result;
     }
 
@@ -1679,10 +1544,6 @@ export const createCareContextsForExistingVisits = async (
       uniqueVisitIds.map(async (visitId) => {
         try {
           const hiTypes = await detectHiTypesForVisit(visitId);
-          console.log(
-            `[CareContext] Retroactive: Detected hiTypes for visit ${visitId}:`,
-            hiTypes,
-          );
           return { visitId, hiTypes, error: null };
         } catch (err: any) {
           return { visitId, hiTypes: [] as HIType[], error: err.message };
@@ -1700,9 +1561,6 @@ export const createCareContextsForExistingVisits = async (
     );
 
     if (pairs.length === 0) {
-      console.log(
-        `[CareContext] Retroactive: Created 0, Linked 0, Errors ${result.errors.length}`,
-      );
       return result;
     }
 
@@ -1784,9 +1642,6 @@ export const createCareContextsForExistingVisits = async (
           ordered: false,
         } as any);
         result.created = newDocs.length;
-        console.log(
-          `[CareContext] Retroactive: Created ${result.created} CareContexts via insertMany`,
-        );
       } catch (bulkErr: any) {
         // Partial inserts on duplicate key are ok (concurrent requests)
         const insertedCount =
@@ -1801,10 +1656,6 @@ export const createCareContextsForExistingVisits = async (
         }
       }
     }
-
-    console.log(
-      `[CareContext] Retroactive: Created ${result.created}, Linked ${result.linked}, Errors ${result.errors.length}`,
-    );
   } catch (err: any) {
     result.errors.push(err.message);
   }

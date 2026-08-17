@@ -21,6 +21,7 @@ import {
 } from "../utils/constant";
 import { HiuService } from "./hiu.service";
 import { ExternalHealthRecordModel } from "../models/ExternalHealthRecord";
+import { AbdmLogger } from "../utils/abdm.logger";
 
 const LOG_PREFIX = "[CONSENT]";
 
@@ -45,6 +46,81 @@ const buildBroadArtefactQuery = (
     return { artefactId: "__impossible__" };
   }
   return conditions.length === 1 ? conditions[0] : { $or: conditions };
+};
+
+/**
+ * When ABDM sends HIP notify with only an artefact ID (no consentRequestId),
+ * look up the artefact to find which ConsentRequest owns it.
+ * Returns the consentRequestId stored on the artefact, or undefined if not found.
+ */
+const resolveConsentRequestIdFromArtefact = async (
+  artefactId: string,
+): Promise<string | undefined> => {
+  const artefact = await ConsentArtefactModel.findOne({ artefactId })
+    .select("consentRequestId")
+    .lean();
+  if (artefact?.consentRequestId) return artefact.consentRequestId;
+  const phrArtefact = await PHRConsentArtefactModel.findOne({ artefactId })
+    .select("consentRequestId")
+    .lean();
+  return phrArtefact?.consentRequestId;
+};
+
+/**
+ * Update ConsentRequest status with fallback: first tries dbLookupId,
+ * then cross-references artefact IDs to find the parent ConsentRequest.
+ */
+const updateConsentRequestStatus = async (
+  dbLookupId: string | undefined,
+  artefactIds: string[],
+  updateFields: Record<string, any>,
+  logPrefix: string,
+  statusLabel: string,
+): Promise<void> => {
+  if (!dbLookupId && artefactIds.length === 0) return;
+
+  const orConditions: any[] = [];
+  if (dbLookupId) {
+    orConditions.push(
+      { consentRequestId: dbLookupId },
+      { requestId: dbLookupId },
+      { consentArtefacts: dbLookupId },
+    );
+  }
+  // Also search by each artefact ID in consentArtefacts array
+  if (artefactIds.length > 0) {
+    orConditions.push({ consentArtefacts: { $in: artefactIds } });
+  }
+
+  const updateResult = await ConsentRequestModel.updateOne(
+    { $or: orConditions },
+    { $set: updateFields },
+  );
+
+  if (updateResult.matchedCount > 0) return; // Success
+
+  // Fallback: cross-reference via ConsentArtefact.consentRequestId
+  // (HIP notify only sends artefact ID, not consentRequestId)
+  const idsToCheck = artefactIds.length > 0 ? artefactIds : dbLookupId ? [dbLookupId] : [];
+  for (const artefactId of idsToCheck) {
+    const resolvedConsentRequestId = await resolveConsentRequestIdFromArtefact(artefactId);
+    if (resolvedConsentRequestId && resolvedConsentRequestId !== dbLookupId) {
+      const retryResult = await ConsentRequestModel.updateOne(
+        {
+          $or: [
+            { consentRequestId: resolvedConsentRequestId },
+            { requestId: resolvedConsentRequestId },
+          ],
+        },
+        { $set: updateFields },
+      );
+      if (retryResult.matchedCount > 0) {
+        console.log(`${logPrefix} ${statusLabel}: resolved ConsentRequest via artefact cross-reference (artefactId=${artefactId} → consentRequestId=${resolvedConsentRequestId})`);
+        return;
+      }
+    }
+  }
+  console.warn(`${logPrefix} ${statusLabel}: ConsentRequest not found even after artefact cross-reference. dbLookupId=${dbLookupId}, artefactIds=${artefactIds.join(",")}`);
 };
 
 /**
@@ -147,9 +223,6 @@ export const handleHipNotify = async (
     consentRequestId &&
     (notificationConsentId === consentRequestId || artefactIds.length === 0)
   ) {
-    console.log(
-      `${LOG_PREFIX} Excluded consentRequestId from artefact IDs (request id must not be stored as artefact)`,
-    );
   }
 
   // The on-notify ACK must use a consent ARTEFACT ID, never the consentRequestId.
@@ -159,11 +232,6 @@ export const handleHipNotify = async (
 
   // Use consentRequestId for DB lookups; fall back to consentId for single-artefact payloads
   const dbLookupId = consentRequestId || notificationConsentId;
-
-  console.log(
-    `${LOG_PREFIX} HIP notify: consentRequestId=${consentRequestId}, consentId=${notificationConsentId}, status=${status}, artefactIds=${JSON.stringify(artefactIds)}, ackId=${ackConsentId}`,
-  );
-
   if (!status) {
     console.error(`${LOG_PREFIX} HIP notify missing status`);
     return;
@@ -176,9 +244,6 @@ export const handleHipNotify = async (
       status: ConsentArtefactStatus.GRANTED,
     });
     if (existing.length === artefactIds.length) {
-      console.log(
-        `${LOG_PREFIX} All ${artefactIds.length} artefacts already stored and GRANTED. Sending ACK only.`,
-      );
       await sendHipOnNotifyAck(
         ackConsentId,
         requestId,
@@ -202,9 +267,6 @@ export const handleHipNotify = async (
 
       if (notification.consentDetail?.purpose?.code === "PATRQT") {
         usePHRCollection = true;
-        console.log(
-          `${LOG_PREFIX} Detected PHR pull record (purpose.code=PATRQT). Using PHR collection.`,
-        );
       } else {
         const consentReq = consentRequestId
           ? await ConsentRequestModel.findOne({
@@ -215,16 +277,10 @@ export const handleHipNotify = async (
           : null;
         if (consentReq?.requestPurpose === "PHR") {
           usePHRCollection = true;
-          console.log(
-            `${LOG_PREFIX} Using PHR collection based on ConsentRequest.requestPurpose=PHR.`,
-          );
         }
       }
 
       if (usePHRCollection) {
-        console.log(
-          `${LOG_PREFIX} Storing artefact(s) in phr_consent_artefacts (PHR pull record).`,
-        );
       }
 
       // ABDM sends EITHER:
@@ -241,9 +297,6 @@ export const handleHipNotify = async (
           const finalUsePHRCollection = isPHRPull || usePHRCollection;
 
           if (isPHRPull && !usePHRCollection) {
-            console.log(
-              `${LOG_PREFIX} Detected PHR pull record from purpose.code=PATRQT for artefact ${detailArtefactId}. Using PHR collection.`,
-            );
           }
 
           const artefact = await storeArtefactDetails(
@@ -291,11 +344,6 @@ export const handleHipNotify = async (
               approved.dataEraseAt = new Date(detail.permission.dataEraseAt);
             approved.expiryDate = updateData.consentExpiryOn || null;
             updateData.approved = approved;
-
-            console.log(
-              `${LOG_PREFIX} Stored inline consentDetail for artefact ${detailArtefactId}`,
-            );
-
             const hasCareContexts =
               (detail.careContexts &&
                 Array.isArray(detail.careContexts) &&
@@ -349,9 +397,6 @@ export const handleHipNotify = async (
             );
           }
         }
-        console.log(
-          `${LOG_PREFIX} Ensured ${artefactIds.length} artefact stubs for consent${finalUsePHRCollection ? " (PHR collection)" : ""}`,
-        );
         const idsNeedingFetch: string[] = [];
         for (const aid of artefactIds) {
           const existing = await ArtefactModel.findOne({ artefactId: aid });
@@ -373,21 +418,14 @@ export const handleHipNotify = async (
       // Only auto-trigger if we have a local ConsentRequest — this prevents triggering data fetch
       // for external/unknown consents that arrive via HIP notify but were initiated elsewhere.
       if (artefactIds.length > 0 && !usePHRCollection) {
-        const localConsentRequest = consentRequestId
-          ? await ConsentRequestModel.findOne({
-              $or: [
-                { consentRequestId },
-                { consentArtefacts: { $in: artefactIds } },
-              ],
-            })
-              .select("_id")
-              .lean()
-          : null;
+        const query: any = { $or: [{ consentArtefacts: { $in: artefactIds } }] };
+        if (consentRequestId) query.$or.push({ consentRequestId });
+        
+        const localConsentRequest = await ConsentRequestModel.findOne(query)
+          .select("_id")
+          .lean();
 
         if (!localConsentRequest) {
-          console.log(
-            `${LOG_PREFIX} Skipping AUTO-TRIGGER: no local ConsentRequest found for request ${consentRequestId}. Artefact may be from an external consent.`,
-          );
         } else {
           const anyInPHR = await PHRConsentArtefactModel.findOne({
             artefactId: { $in: artefactIds },
@@ -395,9 +433,6 @@ export const handleHipNotify = async (
           if (!anyInPHR) {
             triggerHiuDataFetchAsync(artefactIds);
           } else {
-            console.log(
-              `${LOG_PREFIX} Skipping AUTO-TRIGGER: At least one artefact exists in PHR collection.`,
-            );
           }
         }
       }
@@ -433,29 +468,18 @@ export const handleHipNotify = async (
           $set: { status: ConsentArtefactStatus.REVOKED, revokedAt },
         },
       );
-      if (dbLookupId) {
-        await ConsentRequestModel.updateOne(
-          {
-            $or: [
-              { consentRequestId: dbLookupId },
-              { consentArtefacts: dbLookupId },
-            ],
-          },
-          { $set: { status: "REVOKED", revokedAt } },
-        );
-      }
+      await updateConsentRequestStatus(
+        dbLookupId,
+        idsToRevoke,
+        { status: "REVOKED", revokedAt },
+        LOG_PREFIX,
+        "REVOKED",
+      );
       // Delete external health records for ALL resolved artefacts
       if (idsToRevoke.length > 0) {
-        const deleteResult = await ExternalHealthRecordModel.deleteMany({
+        await ExternalHealthRecordModel.deleteMany({
           consentArtefactId: { $in: idsToRevoke },
         });
-        console.log(
-          `${LOG_PREFIX} Revoked artefacts (main: ${result.modifiedCount}, PHR: ${phrResult.modifiedCount}); removed ${deleteResult.deletedCount} external health records for ${idsToRevoke.length} artefact(s)`,
-        );
-      } else {
-        console.log(
-          `${LOG_PREFIX} Revoked artefacts (main: ${result.modifiedCount}, PHR: ${phrResult.modifiedCount})`,
-        );
       }
     }
 
@@ -479,13 +503,18 @@ export const handleHipNotify = async (
         $set: { status: ConsentArtefactStatus.EXPIRED },
       });
       if (idsToExpire.length > 0) {
-        const expiredResult = await ExternalHealthRecordModel.deleteMany({
+        await ExternalHealthRecordModel.deleteMany({
           consentArtefactId: { $in: idsToExpire },
         });
-        console.log(
-          `${LOG_PREFIX} Expired artefacts; removed ${expiredResult.deletedCount} external health records for ${idsToExpire.length} artefact(s)`,
-        );
       }
+      // Update ConsentRequest status to EXPIRED
+      await updateConsentRequestStatus(
+        dbLookupId,
+        idsToExpire,
+        { status: "EXPIRED", expiredAt: notification.timestamp ? new Date(notification.timestamp) : new Date() },
+        LOG_PREFIX,
+        "EXPIRED",
+      );
     }
 
     if (status === "DENIED") {
@@ -516,36 +545,25 @@ export const handleHipNotify = async (
           consentArtefactId: { $in: idsToDeny },
         });
         if (deleteResult.deletedCount > 0) {
-          console.log(
-            `${LOG_PREFIX} DENIED: removed ${deleteResult.deletedCount} external health records for ${idsToDeny.length} artefact(s)`,
-          );
         }
       }
-      if (dbLookupId) {
-        await ConsentRequestModel.updateOne(
-          {
-            $or: [
-              { consentRequestId: dbLookupId },
-              { consentArtefacts: dbLookupId },
-            ],
-          },
-          { $set: { status: "DENIED", deniedAt } },
-        );
-      }
-    }
-
-    // Update the ConsentRequest record
-    if (dbLookupId) {
-      await ConsentRequestModel.updateOne(
-        {
-          $or: [
-            { consentRequestId: dbLookupId },
-            { consentArtefacts: dbLookupId },
-          ],
-        },
-        { $set: updateData },
+      await updateConsentRequestStatus(
+        dbLookupId,
+        idsToDeny,
+        { status: "DENIED", deniedAt },
+        LOG_PREFIX,
+        "DENIED",
       );
     }
+
+    // Update the ConsentRequest record (GRANTED / status sync)
+    await updateConsentRequestStatus(
+      dbLookupId,
+      artefactIds,
+      updateData,
+      LOG_PREFIX,
+      status,
+    );
 
     // Send on-notify ACK with the ARTEFACT ID (not consentRequestId)
     await sendHipOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
@@ -566,11 +584,39 @@ export const handleHipNotify = async (
     }
   }
 };
+const _activeFetchArtefacts = new Set<string>();
+
+// Redis-based dedup for auto-trigger (cross-instance safe)
+const FETCH_DEDUP_PREFIX = "abdm:autofetch:dedup:";
+const FETCH_DEDUP_TTL_SECONDS = 3600; // 1 hour
+
+const getRedis = () => {
+  try {
+    const { getRedisConnection } = require("./abdm.queue.service");
+    return getRedisConnection();
+  } catch {
+    return null;
+  }
+};
+
+const tryAcquireFetchLock = async (artefactId: string): Promise<boolean> => {
+  const redis = getRedis();
+  if (!redis) return true; // Allow if Redis unavailable (fallback to in-memory)
+  const result = await redis.set(
+    `${FETCH_DEDUP_PREFIX}${artefactId}`,
+    Date.now().toString(),
+    "EX",
+    FETCH_DEDUP_TTL_SECONDS,
+    "NX",
+  );
+  return result === "OK";
+};
 
 /**
  * Auto-trigger HIU data fetch for each consent artefact.
  * Runs asynchronously (fire-and-forget) to not block the main consent flow.
  * Includes deduplication to prevent duplicate requests.
+ * Uses Redis for cross-instance dedup; falls back to in-memory if Redis unavailable.
  */
 export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
   if (!artefactIds || artefactIds.length === 0) return;
@@ -582,6 +628,19 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
   (async () => {
     for (const artefactId of artefactIds) {
       try {
+        // Redis-based dedup (cross-instance safe)
+        const lockAcquired = await tryAcquireFetchLock(artefactId);
+        if (!lockAcquired) {
+          continue;
+        }
+
+        // Fallback in-memory dedup (same instance)
+        if (_activeFetchArtefacts.has(artefactId)) {
+          continue;
+        }
+        _activeFetchArtefacts.add(artefactId);
+        setTimeout(() => _activeFetchArtefacts.delete(artefactId), 120_000);
+
         // DEDUPLICATION: Check if we already have a request for this artefact
         // We check for ANY request in the last 1 HOUR to prevent rapid loops
         // OR any successfully TRANSFERRED request ever (don't re-fetch if we have data)
@@ -601,24 +660,12 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         });
 
         if (recentOrSuccessfulRequest) {
-          if (recentOrSuccessfulRequest.storeAsExternalRecord !== true) {
-            console.log(
-              `${LOG_PREFIX} [AUTO-TRIGGER] Previous request ${recentOrSuccessfulRequest.requestId} didn't have storeAsExternalRecord=true. Allowing re-fetch for ${artefactId}.`,
-            );
-          } else {
-            console.log(
-              `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - valid request exists (requestId: ${recentOrSuccessfulRequest.requestId}, status: ${recentOrSuccessfulRequest.status})`,
-            );
-            continue;
-          }
+          continue;
         }
 
         // This prevents PHR consents from triggering HIMS data fetch
         let artefact = await PHRConsentArtefactModel.findOne({ artefactId });
         if (artefact) {
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Artefact ${artefactId} found in PHR collection. Skipping AUTO-TRIGGER (PHR consents don't use AUTO-TRIGGER).`,
-          );
           continue;
         }
 
@@ -631,9 +678,6 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         }
 
         if (artefact.status !== ConsentArtefactStatus.GRANTED) {
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Status is ${artefact.status} (not GRANTED)`,
-          );
           continue;
         }
 
@@ -641,9 +685,6 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         const expiryDate =
           artefact.expiryDate || artefact.permission?.dataEraseAt;
         if (expiryDate && new Date(expiryDate) < now) {
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Consent has expired (expiry: ${new Date(expiryDate).toISOString()})`,
-          );
           // Update status to EXPIRED if we just found out
           if (artefact.status === ConsentArtefactStatus.GRANTED) {
             await ConsentArtefactModel.updateOne(
@@ -658,9 +699,6 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         const isPHRPull = purposeCode === "PATRQT";
 
         if (isPHRPull) {
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - PHR pull record (purpose.code=PATRQT). PHR consents don't use AUTO-TRIGGER.`,
-          );
           continue;
         }
 
@@ -682,11 +720,6 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         }
 
         const isHIMS = true; // If not PHR, it's HIMS
-
-        console.log(
-          `${LOG_PREFIX} [AUTO-TRIGGER] Artefact ${artefactId} is HIMS (purpose.code=${purposeCode || "not PATRQT"}). Proceeding with AUTO-TRIGGER.`,
-        );
-
         let dateRange: { from: Date; to: Date };
 
         if (artefact?.rawConsentDetail?.permission?.dateRange) {
@@ -697,44 +730,32 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
             from: new Date(consentDateRange.from),
             to: new Date(consentDateRange.to),
           };
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Using consent's date range: ${dateRange.from.toISOString()} to ${dateRange.to.toISOString()}`,
-          );
         } else {
           // Fallback: use 90 days range if consent dateRange not available
           dateRange = {
             from: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000), // 90 days ago
             to: new Date(),
           };
-          console.log(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Using fallback date range: ${dateRange.from.toISOString()} to ${dateRange.to.toISOString()}`,
-          );
         }
-
-        console.log(
-          `${LOG_PREFIX} [AUTO-TRIGGER] Initiating HIU data fetch for artefact: ${artefactId} (HIMS: ${isHIMS})`,
-        );
-
         const result = await HiuService.requestHealthInformation(
           artefactId,
           dateRange,
           { storeAsExternalRecord: isHIMS }, // Only store for HIMS consents, not PHR
         );
-        console.log(
-          `${LOG_PREFIX} [AUTO-TRIGGER] HIU request sent for ${artefactId}, requestId: ${result.requestId}`,
-        );
-
         // Small delay between requests to avoid rate limiting
         await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error: any) {
         console.error(
           `${LOG_PREFIX} [AUTO-TRIGGER] Failed for ${artefactId}:`,
           error.message,
+          error.stack,
         );
         // Continue with other artefacts even if one fails
       }
     }
-  })();
+  })().catch((err: any) => {
+    console.error(`${LOG_PREFIX} [AUTO-TRIGGER] Unhandled error in async loop:`, err.message, err.stack);
+  });
 };
 
 /**
@@ -823,9 +844,10 @@ const createArtefactStub = async (
  * This is REQUIRED by the ABDM spec -- without it, ABDM considers the
  * notification undelivered.
  *
- * When ABDM calls our webhook, it often sends an Authorization header. Use
- * callbackAuthToken when provided to avoid 403 from our own token refresh
- * (e.g. rate limit or credential issues).
+ * Always use AbdmTokenService.getToken() for outbound calls to ABDM.
+ * The callbackAuthToken is the incoming Authorization header from ABDM's webhook call -
+ * it's ABDM's token for authenticating TO US, not a token for us to authenticate TO ABDM.
+ * Only fall back to callback token if session token acquisition fails.
  */
 export const sendHipOnNotifyAck = async (
   consentId: string,
@@ -835,16 +857,21 @@ export const sendHipOnNotifyAck = async (
 ): Promise<boolean> => {
   try {
     let abdmToken: string;
-    if (callbackAuthToken && callbackAuthToken.trim()) {
-      abdmToken = callbackAuthToken.trim();
-      if (!abdmToken.toLowerCase().startsWith("bearer ")) {
-        abdmToken = `Bearer ${abdmToken}`;
-      }
-      console.log(
-        `${LOG_PREFIX} Using callback request token for on-notify ACK`,
-      );
-    } else {
+    try {
       abdmToken = await AbdmTokenService.getToken();
+    } catch (tokenError: any) {
+      // Fallback: if session token acquisition fails, try callback token
+      if (callbackAuthToken && callbackAuthToken.trim()) {
+        abdmToken = callbackAuthToken.trim();
+        if (!abdmToken.toLowerCase().startsWith("bearer ")) {
+          abdmToken = `Bearer ${abdmToken}`;
+        }
+        console.warn(
+          `${LOG_PREFIX} Session token failed, falling back to callback auth: ${tokenError.message}`,
+        );
+      } else {
+        throw tokenError;
+      }
     }
     const requestId = generateUID();
 
@@ -857,9 +884,6 @@ export const sendHipOnNotifyAck = async (
         requestId: originalRequestId,
       },
     };
-
-    console.log(`${LOG_PREFIX} Sending on-notify ACK for consent ${consentId}`);
-
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}${ENDPOINTS.CONSENT_HIP_ON_NOTIFY}`,
       payload,
@@ -874,8 +898,6 @@ export const sendHipOnNotifyAck = async (
         },
       },
     );
-
-    console.log(`${LOG_PREFIX} on-notify ACK sent, status: ${response.status}`);
     return response.status === 200 || response.status === 202;
   } catch (error: any) {
     console.error(
@@ -883,6 +905,117 @@ export const sendHipOnNotifyAck = async (
       error.response?.data || error.message,
     );
     return false;
+  }
+};
+
+// ============================================================================
+// Shared callback processing functions
+// ============================================================================
+
+/**
+ * Process consent on-fetch callback (shared by BullMQ worker and direct fallback).
+ * Extracts the common logic to avoid duplication.
+ */
+export const processConsentOnFetchCallback = async (
+  body: any,
+  paramRequestId?: string,
+): Promise<void> => {
+  if (body.error) {
+    console.error(`${LOG_PREFIX} Consent fetch error:`, JSON.stringify(body.error));
+    return;
+  }
+
+  if (!body.consent?.consentDetail) return;
+
+  const consentDetail = body.consent.consentDetail;
+  const consentStatus = body.consent.status || "GRANTED";
+  if (body.consent.signature) consentDetail.signature = body.consent.signature;
+
+  const resolvedConsentRequestId = consentDetail.consentRequestId || paramRequestId;
+  const isPHRPull = consentDetail.purpose?.code === "PATRQT";
+  let usePHRCollection = isPHRPull;
+
+  if (!isPHRPull && resolvedConsentRequestId) {
+    const consentReq = await ConsentRequestModel.findOne({
+      $or: [{ consentRequestId: resolvedConsentRequestId }, { requestId: resolvedConsentRequestId }],
+    }).select("requestPurpose").lean();
+    usePHRCollection = consentReq?.requestPurpose === "PHR";
+  }
+
+  const artefact = await storeArtefactDetails(
+    consentDetail, consentStatus, resolvedConsentRequestId, usePHRCollection,
+  );
+
+  if (artefact) {
+    const consentId = consentDetail.consentId || body.consent.id;
+    if (consentId) {
+      await ConsentRequestModel.updateOne(
+        { $or: [{ consentArtefacts: consentId }, { consentRequestId: consentId }] },
+        { $set: { status: consentStatus } },
+      );
+    }
+    if (consentStatus === "GRANTED" && !usePHRCollection &&
+        artefact.consentRequestId && artefact.consentRequestId !== artefact.artefactId) {
+      // Auto-trigger is handled by handleHipNotify, not here
+    }
+    AbdmLogger.logAccepted({ consentId: artefact.artefactId, sourceType: "CALLBACK" });
+  }
+};
+
+/**
+ * Process consent on-status callback (shared by BullMQ worker and direct fallback).
+ */
+export const processConsentOnStatusCallback = async (
+  body: any,
+): Promise<void> => {
+  const { ConsentArtefactModel, ConsentArtefactStatus } = await import("../models/ConsentArtefact");
+  const { PHRConsentArtefactModel } = await import("../models/PHRConsentArtefact");
+  const { ExternalHealthRecordModel } = await import("../models/ExternalHealthRecord");
+  const { ConsentRequestModel } = await import("../models/ConsentRequest");
+
+  if (body.error || !body.consentRequest?.id) return;
+
+  const reqId = body.consentRequest.id;
+  const eventTs = body.timestamp ? new Date(body.timestamp) : new Date();
+  const statusUpdate: any = { status: body.consentRequest.status || "UNKNOWN", lastCheckedAt: new Date() };
+  const broadQuery = { $or: [{ consentRequestId: reqId }, { artefactId: reqId }] };
+
+  if (body.consentRequest.status === "GRANTED") statusUpdate.grantedAt = eventTs;
+
+  const revokeStatuses = ["REVOKED", "EXPIRED", "DENIED"];
+  if (revokeStatuses.includes(body.consentRequest.status)) {
+    const statusEnum = body.consentRequest.status === "REVOKED" ? ConsentArtefactStatus.REVOKED
+      : body.consentRequest.status === "EXPIRED" ? ConsentArtefactStatus.EXPIRED
+      : ConsentArtefactStatus.DENIED;
+    const setFields: any = { status: statusEnum };
+    if (body.consentRequest.status !== "EXPIRED") {
+      const tsField = body.consentRequest.status === "REVOKED" ? "revokedAt" : "deniedAt";
+      setFields[tsField] = eventTs;
+      statusUpdate[tsField] = eventTs;
+    }
+    await ConsentArtefactModel.updateMany(broadQuery, { $set: setFields });
+    await PHRConsentArtefactModel.updateMany(broadQuery, { $set: setFields });
+    const affectedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+    if (affectedIds.length > 0) {
+      await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: affectedIds } });
+    }
+  }
+
+  const updateResult = await ConsentRequestModel.updateOne(
+    {
+      $or: [
+        { consentRequestId: reqId },
+        { requestId: reqId },
+        { requestId: body.response?.requestId },
+      ],
+    },
+    { $set: statusUpdate },
+  );
+
+  if (body.consentRequest.status === "GRANTED" &&
+      body.consentRequest.consentArtefacts?.length > 0 &&
+      updateResult.matchedCount > 0) {
+    // Auto-trigger is handled by handleHipNotify, not here
   }
 };
 
@@ -903,22 +1036,27 @@ export const fetchConsentArtefact = async (
 ): Promise<IConsentArtefact | null> => {
   try {
     let abdmToken: string;
-    if (callbackAuthToken && callbackAuthToken.trim()) {
-      abdmToken = callbackAuthToken.trim();
-      if (!abdmToken.toLowerCase().startsWith("bearer ")) {
-        abdmToken = `Bearer ${abdmToken}`;
-      }
-    } else {
+    try {
       abdmToken = await AbdmTokenService.getToken();
+    } catch (tokenError: any) {
+      // Fallback: if session token acquisition fails, try callback token
+      if (callbackAuthToken && callbackAuthToken.trim()) {
+        abdmToken = callbackAuthToken.trim();
+        if (!abdmToken.toLowerCase().startsWith("bearer ")) {
+          abdmToken = `Bearer ${abdmToken}`;
+        }
+        console.warn(
+          `${LOG_PREFIX} fetchConsentArtefact: session token failed, falling back to callback auth: ${tokenError.message}`,
+        );
+      } else {
+        throw tokenError;
+      }
     }
     const requestId = generateUID();
 
     const payload = {
       consentId: artefactId,
     };
-
-    console.log(`${LOG_PREFIX} Fetching artefact details for ${artefactId}`);
-
     // When fetching consent artefacts, we act as HIU (Health Information User)
     // So we should use X-HIU-ID header instead of X-HIP-ID
     const headers: any = {
@@ -942,9 +1080,6 @@ export const fetchConsentArtefact = async (
     );
 
     if (response.status === 200 || response.status === 202) {
-      console.log(
-        `${LOG_PREFIX} Artefact fetch initiated for ${artefactId}, waiting for callback`,
-      );
       // NOTE: ABDM responds asynchronously via the on-fetch callback
       // The actual artefact details arrive at POST /:requestid/api/v3/hiu/consent/on-fetch
       return null;
@@ -990,9 +1125,6 @@ export const storeArtefactDetails = async (
     const purposeCode = consentDetail.purpose?.code;
     if (purposeCode === "PATRQT") {
       usePHRCollection = true;
-      console.log(
-        `${LOG_PREFIX} Overriding collection decision: purpose.code=PATRQT detected. Using PHR collection for artefact ${artefactId}.`,
-      );
     } else if (purposeCode && usePHRCollection) {
       // If purpose.code is NOT PATRQT but usePHRCollection is true, log warning
       console.warn(
@@ -1024,9 +1156,6 @@ export const storeArtefactDetails = async (
     if (usePHRCollection) {
       // PHR consents: keep self-referencing consentRequestId as-is
       resolvedConsentRequestId = detailRequestId || artefactId;
-      console.log(
-        `${LOG_PREFIX} PHR consent: keeping consentRequestId=${resolvedConsentRequestId} (self-ref is expected for patient-initiated consents).`,
-      );
     } else if (
       !resolvedConsentRequestId ||
       resolvedConsentRequestId === artefactId
@@ -1042,9 +1171,6 @@ export const storeArtefactDetails = async (
           .lean();
         if (originalReq?.consentRequestId) {
           resolvedConsentRequestId = originalReq.consentRequestId;
-          console.log(
-            `${LOG_PREFIX} Resolved consentRequestId from patient ${patientAbha}: ${resolvedConsentRequestId} (was self-ref ${artefactId})`,
-          );
         } else {
           // No matching consent request found — do NOT self-reference.
           // Store with null consentRequestId; broadQuery ($or by artefactId) still catches it for REVOKE.
@@ -1115,9 +1241,6 @@ export const storeArtefactDetails = async (
       consentDetail.careContexts &&
       Array.isArray(consentDetail.careContexts)
     ) {
-      console.log(
-        `${LOG_PREFIX} Found ${consentDetail.careContexts.length} care contexts in consentDetail.careContexts`,
-      );
       consentDetail.careContexts.forEach((cc: any) => {
         const normalized = normalizeCareContext(cc);
         if (normalized) {
@@ -1133,9 +1256,6 @@ export const storeArtefactDetails = async (
     // Also check nested consentDetail (e.g. consentDetail.consentDetail.careContexts)
     const nested = consentDetail.consentDetail?.careContexts;
     if (nested && Array.isArray(nested)) {
-      console.log(
-        `${LOG_PREFIX} Found ${nested.length} care contexts in nested consentDetail.consentDetail.careContexts`,
-      );
       nested.forEach((cc: any) => {
         const normalized = normalizeCareContext(cc);
         if (normalized) {
@@ -1148,15 +1268,7 @@ export const storeArtefactDetails = async (
         }
       });
     }
-
-    console.log(
-      `${LOG_PREFIX} Total normalized incoming care contexts: ${incomingCareContexts.length}`,
-    );
     if (incomingCareContexts.length > 0) {
-      console.log(
-        `${LOG_PREFIX} Incoming care contexts:`,
-        JSON.stringify(incomingCareContexts),
-      );
     } else {
       console.warn(
         `${LOG_PREFIX} ⚠️ No care contexts extracted from consent detail for artefact ${artefactId}`,
@@ -1301,11 +1413,6 @@ export const storeArtefactDetails = async (
       }
       throw err;
     });
-
-    console.log(
-      `${LOG_PREFIX} Stored artefact details for ${artefactId}, careContexts: ${updateData.careContexts?.length || 0}${usePHRCollection ? " (PHR)" : ""}`,
-    );
-
     // Keep ConsentRequest in sync for list UI (grantedAt, consentExpiryOn)
     const reqId = consentRequestId || artefact?.consentRequestId;
     if (reqId && artefact) {
@@ -1378,6 +1485,7 @@ export const storeArtefactDetails = async (
 /**
  * Asynchronously fetch full details for each artefact.
  * Non-blocking -- errors are logged but don't propagate.
+ * Includes unhandled rejection catch for visibility.
  */
 const fetchArtefactDetailsAsync = (
   artefacts: Array<{ id: string }>,
@@ -1395,10 +1503,13 @@ const fetchArtefactDetailsAsync = (
         console.error(
           `${LOG_PREFIX} Async fetch failed for artefact ${art.id}:`,
           error.message,
+          error.stack,
         );
       }
     }
-  })();
+  })().catch((err: any) => {
+    console.error(`${LOG_PREFIX} [ASYNC_FETCH] Unhandled error in async loop:`, err.message, err.stack);
+  });
 };
 
 // ============================================================================
@@ -1458,8 +1569,6 @@ export const validateConsentForDataPush = async (
 
       return null;
     }
-
-    console.log(`${LOG_PREFIX} Consent ${consentId} validated for data push`);
     return artefact;
   } catch (error: any) {
     console.error(
@@ -1567,11 +1676,6 @@ export const initiateConsentRequest = async (
       },
     },
   };
-
-  console.log(
-    `${LOG_PREFIX} Initiating consent request for patient ${params.abhaId}`,
-  );
-
   // Sync Patient Profile Data
   if (params.patientData) {
     try {
@@ -1617,13 +1721,30 @@ export const initiateConsentRequest = async (
         if (data.status) updatePayload.status = data.status;
 
         if (existingPatient) {
-          await PatientModel.updateOne(
-            { _id: existingPatient._id },
-            { $set: updatePayload },
-          );
-          console.log(
-            `${LOG_PREFIX} Updated existing patient profile for ABHA ID: ${params.abhaId}`,
-          );
+          // Guard: if another patient already owns this abhaaddress (unique index),
+          // remove it from the update to avoid E11000 duplicate key errors.
+          if (updatePayload.abhaaddress) {
+            const conflictingPatient = await PatientModel.findOne({
+              abhaaddress: updatePayload.abhaaddress,
+              _id: { $ne: existingPatient._id },
+              isMerged: { $ne: true },
+              status: { $ne: "merged" },
+            })
+              .select("_id")
+              .lean();
+            if (conflictingPatient) {
+              console.warn(
+                `${LOG_PREFIX} Skipping abhaaddress update for patient ${existingPatient._id} — abhaaddress "${updatePayload.abhaaddress}" already assigned to another patient ${conflictingPatient._id}`,
+              );
+              delete updatePayload.abhaaddress;
+            }
+          }
+          if (Object.keys(updatePayload).length > 0) {
+            await PatientModel.updateOne(
+              { _id: existingPatient._id },
+              { $set: updatePayload },
+            );
+          }
         } else {
           // Do NOT auto-create a new patient here. Ghost patients with no UHID,
           // gender "Unknown", and a claimed ABHA address cause duplicate-key
@@ -1653,9 +1774,6 @@ export const initiateConsentRequest = async (
       },
     },
   );
-
-  console.log(`${LOG_PREFIX} Consent init response: status=${response.status}`);
-
   // Save the consent request to DB
   const patientDetails = await lookupPatientDetails(params.abhaId);
 
@@ -1765,9 +1883,6 @@ export const checkConsentStatus = async (
 ): Promise<{ status: number; data: any }> => {
   const abdmToken = await AbdmTokenService.getToken();
   const requestId = generateUID();
-
-  console.log(`${LOG_PREFIX} Checking consent status for ${consentRequestId}`);
-
   const response = await axios.post(
     `${process.env.ABDM_BASE_URL}${ENDPOINTS.GET_REQ_STATUS}`,
     { consentRequestId },
@@ -1782,9 +1897,6 @@ export const checkConsentStatus = async (
       },
     },
   );
-
-  console.log(`${LOG_PREFIX} Consent status response: ${response.status}`);
-
   // Update local record with last checked time
   await ConsentRequestModel.updateOne(
     { consentRequestId },

@@ -96,13 +96,6 @@ const isValidDate = (dateStr: string): boolean => {
 export const scanAndShareWebhook = async (req: Request, res: Response) => {
   try {
     AbdmLogger.logPayloadDebug("entry on scan", req.body);
-    console.log({
-      ip: req.ip,
-      origin: req.headers.origin,
-      referer: req.headers.referer,
-      userAgent: req.headers["user-agent"],
-    });
-
     const authorization = req.headers["authorization"];
 
     res.status(202).json({
@@ -120,7 +113,6 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
       );
       requestId = generateUID();
     } else {
-      console.log("Found requestId in webhook:", requestId);
     }
 
     if (!context) {
@@ -156,25 +148,12 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
     if (existingVisit) {
       const existingTokenNum = parseInt(existingVisit.tokenNumber, 10);
       const existingStatus = existingVisit.visitStatus;
-
-      console.log(
-        "Existing visit found for ABHA:",
-        abhaAddress,
-        "Token:",
-        existingVisit.tokenNumber,
-        "Status:",
-        existingStatus,
-      );
-
       if (
         existingStatus === ScanShareVisitStatus.COMPLETED ||
         existingStatus === ScanShareVisitStatus.CANCELLED ||
         existingStatus === ScanShareVisitStatus.MISSED ||
         existingStatus === ScanShareVisitStatus.REGISTERED
       ) {
-        console.log(
-          `Visit status is ${existingStatus}, allowing new token generation`,
-        );
       } else {
         const queueDoc = await ScanShareDailyQueueModel.findOne({
           date: todayDate,
@@ -184,18 +163,10 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
         const currentServingToken = queueDoc?.currentServingToken || 0;
 
         if (currentServingToken > existingTokenNum) {
-          console.log(
-            `Token ${existingVisit.tokenNumber} missed. Current serving: ${currentServingToken}. Marking as MISSED and issuing new token.`,
-          );
-
           await ScanShareVisitModel.findByIdAndUpdate(existingVisit._id, {
             $set: { visitStatus: ScanShareVisitStatus.MISSED },
           });
         } else {
-          console.log(
-            `Token ${existingVisit.tokenNumber} still valid. Current serving: ${currentServingToken}. Returning existing token.`,
-          );
-
           await callAbdmOnShare(
             abhaAddress,
             context,
@@ -272,15 +243,6 @@ export const scanAndShareWebhook = async (req: Request, res: Response) => {
     };
 
     const scanShareVisit = await ScanShareVisitModel.create(scanShareVisitData);
-    console.log(
-      "ScanShareVisit created:",
-      scanShareVisit._id,
-      "Token:",
-      tokenNumber,
-      "Counter:",
-      context,
-    );
-
     await callAbdmOnShare(
       abhaAddress,
       context,
@@ -338,12 +300,6 @@ const callAbdmOnShare = async (
         },
         timeout: 10000,
       },
-    );
-
-    console.log(
-      "ABDM on-share response:",
-      onShareResponse.status,
-      onShareResponse.data,
     );
   } catch (onShareError: any) {
     console.error("ABDM on-share call failed (non-blocking):", {
@@ -737,7 +693,6 @@ export const completeRegistration = async (req: Request, res: Response) => {
           await PatientModel.findByIdAndUpdate(existingPatient._id, updateOps);
 
           patientId = existingPatient._id as Types.ObjectId;
-          console.log("Patient record updated:", existingPatient._id);
         } else {
           const initialInsurance = hasNewInsurance
             ? [
@@ -771,7 +726,6 @@ export const completeRegistration = async (req: Request, res: Response) => {
             insurance: initialInsurance,
           });
           patientId = newPatient._id as Types.ObjectId;
-          console.log("New patient record created:", newPatient._id);
         }
 
         // Link the visit back to the patient record
@@ -898,12 +852,6 @@ const callAbdmRunningTokenStatus = async (
         },
         timeout: 10000,
       },
-    );
-
-    console.log(
-      "ABDM running token status response:",
-      statusResponse.status,
-      statusResponse.data,
     );
   } catch (statusError: any) {
     console.error("ABDM running token status call failed (non-blocking):", {

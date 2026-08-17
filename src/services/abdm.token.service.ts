@@ -40,8 +40,6 @@ export const getAbdmToken = async (): Promise<string> => {
   if (tokenCache && Date.now() < tokenCache.expiresAt - EXPIRY_BUFFER_MS) {
     return `Bearer ${tokenCache.accessToken}`;
   }
-
-  console.log("AbdmTokenService: Fetching new session token...");
   return await refreshAbdmToken();
 };
 
@@ -91,13 +89,6 @@ export const refreshAbdmToken = async (): Promise<string> => {
       expiresAt: Date.now() + expiresInMs,
       tokenType: data.tokenType || "Bearer",
     };
-
-    console.log(
-      "AbdmTokenService: Token refreshed, expires in",
-      data.expiresIn,
-      "seconds",
-    );
-
     return `Bearer ${tokenCache.accessToken}`;
   } catch (error: any) {
     console.error(
@@ -117,7 +108,6 @@ export const refreshAbdmToken = async (): Promise<string> => {
  */
 export const invalidateAbdmToken = (): void => {
   tokenCache = null;
-  console.log("AbdmTokenService: Token cache invalidated");
 };
 
 /**

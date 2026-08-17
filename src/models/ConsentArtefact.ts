@@ -200,7 +200,7 @@ ConsentArtefactSchema.index({ "permission.dataEraseAt": 1 }, { sparse: true }); 
 
 // Compound index for idempotency: prevent duplicate artefacts from different source flows
 ConsentArtefactSchema.index(
-  { artefactId: 1, consentRequestId: 1, sourceType: 1 },
+  { artefactId: 1, sourceType: 1 },
   { unique: true, sparse: true, name: "idx_artefact_dedup_compound" },
 );
 

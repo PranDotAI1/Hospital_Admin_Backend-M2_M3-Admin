@@ -8,7 +8,6 @@ export const deptlisting = async (req:any,res:any)=>{
         const data = await DepartmentModel.find();
         return apiResponse(res,data, STATUS_CODE.SUCCESS, "Department Fetched");
     }catch(error: any){
-        console.log("error",error);
     }
 }
     

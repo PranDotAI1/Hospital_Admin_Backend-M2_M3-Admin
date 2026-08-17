@@ -44,11 +44,6 @@ export const consentInitRequest = async (req: Request, res: Response) => {
         message: "Missing required field: dataEraseAt",
       });
     }
-
-    console.log(
-      `${LOG_PREFIX} Consent init request for patient: ${body.abha_id}`,
-    );
-
     const result = await ConsentService.initiateConsentRequest({
       abhaId: body.abha_id,
       hiuId: body.facilityId,
@@ -62,11 +57,6 @@ export const consentInitRequest = async (req: Request, res: Response) => {
       requestPurpose: body.requestPurpose,
       patientData: body.patientData,
     });
-
-    console.log(
-      `${LOG_PREFIX} Consent request initiated: requestId=${result.requestId}`,
-    );
-
     return res.status(result.status).json({
       status: "REQUESTED",
       statusCode: result.status,
@@ -144,11 +134,6 @@ export const getConsentStatus = async (req: Request, res: Response) => {
         message: "Missing required field: consentRequestId",
       });
     }
-
-    console.log(
-      `${LOG_PREFIX} Checking consent status for ${consentRequestId}`,
-    );
-
     const result = await ConsentService.checkConsentStatus(consentRequestId);
 
     // NOTE: Auto-trigger removed from status check. Data fetch should ONLY happen
@@ -231,9 +216,6 @@ export const fetchArtefactDetails = async (req: Request, res: Response) => {
         message: "Missing artefactId parameter",
       });
     }
-
-    console.log(`${LOG_PREFIX} Manual artefact fetch for ${artefactId}`);
-
     await ConsentService.fetchConsentArtefact(artefactId);
 
     return res.status(200).json({

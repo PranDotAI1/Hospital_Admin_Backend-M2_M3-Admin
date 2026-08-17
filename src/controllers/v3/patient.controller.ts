@@ -65,8 +65,6 @@ const getTodayDateString = (): string => {
 export const registerPatient = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    console.log("Register Payload Keys:", Object.keys(body));
-
     const f_name = sanitizeString(body.f_name || body.firstName, 100);
     const mobile = sanitizeString(body.mobile, 15);
 
@@ -104,14 +102,6 @@ export const registerPatient = async (req: Request, res: Response) => {
     const abhaNumberFormatted = abhaNumber
       ? formatAbhaForStorage(abhaNumber)
       : undefined;
-
-    console.log("Register ABHA extracted:", {
-      abhaNumber: abhaNumber || "(empty)",
-      abhaAddress: abhaAddress || "(empty)",
-      abhaNumberFormatted: abhaNumberFormatted || "(empty)",
-      bodyKeys: Object.keys(body).filter((k: string) => /abha|ABHA/.test(k)),
-    });
-
     const m_name = sanitizeString(body.m_name || body.middleName, 100);
     const l_name = sanitizeString(body.l_name || body.lastName, 100);
     const fullName = [f_name, m_name, l_name].filter(Boolean).join(" ");
@@ -423,29 +413,18 @@ export const linkAbha = async (req: Request, res: Response) => {
             updatedPatient._id,
             abhaAddress,
           );
-        console.log(
-          `linkAbha: Bulk updated ${updatedCount} existing CareContexts with ABHA`,
-        );
-
         retroactiveResult =
           await CareContextService.createCareContextsForExistingVisits(
             updatedPatient._id,
             abhaAddress,
             false, // Don't link here - we'll link all pending in background
           );
-        console.log(
-          `linkAbha: Created ${retroactiveResult.created} new CareContexts for existing visits`,
-        );
-
         const pid = updatedPatient._id;
         const abha = abhaAddress;
         setImmediate(async () => {
           try {
             const linkedCount =
               await CareContextService.linkPendingCareContexts(pid);
-            console.log(
-              `linkAbha: Background - Linked ${linkedCount} CareContexts to ABDM`,
-            );
           } catch (bgErr: any) {
             console.error("linkAbha: Background linking error:", bgErr.message);
           }
@@ -504,7 +483,7 @@ export const sendDeepLinkSms = async (req: Request, res: Response) => {
     // This is specifically for patients WITHOUT an ABHA address who need to install the app
     if (patient.abhaaddress || patient.ABHANumber) {
       // Optional: We could allow it as a reminder, but the primary use case is "No ABHA"
-      // console.log("Sending Deep Link SMS to patient who already has ABHA linked (Reminder/Re-install)");
+
     }
 
     const { SmsNotificationService } =
@@ -541,11 +520,6 @@ export const getPatient = async (req: Request, res: Response) => {
     }
 
     if (patient && ((patient as any).isMerged || patient.status === "merged")) {
-      console.log(
-        `getPatient: Patient ${patient._id} is merged. Redirecting to ${
-          (patient as any).mergedToPatient
-        }`,
-      );
       if ((patient as any).mergedToPatient) {
         patient = await PatientModel.findById(
           (patient as any).mergedToPatient,
@@ -823,12 +797,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
     }
 
     let message = "Patient ABHA linked successfully";
-
-    console.log("Merge Debug (Before if):", {
-      targetId: targetPatient?._id,
-      sourceId: sourcePatient?._id,
-    });
-
     session = await mongoose.startSession();
     session.startTransaction();
 
@@ -836,9 +804,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
       sourcePatient &&
       sourcePatient._id.toString() !== targetPatient._id.toString()
     ) {
-      console.log(
-        "Merge Debug: SWAPPED LOGIC - Merging NEW (Target) into EXISTING (Source/Master)",
-      );
       message = "Linked ABHA successfully (Merged into existing ABHA record)";
 
       const masterPatient = sourcePatient;
@@ -1003,9 +968,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
             },
           },
         );
-        console.log(
-          `mergeAbhaPatient: Reset ${resetResult.modifiedCount} reassigned care contexts to PENDING (excluding already LINKED/NOTIFIED ones)`,
-        );
       }
 
       // RC5: Parallelize minor collection reassignments (independent writes)
@@ -1085,9 +1047,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
                 },
               },
             );
-            console.log(
-              `mergeAbhaPatient: Updated ABHA on ${updatedCount.modifiedCount} of ${victimCcIds.length} victim CareContexts`,
-            );
           }
 
           // STEP 2: Create missing care contexts for victim's visits that don't have one yet
@@ -1100,10 +1059,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
               false,
             );
           careContextsCreated = createResult.created;
-          console.log(
-            `mergeAbhaPatient: Created ${careContextsCreated} new CareContexts`,
-          );
-
           // STEP 3: Link only the victim's reassigned PENDING care contexts + newly created ones
           //         Do NOT touch master's existing care contexts
           const pendingVictimCcs =
@@ -1142,9 +1097,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
                   );
                   if (success) linked++;
                 }
-                console.log(
-                  `mergeAbhaPatient: Background - Linked ${linked}/${ccIdsToLink.length} victim/new CareContexts to ABDM`,
-                );
               } catch (bgErr: any) {
                 console.error(
                   "mergeAbhaPatient: Background linking error:",
@@ -1153,9 +1105,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
               }
             });
           } else {
-            console.log(
-              "mergeAbhaPatient: No victim/new CareContexts need linking",
-            );
           }
         } catch (ccErr) {
           console.error("Merge: Care context creation error:", ccErr);
@@ -1227,10 +1176,6 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
             },
           },
         );
-        console.log(
-          `mergeAbhaPatient: Updated ABHA on ${updatedCount.modifiedCount} non-linked CareContexts`,
-        );
-
         // STEP 2: Create missing care contexts WITHOUT linking
         const createResult =
           await CareContextService.createCareContextsForExistingVisits(
@@ -1239,19 +1184,12 @@ export const mergeAbhaPatient = async (req: Request, res: Response) => {
             false,
           );
         careContextsCreated = createResult.created;
-        console.log(
-          `mergeAbhaPatient: Created ${careContextsCreated} new CareContexts`,
-        );
-
         // STEP 3: Link only PENDING care contexts in background
         const pid = updatedTarget._id;
         setImmediate(async () => {
           try {
             const linkedCount =
               await CareContextService.linkPendingCareContexts(pid);
-            console.log(
-              `mergeAbhaPatient: Background - Linked ${linkedCount} PENDING CareContexts to ABDM`,
-            );
           } catch (bgErr: any) {
             console.error(
               "mergeAbhaPatient: Background linking error:",

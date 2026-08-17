@@ -152,9 +152,6 @@ export const onHealthInformationRequest = async (
       (req.headers["request-id"] as string);
 
     if (originalRequestId) {
-      console.log(
-        `[HIU_CONTROLLER] Processing on-request for requestId: ${originalRequestId}`,
-      );
       await HiuService.handleHiuOnRequest(originalRequestId, body);
     } else {
       console.warn(
@@ -196,7 +193,7 @@ export const onHealthInformationTransfer = async (
       }
     */
 
-    const { transactionId, entries, keyMaterial } = body;
+    const { transactionId, entries, keyMaterial, pageNumber } = body;
 
     if (!transactionId || !entries || !keyMaterial) {
       console.error("[HIU_CONTROLLER] Invalid transfer payload — missing transactionId, entries, or keyMaterial");
@@ -211,31 +208,39 @@ export const onHealthInformationTransfer = async (
       const { enqueueHiuTransfer } = await import(
         "../../services/abdm.queue.service"
       );
-      const jobId = await enqueueHiuTransfer({
+      const { HIUTransferPayloadModel } = await import(
+        "../../models/HIUTransferPayload"
+      );
+
+      const payload = new HIUTransferPayloadModel({
         transactionId,
+        pageNumber,
         entries,
         keyMaterial,
       });
-      console.log(
-        `[HIU_CONTROLLER] Transfer enqueued (jobId=${jobId}) for ${transactionId}`,
-      );
+      await payload.save();
+
+      const jobId = await enqueueHiuTransfer({
+        transactionId,
+        payloadId: payload._id.toString(),
+        pageNumber,
+      });
     } catch (queueErr: any) {
       console.warn(
         `[HIU_CONTROLLER] BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
       );
-      // Fallback: process directly
-      HiuService.handleHiuTransfer(transactionId, entries, keyMaterial)
-        .then(() =>
-          console.log(
-            `[HIU_CONTROLLER] Transfer processed for ${transactionId}`,
-          ),
-        )
-        .catch((err) =>
-          console.error(
-            `[HIU_CONTROLLER] Transfer handling failed for ${transactionId}:`,
-            err,
-          ),
+      // Fallback: process directly (same pattern as handleConsentHipNotify)
+      try {
+        const { handleHiuTransfer } = await import(
+          "../../services/hiu.service"
         );
+        await handleHiuTransfer(transactionId, entries, keyMaterial);
+      } catch (directErr: any) {
+        console.error(
+          "[HIU_CONTROLLER] Direct processing fallback failed:",
+          directErr.message,
+        );
+      }
     }
   } catch (error: any) {
     console.error("HIU Transfer callback error:", error);
@@ -259,12 +264,6 @@ export const getExternalRecords = async (req: Request, res: Response) => {
   try {
     const { patientId } = req.params;
     const { page = 1, limit = 20, sourceHipId, consentArtefactId } = req.query;
-
-    console.log(`[HIU] getExternalRecords called. Params:`, {
-      patientId,
-      query: req.query,
-    });
-
     // Check if patientId is "undefined" string
     if (patientId === "undefined" || patientId === "null") {
       console.warn("[HIU] Received invalid patientId string:", patientId);
@@ -336,30 +335,51 @@ export const getExternalRecords = async (req: Request, res: Response) => {
     } else {
       query.consentArtefactId = { $in: [] };
     }
+    const pipeline: any[] = [
+      { $match: query },
+      { $sort: { receivedAt: -1, createdAt: -1 } },
+      {
+        $lookup: {
+          from: "consent_artefacts",
+          localField: "consentArtefactId",
+          foreignField: "artefactId",
+          as: "artefactDetails"
+        }
+      },
+      {
+        $addFields: {
+          consentReqId: { $arrayElemAt: ["$artefactDetails.consentRequestId", 0] }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            consentReqId: "$consentReqId",
+            careContextReference: "$careContextReference"
+          },
+          doc: { $first: "$$ROOT" }
+        }
+      },
+      { $replaceRoot: { newRoot: "$doc" } },
+      { $project: { artefactDetails: 0, consentReqId: 0 } },
+      { $sort: { receivedAt: -1, createdAt: -1 } }
+    ];
 
-    console.log(`[HIU] Executing query:`, JSON.stringify(query));
-
-    const [records, total] = await Promise.all([
-      ExternalHealthRecordModel.find(query)
-        .sort({ receivedAt: -1, createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .select("-fhirBundle")
-        .lean(),
-      ExternalHealthRecordModel.countDocuments(query),
+    const [records, countResult] = await Promise.all([
+      ExternalHealthRecordModel.aggregate([
+        ...pipeline,
+        { $skip: skip },
+        { $limit: limitNum },
+        { $project: { fhirBundle: 0 } }
+      ]),
+      ExternalHealthRecordModel.aggregate([
+        ...pipeline,
+        { $count: "total" }
+      ])
     ]);
 
-    console.log(
-      `[HIU] returning total: ${total}, returning records length: ${records.length}`,
-    );
+    const total = countResult.length > 0 ? countResult[0].total : 0;
 
-    // NOTE: Auto-trigger removed. Data fetch MUST only happen via explicit
-    // consent-grant callbacks (HIP notify / on-fetch / on-status). Triggering
-    // on page-load created an infinite feedback loop:
-    //   FE opens page -> 0 records -> auto-trigger -> ABDM returns new artefact
-    //   IDs -> ghost artefacts stored -> data fetched -> user revokes -> only
-    //   latest artefact revoked -> old ones stay GRANTED -> next page-load
-    //   triggers again -> infinite cycle.
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",

@@ -1,87 +1,102 @@
-import IORedis from "ioredis";
+import IORedis, { type RedisOptions } from "ioredis";
 
 const LOG_PREFIX = "[REDIS]";
 
-const createRedisConnection = (): IORedis => {
-  const redisUrl = process.env.REDIS_URL;
+function parseRedisEnv(): RedisOptions {
+  const url = process.env.REDIS_URL;
 
-  const opts: import("ioredis").RedisOptions = {
-    maxRetriesPerRequest: null, // Required by BullMQ
+  if (url) {
+    const parsed = new URL(url);
+    return {
+      host: parsed.hostname,
+      port: parseInt(parsed.port || "6379", 10),
+      password: parsed.password
+        ? decodeURIComponent(parsed.password)
+        : undefined,
+      username:
+        parsed.username && parsed.username !== "default"
+          ? decodeURIComponent(parsed.username)
+          : undefined,
+      db:
+        parsed.pathname?.length > 1
+          ? parseInt(parsed.pathname.slice(1), 10)
+          : 0,
+      tls: parsed.protocol === "rediss:" ? {} : undefined,
+    };
+  }
+
+  return {
+    host: process.env.REDIS_HOST || "127.0.0.1",
+    port: parseInt(process.env.REDIS_PORT || "6379", 10),
+    password: process.env.REDIS_PASSWORD || undefined,
+  };
+}
+
+function baseOpts(overrides: Partial<RedisOptions> = {}): RedisOptions {
+  return {
+    ...parseRedisEnv(),
+    keepAlive: 15_000,
+    connectTimeout: 10_000,
     enableReadyCheck: false,
-    retryStrategy: (times: number) => {
-      if (times > 10) {
+    lazyConnect: false,
+    retryStrategy(times: number, error?: Error) {
+      const name = this.connectionName || "Unknown";
+      if (times > 20) {
         console.error(
-          `${LOG_PREFIX} Max Redis reconnection attempts (10) exceeded`,
+          `${LOG_PREFIX} [${name}] Giving up after 20 reconnection attempts to ${this.host}:${this.port}. Check Redis connectivity. Error: ${error?.message}`,
         );
-        return null; // Stop retrying
+        return null;
       }
-      const delay = Math.min(times * 500, 5000);
-      console.warn(
-        `${LOG_PREFIX} Reconnecting to Redis (attempt ${times}, delay ${delay}ms)`,
-      );
+      const delay = Math.min(times * 500, 10_000);
+      
+      if (times >= 3 || error) {
+        console.warn(
+          `${LOG_PREFIX} [${name}] Reconnecting to ${this.host}:${this.port} (attempt ${times}/20, next retry in ${delay}ms). Error: ${error?.message || error || "None"}`,
+        );
+      }
       return delay;
     },
-    lazyConnect: false,
+
+    ...overrides,
   };
+}
 
-  let connection: IORedis;
-
-  if (redisUrl) {
-    connection = new IORedis(redisUrl, opts);
-  } else {
-    const host = process.env.REDIS_HOST || "127.0.0.1";
-    const port = parseInt(process.env.REDIS_PORT || "6379", 10);
-    const password = process.env.REDIS_PASSWORD || undefined;
-    connection = new IORedis({ host, port, password, ...opts });
-  }
-
-  connection.on("connect", () => {
-    console.log(`${LOG_PREFIX} Connected to Redis`);
+export function getBullMQConnectionOpts(): RedisOptions {
+  return baseOpts({
+    maxRetriesPerRequest: null,
   });
+}
 
-  connection.on("error", (err) => {
-    console.error(`${LOG_PREFIX} Redis error:`, err.message);
-  });
+let _appConnection: IORedis | null = null;
 
-  connection.on("close", () => {
-    console.warn(`${LOG_PREFIX} Redis connection closed`);
-  });
+export function getRedisConnection(): IORedis {
+  if (!_appConnection) {
+    _appConnection = new IORedis(
+      baseOpts({
+        maxRetriesPerRequest: 3,
+      }),
+    );
 
-  return connection;
-};
-
-/**
- * Shared Redis connection singleton for direct key operations
- * (locks, caching, transaction ID bridging).
- *
- * BullMQ creates its own connections internally — do NOT share this with Queue/Worker.
- */
-let _sharedConnection: IORedis | null = null;
-
-export const getRedisConnection = (): IORedis => {
-  if (!_sharedConnection) {
-    _sharedConnection = createRedisConnection();
+    _appConnection.on("connect", () =>
+      console.log(`${LOG_PREFIX} [APP] Connected`),
+    );
+    _appConnection.on("ready", () => console.log(`${LOG_PREFIX} [APP] Ready`));
+    _appConnection.on("close", () =>
+      console.warn(`${LOG_PREFIX} [APP] Connection closed`),
+    );
+    _appConnection.on("end", () =>
+      console.error(`${LOG_PREFIX} [APP] Connection ended — no more retries`),
+    );
+    _appConnection.on("error", (err: Error) =>
+      console.error(`${LOG_PREFIX} [APP] Error: ${err.message}`),
+    );
   }
-  return _sharedConnection;
-};
+  return _appConnection;
+}
 
-/**
- * Create a NEW Redis connection for BullMQ Queue/Worker.
- * BullMQ requires its own dedicated connections (one per Queue, one per Worker).
- * These must NOT be shared with application-level Redis operations.
- */
-export const createBullMQConnection = (): IORedis => {
-  return createRedisConnection();
-};
-
-/**
- * Gracefully close all Redis connections.
- * Called during server shutdown.
- */
-export const closeRedisConnections = async (): Promise<void> => {
-  if (_sharedConnection) {
-    await _sharedConnection.quit().catch(() => { });
-    _sharedConnection = null;
-    console.log(`${LOG_PREFIX} Shared Redis connection closed`);
+export async function closeRedisConnections(): Promise<void> {
+  if (_appConnection) {
+    await _appConnection.quit().catch(() => {});
+    _appConnection = null;
   }
-};
+}

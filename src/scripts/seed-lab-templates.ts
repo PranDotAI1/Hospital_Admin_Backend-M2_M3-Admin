@@ -608,8 +608,6 @@ const templates: TemplateDefinition[] = [
 const seed = async () => {
   try {
     await connectDB();
-    console.log("Connected to database. Seeding lab test templates...\n");
-
     for (const tpl of templates) {
       // Augment each parameter with its individual LOINC code from the lookup map
       const augmentedParameters = tpl.parameters.map((p) => {
@@ -632,12 +630,7 @@ const seed = async () => {
         },
         { upsert: true, new: true },
       );
-      console.log(
-        `  ✓ ${tpl.displayName} (${tpl.testType}) — ${augmentedParameters.length} parameters`,
-      );
     }
-
-    console.log("\nSeeding complete. All 4 templates inserted/updated.");
     process.exit(0);
   } catch (err) {
     console.error("Seed failed:", err);

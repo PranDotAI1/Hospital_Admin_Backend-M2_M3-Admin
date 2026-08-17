@@ -148,7 +148,9 @@ export const logPayloadDebug = (
     safeMeta.notificationConsentId = payload.notification.consentId;
   if (payload.entries?.length != null) safeMeta.entryCount = payload.entries.length;
 
-  console.log(`${LOG_PREFIX} [PAYLOAD_DEBUG]`, JSON.stringify(safeMeta));
+  // Minimal, informative log instead of full JSON spam
+  const identifier = safeMeta.transactionId || safeMeta.requestId || safeMeta.consentRequestId || "No-ID";
+  console.log(`${LOG_PREFIX} [WEBHOOK] Received on ${routePath} [ID: ${identifier}]`);
 };
 
 export const AbdmLogger = {

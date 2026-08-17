@@ -7,7 +7,6 @@ export const pushDataIntoABDM = (req: any, res: any) => {
 
 
     } catch (error: any) {
-        console.log("error", error.response)
         return res
             .status(error.response.status)
             .json({ error: error.response.data });
