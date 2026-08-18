@@ -6,9 +6,48 @@ import { STATUS_CODE } from "../../utils/constant";
 export const onGenerateToken = async (req: Request, res: Response) => {
   try {
     const postData = req.body;
-    const { abhaAddress, linkToken } = postData;
+    console.log({ postData });
+    // ABDM sandbox sends "abhaAddress" (camelCase) but production may send "abhaaddress" (lowercase).
+    // Accept both to be safe.
+    const abhaAddress: string | undefined =
+      postData.abhaAddress || postData.abhaaddress;
+    const linkToken: string | undefined = postData.linkToken;
+
+    console.log("[HIP-LINK] on-generate-token received:", {
+      abhaAddress,
+      hasToken: !!linkToken,
+      rawKeys: Object.keys(postData),
+    });
+
+    // ABDM sends error callbacks (e.g. ABDM-1207 data mismatch) with { error, response } — no token.
+    // Detect this early, clear the patient's cooldown so they can retry, and log the real error.
+    if (postData.error) {
+      const errCode = postData.error.code || "UNKNOWN";
+      const errMsg = postData.error.message || "";
+      const callbackRequestId = postData.response?.requestId;
+      console.warn(
+        `[HIP-LINK] on-generate-token: ABDM ERROR callback — code=${errCode} | ${errMsg.trim()}`,
+      );
+      if (callbackRequestId) {
+        // Find the patient whose pending request this is and clear their cooldown
+        const { PatientModel } = await import("../../models/Patient");
+        const cleared = await PatientModel.findOneAndUpdate(
+          { abdmLinkTokenRequestId: callbackRequestId },
+          { $unset: { abdmLinkTokenRequestedAt: 1, abdmLinkTokenRequestId: 1 } },
+        );
+        if (cleared) {
+          console.warn(
+            `[HIP-LINK] on-generate-token: cleared cooldown for patient=${cleared._id} (${cleared.abhaaddress}) after ABDM error. Fix patient data before retrying.`,
+          );
+        }
+      }
+      return res.status(STATUS_CODE.SUCCESS).json({ status: "success", message: "Error acknowledged" });
+    }
 
     if (!abhaAddress || !linkToken) {
+      console.warn(
+        "[HIP-LINK] on-generate-token: missing abhaAddress or linkToken — ignoring",
+      );
       return res.status(STATUS_CODE.SUCCESS).json({
         status: "success",
         message: "Acknowledged but missing required fields",
@@ -21,11 +60,18 @@ export const onGenerateToken = async (req: Request, res: Response) => {
     );
 
     if (!patient) {
+      console.warn(
+        `[HIP-LINK] on-generate-token: patient NOT FOUND for abhaAddress="${abhaAddress}" — token lost`,
+      );
       return res.status(STATUS_CODE.SUCCESS).json({
         status: "success",
         message: "Acknowledged but patient not found",
       });
     }
+    console.info(
+      `[HIP-LINK] on-generate-token: token STORED for patient=${patient._id} (${patient.abhaaddress})`,
+    );
+
     try {
       let abdmToken: string | undefined;
       try {

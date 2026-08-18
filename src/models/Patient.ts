@@ -62,6 +62,7 @@ export interface IPatient extends Document {
 
   abdmLinkToken?: IAbdmLinkToken;
   abdmLinkTokenRequestedAt?: Date;
+  abdmLinkTokenRequestId?: string; // correlate error callbacks
 
   isMerged?: boolean;
   mergedToPatient?: Types.ObjectId;
@@ -218,6 +219,7 @@ const PatientSchema = new Schema<IPatient>(
       abhaAddress: { type: String, trim: true }, // ABHA address this token was issued for
     },
     abdmLinkTokenRequestedAt: { type: Date },
+    abdmLinkTokenRequestId: { type: String }, // correlate ABDM error callbacks
     isMerged: { type: Boolean, default: false },
     mergedToPatient: { type: Schema.Types.ObjectId, ref: "Patient" },
   },

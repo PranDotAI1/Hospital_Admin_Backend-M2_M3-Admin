@@ -69,6 +69,9 @@ export const setBridgeUrlOnStartup = async () => {
     );
 
     if (bridgeResponse.status === 200 || bridgeResponse.status === 202) {
+      console.log(
+        `[STARTUP] Successfully set bridge URL: ${GET_URL}`,
+      );
     } else {
       console.error(
         `[STARTUP] Failed to set bridge URL. Status: ${bridgeResponse.status}`,

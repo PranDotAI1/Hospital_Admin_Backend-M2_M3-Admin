@@ -286,16 +286,23 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     if (requestedAt) {
       const hoursSince =
         (Date.now() - new Date(requestedAt).getTime()) / (1000 * 60 * 60);
-      if (hoursSince < LINK_TOKEN_REQUEST_COOLDOWN_HOURS) {
+      // Allow retry if token was requested but never arrived after 1+ hour
+      const tokenNeverArrived = hoursSince >= 1 && !fresh.abdmLinkToken?.token;
+      if (hoursSince < LINK_TOKEN_REQUEST_COOLDOWN_HOURS && !tokenNeverArrived) {
+        console.info(`[HIP-LINK] requestLinkToken: cooldown active (${hoursSince.toFixed(1)}h), hasToken=${!!fresh.abdmLinkToken?.token} — skipping, patient=${patientId}`);
         return false;
+      }
+      if (tokenNeverArrived) {
+        console.warn(`[HIP-LINK] requestLinkToken: token requested ${hoursSince.toFixed(1)}h ago but never arrived — bypassing cooldown, patient=${patientId}`);
       }
     }
 
-    // Use refreshed patient data (abhaaddress/ABHANumber may have just been saved)
     const latestPatient = fresh as unknown as IPatient;
     if (!latestPatient.abhaaddress?.trim()) {
+      console.warn(`[HIP-LINK] requestLinkToken: no abhaaddress on patient=${patientId} — skipping`);
       return false;
     }
+    console.info(`[HIP-LINK] requestLinkToken: requesting token for abhaAddress=${latestPatient.abhaaddress}, patient=${patientId}`);
 
     const authToken = await AbdmTokenService.getToken();
     const requestId = generateUID();
@@ -331,6 +338,7 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     if (abhaNumber14.length === 14) {
       payload.abhaNumber = abhaNumber14 ?? "";
     }
+    console.info(`[HIP-LINK] requestLinkToken: ABDM payload →`, JSON.stringify(payload));
     const response = await axios.post(
       `${process.env.ABDM_BASE_URL}/hiecm/v3/token/generate-token`,
       payload,
@@ -352,8 +360,14 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     if (isSuccess) {
       await PatientModel.updateOne(
         { _id: patientId },
-        { $set: { abdmLinkTokenRequestedAt: new Date() } },
+        {
+          $set: {
+            abdmLinkTokenRequestedAt: new Date(),
+            abdmLinkTokenRequestId: requestId, // correlate ABDM error callbacks
+          },
+        },
       );
+      console.info(`[HIP-LINK] requestLinkToken: ABDM acknowledged (${response.status}), requestId=${requestId}`);
     }
     return isSuccess;
   } catch (error: any) {
@@ -372,6 +386,9 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
       // ABDM-1092: ABDM already has a pending token generation for this ABHA address.
       // Treat as a soft success — set the cooldown so we don't keep hammering ABDM.
       // The token will arrive via the on-generate-token callback.
+      console.info(
+        `[HIP-LINK] requestLinkToken: ABDM-1092 duplicate pending — token already in flight for ${patient.abhaaddress}, waiting for callback`,
+      );
       try {
         const patientId = patient._id?.toString();
         if (patientId) {
@@ -385,7 +402,7 @@ export const requestLinkToken = async (patient: IPatient): Promise<boolean> => {
     }
 
     console.error(
-      "CareContext: Error requesting link token",
+      `[HIP-LINK] requestLinkToken: ABDM API error — status=${error.response?.status} code=${errCode}`,
       error.response?.data || error.message,
     );
     // Only clear the cooldown for genuine failures (not duplicates) so retries are not blocked

@@ -372,27 +372,8 @@ export const linkAbha = async (req: Request, res: Response) => {
       });
     }
 
-    let abdmLinked = false;
-    let linkTokenRequested = false;
-
-    try {
-      const tokenRequested = await CareContextService.requestLinkToken({
-        ...patient.toObject(),
-        abhaaddress: abhaAddress,
-        name: name || patient.name,
-      } as any);
-
-      if (tokenRequested) {
-        linkTokenRequested = true;
-        abdmLinked = true;
-      }
-    } catch (abdmError: any) {
-      console.error(
-        "ABDM link token request error (non-blocking):",
-        abdmError.response?.data || abdmError.message,
-      );
-    }
-
+    // Save ABHA data FIRST so requestLinkToken's DB re-fetch finds abhaaddress.
+    // Previously token was requested before save — re-fetch found no abhaaddress → silently failed.
     const updatedPatient = await PatientModel.findByIdAndUpdate(
       patient._id,
       {
@@ -404,6 +385,30 @@ export const linkAbha = async (req: Request, res: Response) => {
       },
       { new: true },
     );
+    console.info(`[HIP-LINK] linkAbha: ABHA saved for patient=${patient._id}, requesting link token...`);
+
+    let abdmLinked = false;
+    let linkTokenRequested = false;
+
+    if (updatedPatient) {
+      try {
+        const tokenRequested = await CareContextService.requestLinkToken(
+          updatedPatient as any,
+        );
+        if (tokenRequested) {
+          linkTokenRequested = true;
+          abdmLinked = true;
+          console.info(`[HIP-LINK] linkAbha: link token requested successfully for patient=${patient._id}`);
+        } else {
+          console.warn(`[HIP-LINK] linkAbha: requestLinkToken returned false for patient=${patient._id} (cooldown or no abhaaddress)`);
+        }
+      } catch (abdmError: any) {
+        console.error(
+          "ABDM link token request error (non-blocking):",
+          abdmError.response?.data || abdmError.message,
+        );
+      }
+    }
 
     let retroactiveResult = { created: 0, linked: 0, errors: [] as string[] };
     if (updatedPatient && abhaAddress) {
