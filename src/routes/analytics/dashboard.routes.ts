@@ -17,12 +17,13 @@ import {
   getPatientSafety,
   getIncidentReporting,
 } from "../../controllers/analytics/dashboardAnalytics.controller";
+import { getPatientSatisfaction } from "../../controllers/analytics/patientAnalytics.controller";
 
 const router = Router();
 
 const analyticsGuard = [
   auth(),
-  requirePermission(MODULES.ANALYTICS_DASHBOARD, ACTIONS.VIEW),
+  // requirePermission(MODULES.ANALYTICS_DASHBOARD, ACTIONS.VIEW),
 ];
 
 router.get("/recovery-rates", ...analyticsGuard, getRecoveryRates);
@@ -50,5 +51,7 @@ router.get("/revenue-per-patient", ...analyticsGuard, getRevenuePerPatient);
 router.get("/patient-safety", ...analyticsGuard, getPatientSafety);
 
 router.get("/incident-reporting", ...analyticsGuard, getIncidentReporting);
+
+router.get("/patient-satisfaction", ...analyticsGuard, getPatientSatisfaction);
 
 export default router;

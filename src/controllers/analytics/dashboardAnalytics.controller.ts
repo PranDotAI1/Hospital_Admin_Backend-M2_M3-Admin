@@ -342,7 +342,6 @@ export const getServiceDelivery = async (req: Request, res: Response): Promise<v
 
     const match: Record<string, any> = {
       visitDate: { $gte: params.start, $lte: params.end },
-      consultationStartedAt: { $exists: true },
     };
 
     const pipeline: object[] = [
@@ -366,49 +365,103 @@ export const getServiceDelivery = async (req: Request, res: Response): Promise<v
         { $match: match }
       ]),
       {
-        $addFields: {
-          waitMinutes: {
-            $divide: [
-              { $subtract: ["$consultationStartedAt", "$visitDate"] },
-              60000,
-            ],
-          },
-        },
-      },
-      { $match: { waitMinutes: { $gte: 0 } } },
-      {
-        $addFields: {
-          serviceCategory: {
-            $switch: {
-              branches: [
-                { case: { $in: ["$visitType", ["INPATIENT", "BED", "Ward"]] }, then: "Bed Wait" },
-                { case: { $in: ["$visitType", ["SURGERY", "PRE_OP", "Pre-Op"]] }, then: "Pre-op Wait" },
-                { case: { $in: ["$visitType", ["OUTPATIENT", "OPD", "Outpatient"]] }, then: "Out-patient Wait" },
-              ],
-              default: "Non-Ward Wait",
-            },
-          },
-        },
-      },
-      {
         $group: {
-          _id: "$serviceCategory",
-          count: { $sum: 1 },
-          avgWaitMinutes: { $avg: "$waitMinutes" },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          category: "$_id",
-          count: 1,
-          avgWaitMinutes: { $round: ["$avgWaitMinutes", 0] },
-        },
-      },
-      { $sort: { count: -1 } },
+          _id: null,
+          totalWaitTimeMs: {
+            $sum: {
+              $cond: [
+                { $ifNull: ["$consultationStartedAt", false] },
+                { $max: [0, { $subtract: ["$consultationStartedAt", "$visitDate"] }] },
+                0
+              ]
+            }
+          },
+          waitCount: {
+            $sum: {
+              $cond: [
+                { $ifNull: ["$consultationStartedAt", false] },
+                1,
+                0
+              ]
+            }
+          },
+          totalBedWaitTimeMs: {
+            $sum: {
+              $cond: [
+                { $and: [{ $in: ["$visitType", ["INPATIENT", "BED", "Ward"]] }, { $ifNull: ["$consultationStartedAt", false] }] },
+                { $max: [0, { $subtract: ["$consultationStartedAt", "$visitDate"] }] },
+                0
+              ]
+            }
+          },
+          bedWaitCount: {
+            $sum: {
+              $cond: [
+                { $and: [{ $in: ["$visitType", ["INPATIENT", "BED", "Ward"]] }, { $ifNull: ["$consultationStartedAt", false] }] },
+                1,
+                0
+              ]
+            }
+          },
+          totalDocWaitTimeMs: {
+            $sum: {
+              $cond: [
+                { $and: [{ $in: ["$visitType", ["OUTPATIENT", "OPD", "Outpatient"]] }, { $ifNull: ["$consultationStartedAt", false] }] },
+                { $max: [0, { $subtract: ["$consultationStartedAt", "$visitDate"] }] },
+                0
+              ]
+            }
+          },
+          docWaitCount: {
+            $sum: {
+              $cond: [
+                { $and: [{ $in: ["$visitType", ["OUTPATIENT", "OPD", "Outpatient"]] }, { $ifNull: ["$consultationStartedAt", false] }] },
+                1,
+                0
+              ]
+            }
+          },
+          totalStayTimeMs: {
+            $sum: {
+              $cond: [
+                { $and: [{ $in: ["$visitType", ["INPATIENT", "BED", "Ward"]] }, { $ifNull: ["$consultationEndedAt", false] }] },
+                { $max: [0, { $subtract: ["$consultationEndedAt", "$visitDate"] }] },
+                0
+              ]
+            }
+          },
+          stayCount: {
+            $sum: {
+              $cond: [
+                { $and: [{ $in: ["$visitType", ["INPATIENT", "BED", "Ward"]] }, { $ifNull: ["$consultationEndedAt", false] }] },
+                1,
+                0
+              ]
+            }
+          }
+        }
+      }
     ];
 
-    const serviceDelivery = await ScanShareVisitModel.aggregate(pipeline as any[]);
+    const rawResult = await ScanShareVisitModel.aggregate(pipeline as any[]);
+    const aggs = rawResult[0] || {
+      totalWaitTimeMs: 0, waitCount: 0,
+      totalBedWaitTimeMs: 0, bedWaitCount: 0,
+      totalDocWaitTimeMs: 0, docWaitCount: 0,
+      totalStayTimeMs: 0, stayCount: 0
+    };
+
+    const waitMinutes = aggs.waitCount > 0 ? Math.round(aggs.totalWaitTimeMs / aggs.waitCount / 60000) : 0;
+    const bedWaitMinutes = aggs.bedWaitCount > 0 ? Math.round(aggs.totalBedWaitTimeMs / aggs.bedWaitCount / 60000) : 0;
+    const docWaitMinutes = aggs.docWaitCount > 0 ? Math.round(aggs.totalDocWaitTimeMs / aggs.docWaitCount / 60000) : 0;
+    const stayDays = aggs.stayCount > 0 ? Math.round(aggs.totalStayTimeMs / aggs.stayCount / 86400000) : 0;
+
+    const serviceDelivery = [
+      { category: "Wait time", value: waitMinutes, unit: "min" },
+      { category: "Length of stay", value: stayDays, unit: "Days" },
+      { category: "To Get Bed", value: bedWaitMinutes, unit: "min" },
+      { category: "To See Doctor", value: docWaitMinutes, unit: "min" }
+    ];
 
     const data = {
       serviceDelivery,
@@ -762,21 +815,57 @@ export const getStaffAllocation = async (req: Request, res: Response): Promise<v
 
 export const getRevenuePerPatient = async (req: Request, res: Response): Promise<void> => {
   try {
-    const params = parseAnalyticsParams(req.query as Record<string, unknown>);
     const hospitalId = getHospitalId(req);
-    const cacheKey = buildCacheKey(hospitalId, "dashboard-revenue-per-patient", {
-      from: params.start.toISOString(), to: params.end.toISOString(),
-    });
+    const cacheKey = buildCacheKey(hospitalId, "dashboard-revenue-per-patient-v2", { hospitalId });
 
     const cached = await getCached(cacheKey);
     if (cached) return successResponse(res, cached);
 
-    const sevenDaysAgo = new Date();
+    const now = new Date();
+    const sevenDaysAgo = new Date(now);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
     sevenDaysAgo.setHours(0, 0, 0, 0);
+    
+    const fourteenDaysAgo = new Date(sevenDaysAgo);
+    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 7);
 
-    const sparklineMatch = { date: { $gte: sevenDaysAgo }, status: { $ne: "Draft" } };
-    const sparklinePipeline: object[] = [
+    const hospitalObjId = toObjectId(hospitalId);
+    const baseMatch = hospitalObjId ? { hospitalId: hospitalObjId } : {};
+
+    // 1. Appointments & Insurance (from ScanShareVisit)
+    const visitPipeline: object[] = [
+      ...(hospitalId ? [
+        {
+          $lookup: {
+            from: "Patients",
+            localField: "patientId",
+            foreignField: "_id",
+            as: "patientInfo",
+          },
+        },
+        { $unwind: "$patientInfo" },
+        {
+          $match: {
+            "patientInfo.hospitalId": hospitalObjId,
+            visitDate: { $gte: fourteenDaysAgo },
+          },
+        }
+      ] : [
+        { $match: { visitDate: { $gte: fourteenDaysAgo } } }
+      ]),
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$visitDate" } },
+          totalConsultationFee: { $sum: { $ifNull: ["$consultationFee", 0] } },
+          visitCount: { $sum: 1 },
+          insuranceCount: { $sum: { $cond: [{ $ifNull: ["$insurance.provider", false] }, 1, 0] } },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ];
+
+    // 2. Procedures (from VisitDayCareBilling)
+    const billingPipeline: object[] = [
       ...(hospitalId ? [
         {
           $lookup: {
@@ -789,90 +878,91 @@ export const getRevenuePerPatient = async (req: Request, res: Response): Promise
         { $unwind: "$patientInfo" },
         {
           $match: {
-            ...sparklineMatch,
-            "patientInfo.hospitalId": toObjectId(hospitalId),
+            "patientInfo.hospitalId": hospitalObjId,
+            date: { $gte: fourteenDaysAgo },
+            status: { $ne: "Draft" },
           },
         }
       ] : [
-        { $match: sparklineMatch }
+        { $match: { date: { $gte: fourteenDaysAgo }, status: { $ne: "Draft" } } }
       ]),
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
-          totalRevenue: { $sum: "$totalGross" },
-          uniquePatients: { $addToSet: "$patient" },
+          totalGross: { $sum: "$totalGross" },
+          billCount: { $sum: 1 },
         },
       },
       { $sort: { _id: 1 } },
-      {
-        $project: {
-          _id: 0,
-          date: "$_id",
-          totalRevenue: { $round: ["$totalRevenue", 2] },
-          patientCount: { $size: "$uniquePatients" },
-          revenuePerPatient: {
-            $round: [
-              { $divide: ["$totalRevenue", { $max: [{ $size: "$uniquePatients" }, 1] }] },
-              2,
-            ],
-          },
-        },
-      },
     ];
 
-    const kpiMatch = {
-      date: { $gte: params.start, $lte: params.end },
-      status: { $ne: "Draft" },
-    };
-    const kpiPipeline: object[] = [
-      ...(hospitalId ? [
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patient",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
-        },
-        { $unwind: "$patientInfo" },
-        {
-          $match: {
-            ...kpiMatch,
-            "patientInfo.hospitalId": toObjectId(hospitalId),
-          },
-        }
-      ] : [
-        { $match: kpiMatch }
-      ]),
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: "$totalGross" },
-          uniquePatients: { $addToSet: "$patient" },
-        },
-      },
-    ];
-
-    const [sparklineRaw, [kpiRaw]] = await Promise.all([
-      VisitDayCareBilling.aggregate(sparklinePipeline as any[]),
-      VisitDayCareBilling.aggregate(kpiPipeline as any[]),
+    const [visitRaw, billingRaw] = await Promise.all([
+      ScanShareVisitModel.aggregate(visitPipeline as any[]),
+      VisitDayCareBilling.aggregate(billingPipeline as any[]),
     ]);
 
-    const totalRevenue = kpiRaw?.totalRevenue ?? 0;
-    const uniquePatients = kpiRaw?.uniquePatients?.length ?? 0;
-    const revenuePerPatient = uniquePatients > 0
-      ? Math.round((totalRevenue / uniquePatients) * 100) / 100
-      : 0;
-
-    const data = {
-      totalRevenue: Math.round(totalRevenue * 100) / 100,
-      uniquePatients,
-      revenuePerPatient,
-      sparkline: sparklineRaw,
-      meta: { from: params.start.toISOString(), to: params.end.toISOString(), cached: false },
+    const calculateMetrics = (data: any[], dateField: string = "_id") => {
+      const currentWeek = data.filter((d: any) => new Date(d[dateField]) >= sevenDaysAgo);
+      const prevWeek = data.filter((d: any) => new Date(d[dateField]) < sevenDaysAgo);
+      return { currentWeek, prevWeek };
     };
 
-    await setCached(cacheKey, data, CACHE_TTL.ANALYTICS_SHORT);
+    const visitMetrics = calculateMetrics(visitRaw);
+    const billingMetrics = calculateMetrics(billingRaw);
+
+    // Appointments (Avg Fee)
+    const currentApptFee = visitMetrics.currentWeek.reduce((sum, d) => sum + d.totalConsultationFee, 0);
+    const currentApptCount = visitMetrics.currentWeek.reduce((sum, d) => sum + d.visitCount, 0);
+    const prevApptFee = visitMetrics.prevWeek.reduce((sum, d) => sum + d.totalConsultationFee, 0);
+    const prevApptCount = visitMetrics.prevWeek.reduce((sum, d) => sum + d.visitCount, 0);
+    
+    const currentApptAvg = currentApptCount > 0 ? Math.round(currentApptFee / currentApptCount) : 0;
+    const prevApptAvg = prevApptCount > 0 ? Math.round(prevApptFee / prevApptCount) : 0;
+    const apptChange = prevApptAvg > 0 ? Math.round(((currentApptAvg - prevApptAvg) / prevApptAvg) * 10000) / 100 : 0;
+    const apptSparkline = visitMetrics.currentWeek.map(d => ({ date: d._id, value: d.visitCount > 0 ? Math.round(d.totalConsultationFee / d.visitCount) : 0 }));
+
+    // Procedures (Avg Gross)
+    const currentProcGross = billingMetrics.currentWeek.reduce((sum, d) => sum + d.totalGross, 0);
+    const currentProcCount = billingMetrics.currentWeek.reduce((sum, d) => sum + d.billCount, 0);
+    const prevProcGross = billingMetrics.prevWeek.reduce((sum, d) => sum + d.totalGross, 0);
+    const prevProcCount = billingMetrics.prevWeek.reduce((sum, d) => sum + d.billCount, 0);
+    
+    const currentProcAvg = currentProcCount > 0 ? Math.round(currentProcGross / currentProcCount) : 0;
+    const prevProcAvg = prevProcCount > 0 ? Math.round(prevProcGross / prevProcCount) : 0;
+    const procChange = prevProcAvg > 0 ? Math.round(((currentProcAvg - prevProcAvg) / prevProcAvg) * 10000) / 100 : 0;
+    const procSparkline = billingMetrics.currentWeek.map(d => ({ date: d._id, value: d.billCount > 0 ? Math.round(d.totalGross / d.billCount) : 0 }));
+
+    // Insurance %
+    const currentInsCount = visitMetrics.currentWeek.reduce((sum, d) => sum + d.insuranceCount, 0);
+    const prevInsCount = visitMetrics.prevWeek.reduce((sum, d) => sum + d.insuranceCount, 0);
+    const currentInsRate = currentApptCount > 0 ? Math.round((currentInsCount / currentApptCount) * 100) : 0;
+    const prevInsRate = prevApptCount > 0 ? Math.round((prevInsCount / prevApptCount) * 100) : 0;
+    const insChange = prevInsRate > 0 ? Math.round(((currentInsRate - prevInsRate) / prevInsRate) * 10000) / 100 : 0;
+    const insSparkline = visitMetrics.currentWeek.map(d => ({ date: d._id, value: d.visitCount > 0 ? Math.round((d.insuranceCount / d.visitCount) * 100) : 0 }));
+
+    const data = {
+      appointments: {
+        value: currentApptAvg,
+        changePercent: Math.abs(apptChange),
+        changeDirection: apptChange >= 0 ? "UP" : "DOWN",
+        sparkline: apptSparkline,
+      },
+      procedures: {
+        value: currentProcAvg,
+        changePercent: Math.abs(procChange),
+        changeDirection: procChange >= 0 ? "UP" : "DOWN",
+        sparkline: procSparkline,
+      },
+      insuranceReimbursementRate: {
+        value: currentInsRate,
+        changePercent: Math.abs(insChange),
+        changeDirection: insChange >= 0 ? "UP" : "DOWN",
+        sparkline: insSparkline,
+      },
+      meta: { daysBack: 7, hospitalId, cached: false },
+    };
+
+    await setCached(cacheKey, data, CACHE_TTL.ANALYTICS_MEDIUM);
     return successResponse(res, data);
   } catch (error: any) {
     console.error(`${CTRL} getRevenuePerPatient error:`, error);
@@ -882,101 +972,164 @@ export const getRevenuePerPatient = async (req: Request, res: Response): Promise
 
 export const getPatientSafety = async (req: Request, res: Response): Promise<void> => {
   try {
-    const params = parseAnalyticsParams(req.query as Record<string, unknown>);
     const hospitalId = getHospitalId(req);
-    const cacheKey = buildCacheKey(hospitalId, "dashboard-patient-safety", {
-      from: params.start.toISOString(), to: params.end.toISOString(),
-    });
+    const cacheKey = buildCacheKey(hospitalId, "dashboard-patient-safety-v2", { hospitalId });
 
     const cached = await getCached(cacheKey);
     if (cached) return successResponse(res, cached);
 
-    const incidentMatch: Record<string, unknown> = {
-      reportedAt: { $gte: params.start, $lte: params.end },
+    const now = new Date();
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const fourteenDaysAgo = new Date(sevenDaysAgo);
+    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 7);
+
+    const hospitalObjId = toObjectId(hospitalId);
+
+    // 1. Visits Pipeline
+    const visitsPipeline: object[] = [
+      ...(hospitalId ? [
+        {
+          $lookup: {
+            from: "Patients",
+            localField: "patientId",
+            foreignField: "_id",
+            as: "patientInfo",
+          },
+        },
+        { $unwind: "$patientInfo" },
+        {
+          $match: {
+            "patientInfo.hospitalId": hospitalObjId,
+            visitDate: { $gte: fourteenDaysAgo },
+          },
+        }
+      ] : [
+        { $match: { visitDate: { $gte: fourteenDaysAgo } } }
+      ]),
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$visitDate" } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ];
+
+    // 2. Readmissions Pipeline
+    const readmissionsPipeline: object[] = [
+      ...(hospitalId ? [
+        {
+          $lookup: {
+            from: "Patients",
+            localField: "patientId",
+            foreignField: "_id",
+            as: "patientInfo",
+          },
+        },
+        { $unwind: "$patientInfo" },
+        {
+          $match: {
+            "patientInfo.hospitalId": hospitalObjId,
+            createdAt: { $gte: fourteenDaysAgo },
+            isReadmission: true,
+          },
+        }
+      ] : [
+        { $match: { createdAt: { $gte: fourteenDaysAgo }, isReadmission: true } }
+      ]),
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ];
+
+    // 3. Incidents Pipeline
+    const incidentsMatch: Record<string, any> = {
+      reportedAt: { $gte: fourteenDaysAgo },
       type: { $in: ["COMPLAINT", "MEDICATION_ERROR"] },
     };
-    const hospitalObjId = toObjectId(hospitalId);
-    if (hospitalObjId) incidentMatch.hospitalId = hospitalObjId;
+    if (hospitalObjId) incidentsMatch.hospitalId = hospitalObjId;
 
-    let readmissionCount = 0;
-    let totalVisits = 0;
+    const incidentsPipeline: object[] = [
+      { $match: incidentsMatch },
+      {
+        $group: {
+          _id: {
+            date: { $dateToString: { format: "%Y-%m-%d", date: "$reportedAt" } },
+            type: "$type",
+          },
+          count: { $sum: 1 },
+        },
+      },
+    ];
 
-    if (hospitalId) {
-      const [readmissionRaw, totalVisitsRaw] = await Promise.all([
-        VisitAssessmentModel.aggregate([
-          {
-            $match: {
-              createdAt: { $gte: params.start, $lte: params.end },
-              isReadmission: true,
-            },
-          },
-          {
-            $lookup: {
-              from: "Patients",
-              localField: "patientId",
-              foreignField: "_id",
-              as: "patientInfo",
-            },
-          },
-          { $unwind: "$patientInfo" },
-          { $match: { "patientInfo.hospitalId": toObjectId(hospitalId) } },
-          { $count: "count" },
-        ]),
-        ScanShareVisitModel.aggregate([
-          {
-            $match: {
-              visitDate: { $gte: params.start, $lte: params.end },
-            },
-          },
-          {
-            $lookup: {
-              from: "Patients",
-              localField: "patientId",
-              foreignField: "_id",
-              as: "patientInfo",
-            },
-          },
-          { $unwind: "$patientInfo" },
-          { $match: { "patientInfo.hospitalId": toObjectId(hospitalId) } },
-          { $count: "count" },
-        ]),
-      ]);
-      readmissionCount = readmissionRaw[0]?.count ?? 0;
-      totalVisits = totalVisitsRaw[0]?.count ?? 0;
-    } else {
-      const [rCount, tVisits] = await Promise.all([
-        VisitAssessmentModel.countDocuments({
-          createdAt: { $gte: params.start, $lte: params.end },
-          isReadmission: true,
-        }),
-        ScanShareVisitModel.countDocuments({
-          visitDate: { $gte: params.start, $lte: params.end },
-        }),
-      ]);
-      readmissionCount = rCount;
-      totalVisits = tVisits;
-    }
-
-    const [incidentCounts] = await Promise.all([
-      IncidentReportModel.aggregate([
-        { $match: incidentMatch },
-        { $group: { _id: "$type", count: { $sum: 1 } } },
-      ]),
+    const [visitsRaw, readmissionsRaw, incidentsRaw] = await Promise.all([
+      ScanShareVisitModel.aggregate(visitsPipeline as any[]),
+      VisitAssessmentModel.aggregate(readmissionsPipeline as any[]),
+      IncidentReportModel.aggregate(incidentsPipeline as any[]),
     ]);
 
-    const incidentByType = new Map(incidentCounts.map((r: any) => [r._id, r.count]));
+    const calculateMetrics = (data: any[], dateField: string = "_id", valField: string = "count") => {
+      const currentWeek = data.filter((d: any) => new Date(d[dateField]) >= sevenDaysAgo);
+      const prevWeek = data.filter((d: any) => new Date(d[dateField]) < sevenDaysAgo);
+      const currentVal = currentWeek.reduce((sum, d) => sum + d[valField], 0);
+      const prevVal = prevWeek.reduce((sum, d) => sum + d[valField], 0);
+      return { currentWeek, prevWeek, currentVal, prevVal };
+    };
+
+    const visitM = calculateMetrics(visitsRaw);
+    const readmissionM = calculateMetrics(readmissionsRaw);
+    
+    const complaintData = incidentsRaw.filter(d => d._id.type === "COMPLAINT").map(d => ({ _id: d._id.date, count: d.count }));
+    const complaintM = calculateMetrics(complaintData);
+    
+    const medErrorData = incidentsRaw.filter(d => d._id.type === "MEDICATION_ERROR").map(d => ({ _id: d._id.date, count: d.count }));
+    const medErrorM = calculateMetrics(medErrorData);
+
+    // Readmission Rate
+    const currentReadmissionRate = visitM.currentVal > 0 ? Math.round((readmissionM.currentVal / visitM.currentVal) * 100) : 0;
+    const prevReadmissionRate = visitM.prevVal > 0 ? Math.round((readmissionM.prevVal / visitM.prevVal) * 100) : 0;
+    const readmissionChange = prevReadmissionRate > 0 ? Math.round(((currentReadmissionRate - prevReadmissionRate) / prevReadmissionRate) * 10000) / 100 : 0;
+    
+    const readmissionSparkline = readmissionM.currentWeek.map(d => {
+      const v = visitM.currentWeek.find(v => v._id === d._id);
+      return { date: d._id, value: v && v.count > 0 ? Math.round((d.count / v.count) * 100) : 0 };
+    });
+
+    // Complaints
+    const complaintChange = complaintM.prevVal > 0 ? Math.round(((complaintM.currentVal - complaintM.prevVal) / complaintM.prevVal) * 10000) / 100 : 0;
+    const complaintSparkline = complaintM.currentWeek.map(d => ({ date: d._id, value: d.count }));
+
+    // Medication Errors
+    const medErrorChange = medErrorM.prevVal > 0 ? Math.round(((medErrorM.currentVal - medErrorM.prevVal) / medErrorM.prevVal) * 10000) / 100 : 0;
+    const medErrorSparkline = medErrorM.currentWeek.map(d => ({ date: d._id, value: d.count }));
 
     const data = {
-      readmissionRate: pct(readmissionCount, totalVisits),
-      readmissionCount,
-      complaintsCount: incidentByType.get("COMPLAINT") ?? 0,
-      medicationErrorsCount: incidentByType.get("MEDICATION_ERROR") ?? 0,
-      meta: {
-        totalVisitsInPeriod: totalVisits,
-        from: params.start.toISOString(),
-        to: params.end.toISOString(),
-        cached: false,
+      readmissionRates: {
+        value: currentReadmissionRate,
+        changePercent: Math.abs(readmissionChange),
+        changeDirection: readmissionChange >= 0 ? "UP" : "DOWN",
+        sparkline: readmissionSparkline,
       },
+      complaints: {
+        value: complaintM.currentVal,
+        changePercent: Math.abs(complaintChange),
+        changeDirection: complaintChange >= 0 ? "UP" : "DOWN",
+        sparkline: complaintSparkline,
+      },
+      medicationErrors: {
+        value: medErrorM.currentVal,
+        changePercent: Math.abs(medErrorChange),
+        changeDirection: medErrorChange >= 0 ? "UP" : "DOWN",
+        sparkline: medErrorSparkline,
+      },
+      meta: { daysBack: 7, hospitalId, cached: false },
     };
 
     await setCached(cacheKey, data, CACHE_TTL.ANALYTICS_SHORT);

@@ -80,7 +80,9 @@ export const login = async (
     let rawPerms = null;
 
     if (user.role_id === ROLE.DOCTOR && user.doctorId) {
-      const doctor = await DoctorModel.findById(user.doctorId).select("permissions accessLevel").lean();
+      const doctor = await DoctorModel.findById(user.doctorId)
+        .select("permissions accessLevel")
+        .lean();
       if (doctor) {
         accessLevel = (doctor as any).accessLevel || "LIMITED";
         rawPerms = doctor.permissions;
@@ -88,11 +90,20 @@ export const login = async (
     } else if (user.role_id === ROLE.NURSE && (user as any).nurseId) {
       // Need to import NurseModel above
       const NurseModel = require("../models/Nurse").NurseModel;
-      const nurse = await NurseModel.findById((user as any).nurseId).select("permissions accessLevel").lean();
+      const nurse = await NurseModel.findById((user as any).nurseId)
+        .select("permissions accessLevel")
+        .lean();
       if (nurse) {
         accessLevel = (nurse as any).accessLevel || "LIMITED";
         rawPerms = nurse.permissions;
       }
+    } else if (
+      user.role_id === ROLE.SUPER_ADMIN ||
+      user.role_id === ROLE.HOSPITAL_ADMIN ||
+      user.is_super_admin
+    ) {
+      accessLevel = "FULL";
+      rawPerms = user.permissions;
     } else {
       // Admins, Receptionist, etc.
       accessLevel = (user as any).accessLevel || "LIMITED";
@@ -124,6 +135,7 @@ export const login = async (
         name: user.name,
         role: user.role_id,
         is_super_admin: user.is_super_admin,
+        access_token: accessToken,
         accessToken,
         sessionId: session._id.toString(),
         permissions,
