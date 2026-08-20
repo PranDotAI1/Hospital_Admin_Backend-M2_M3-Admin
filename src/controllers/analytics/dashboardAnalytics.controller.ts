@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { Types } from "mongoose";
 import { ScanShareVisitModel, ScanShareVisitStatus } from "../../models/ScanShareVisit";
+import { PatientModel } from "../../models/Patient";
 import { VisitAssessmentModel } from "../../models/VisitAssessment";
 import { VisitDischargeSummaryModel } from "../../models/VisitDischargeSummary";
 import { VisitDayCareBilling } from "../../models/VisitDayCareBilling";
@@ -17,6 +18,8 @@ import {
   formatPeriodLabel,
   buildDateGroupExpr,
   getHospitalId,
+  generatePeriodSkeleton,
+  fillPeriodGaps,
 } from "../../utils/analytics.helpers";
 import {
   buildCacheKey,
@@ -40,31 +43,16 @@ export const getRecoveryRates = async (req: Request, res: Response): Promise<voi
     const cached = await getCached(cacheKey);
     if (cached) return successResponse(res, cached);
 
-    const match: Record<string, any> = {
-      visitDate: { $gte: params.start, $lte: params.end },
-      visitStatus: { $in: [ScanShareVisitStatus.COMPLETED, ScanShareVisitStatus.REGISTERED] },
-    };
-
     const pipeline: object[] = [
-      ...(hospitalId ? [
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
+      ...(hospitalId ? [{ $match: { hospitalId: toObjectId(hospitalId) } }] : []),
+      { $unwind: "$visits" },
+      { $replaceRoot: { newRoot: "$visits" } },
+      {
+        $match: {
+          visitDate: { $gte: params.start, $lte: params.end },
+          visitStatus: { $in: ["COMPLETED", "REGISTERED"] },
         },
-        { $unwind: "$patientInfo" },
-        {
-          $match: {
-            ...match,
-            "patientInfo.hospitalId": toObjectId(hospitalId),
-          },
-        }
-      ] : [
-        { $match: match }
-      ]),
+      },
       {
         $group: {
           _id: buildDateGroupExpr("visitDate", params.groupBy),
@@ -85,15 +73,25 @@ export const getRecoveryRates = async (req: Request, res: Response): Promise<voi
       },
     ];
 
-    const rawResults = await ScanShareVisitModel.aggregate(pipeline as any[]);
+    const rawResults = await PatientModel.aggregate(pipeline as any[]);
     const totalNew = rawResults.reduce((s: number, r: any) => s + r.newPatients, 0);
     const totalRecovered = rawResults.reduce((s: number, r: any) => s + r.recoveredPatients, 0);
 
-    const recoveryRates = rawResults.map((r: any) => ({
+    const rawRates = rawResults.map((r: any) => ({
       period: formatPeriodLabel(r.period, params.groupBy),
       newPatients: r.newPatients,
       recoveredPatients: r.recoveredPatients,
     }));
+
+    // Always render a full skeleton so the chart shows all buckets even when
+    // most periods have no data (avoids a single lonely bar).
+    const skeleton = generatePeriodSkeleton(params.start, params.end, params.groupBy);
+    const recoveryRates = fillPeriodGaps(
+      skeleton,
+      rawRates,
+      "period",
+      (period) => ({ period, newPatients: 0, recoveredPatients: 0 })
+    );
 
     const data = {
       recoveryRates,
@@ -120,33 +118,31 @@ export const getComplicationRates = async (req: Request, res: Response): Promise
     const cached = await getCached(cacheKey);
     if (cached) return successResponse(res, cached);
 
-    const match: Record<string, any> = {
-      createdAt: { $gte: params.start, $lte: params.end },
-    };
-
     const pipeline: object[] = [
-      ...(hospitalId ? [
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
+      ...(hospitalId ? [{ $match: { hospitalId: toObjectId(hospitalId) } }] : []),
+      { $unwind: "$visits" },
+      { $replaceRoot: { newRoot: "$visits" } },
+      {
+        $match: {
+          visitDate: { $gte: params.start, $lte: params.end },
         },
-        { $unwind: "$patientInfo" },
-        {
-          $match: {
-            ...match,
-            "patientInfo.hospitalId": toObjectId(hospitalId),
-          },
-        }
-      ] : [
-        { $match: match }
-      ]),
+      },
+      {
+        $lookup: {
+          from: "visit_assessments",
+          localField: "visitId",
+          foreignField: "visitId",
+          as: "assessment",
+        },
+      },
+      {
+        $addFields: {
+          complications: { $arrayElemAt: ["$assessment.complications", 0] },
+        },
+      },
       {
         $group: {
-          _id: buildDateGroupExpr("createdAt", params.groupBy),
+          _id: buildDateGroupExpr("visitDate", params.groupBy),
           totalVisits: { $sum: 1 },
           withComplications: {
             $sum: {
@@ -158,16 +154,26 @@ export const getComplicationRates = async (req: Request, res: Response): Promise
       { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
     ];
 
-    const rawResults = await VisitAssessmentModel.aggregate(pipeline as any[]);
+    const rawResults = await PatientModel.aggregate(pipeline as any[]);
     const totalVisits = rawResults.reduce((s: number, r: any) => s + r.totalVisits, 0);
     const totalWithComp = rawResults.reduce((s: number, r: any) => s + r.withComplications, 0);
 
-    const complicationRates = rawResults.map((r: any) => ({
+    const rawRates = rawResults.map((r: any) => ({
       period: formatPeriodLabel(r._id, params.groupBy),
       totalVisits: r.totalVisits,
       withComplications: r.withComplications,
       rate: pct(r.withComplications, r.totalVisits),
     }));
+
+    // Fill in zero-valued buckets for every period in the range so the chart
+    // always displays a complete x-axis instead of a single lonely bar.
+    const skeleton = generatePeriodSkeleton(params.start, params.end, params.groupBy);
+    const complicationRates = fillPeriodGaps(
+      skeleton,
+      rawRates,
+      "period",
+      (period) => ({ period, totalVisits: 0, withComplications: 0, rate: 0 })
+    );
 
     const data = {
       complicationRates,
@@ -261,8 +267,8 @@ export const getSurvivalRates = async (req: Request, res: Response): Promise<voi
 
     const match: Record<string, any> = {
       createdAt: { $gte: params.start, $lte: params.end },
-      diseaseCategory: { $exists: true, $ne: null },
-      outcomeStatus: { $in: ["SURVIVED", "DECEASED", "TRANSFERRED"] },
+      diagnosis: { $exists: true, $ne: null },
+      conditionAtDischarge: { $exists: true, $ne: null },
     };
 
     const pipeline: object[] = [
@@ -287,10 +293,26 @@ export const getSurvivalRates = async (req: Request, res: Response): Promise<voi
       ]),
       {
         $group: {
-          _id: "$diseaseCategory",
+          _id: "$diagnosis",
           total: { $sum: 1 },
-          survived: { $sum: { $cond: [{ $eq: ["$outcomeStatus", "SURVIVED"] }, 1, 0] } },
-          deceased: { $sum: { $cond: [{ $eq: ["$outcomeStatus", "DECEASED"] }, 1, 0] } },
+          survived: { 
+            $sum: { 
+              $cond: [
+                { $in: ["$conditionAtDischarge", ["Stable", "Improved", "Recovered", "SURVIVED"]] }, 
+                1, 
+                0
+              ] 
+            } 
+          },
+          deceased: { 
+            $sum: { 
+              $cond: [
+                { $in: ["$conditionAtDischarge", ["Critical", "Deceased", "DECEASED"]] }, 
+                1, 
+                0
+              ] 
+            } 
+          },
         },
       },
       { $sort: { total: -1 } },
@@ -298,11 +320,11 @@ export const getSurvivalRates = async (req: Request, res: Response): Promise<voi
       {
         $project: {
           _id: 0,
-          disease: "$_id",
+          period: "$_id",
           total: 1,
           survived: 1,
           deceased: 1,
-          survivalRate: {
+          rate: {
             $round: [{ $multiply: [{ $divide: ["$survived", { $max: ["$total", 1] }] }, 100] }, 1],
           },
         },
@@ -340,30 +362,15 @@ export const getServiceDelivery = async (req: Request, res: Response): Promise<v
     const cached = await getCached(cacheKey);
     if (cached) return successResponse(res, cached);
 
-    const match: Record<string, any> = {
-      visitDate: { $gte: params.start, $lte: params.end },
-    };
-
     const pipeline: object[] = [
-      ...(hospitalId ? [
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
+      ...(hospitalId ? [{ $match: { hospitalId: toObjectId(hospitalId) } }] : []),
+      { $unwind: "$visits" },
+      { $replaceRoot: { newRoot: "$visits" } },
+      {
+        $match: {
+          visitDate: { $gte: params.start, $lte: params.end },
         },
-        { $unwind: "$patientInfo" },
-        {
-          $match: {
-            ...match,
-            "patientInfo.hospitalId": toObjectId(hospitalId),
-          },
-        }
-      ] : [
-        { $match: match }
-      ]),
+      },
       {
         $group: {
           _id: null,
@@ -443,7 +450,7 @@ export const getServiceDelivery = async (req: Request, res: Response): Promise<v
       }
     ];
 
-    const rawResult = await ScanShareVisitModel.aggregate(pipeline as any[]);
+    const rawResult = await PatientModel.aggregate(pipeline as any[]);
     const aggs = rawResult[0] || {
       totalWaitTimeMs: 0, waitCount: 0,
       totalBedWaitTimeMs: 0, bedWaitCount: 0,
@@ -519,25 +526,20 @@ export const getInfectionRates = async (req: Request, res: Response): Promise<vo
 
     let totalAdmissions = 0;
     if (hospitalId) {
-      const admRaw = await ScanShareVisitModel.aggregate([
-        { $match: { visitDate: { $gte: params.start, $lte: params.end } } },
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "pi",
-          },
-        },
-        { $unwind: "$pi" },
-        { $match: { "pi.hospitalId": toObjectId(hospitalId) } },
+      const admRaw = await PatientModel.aggregate([
+        { $match: { hospitalId: toObjectId(hospitalId) } },
+        { $unwind: "$visits" },
+        { $match: { "visits.visitDate": { $gte: params.start, $lte: params.end } } },
         { $count: "count" },
       ]);
       totalAdmissions = admRaw[0]?.count ?? 0;
     } else {
-      totalAdmissions = await ScanShareVisitModel.countDocuments({
-        visitDate: { $gte: params.start, $lte: params.end },
-      });
+      const admRaw = await PatientModel.aggregate([
+        { $unwind: "$visits" },
+        { $match: { "visits.visitDate": { $gte: params.start, $lte: params.end } } },
+        { $count: "count" },
+      ]);
+      totalAdmissions = admRaw[0]?.count ?? 0;
     }
 
     const data = {
@@ -585,8 +587,8 @@ export const getResourceUtilization = async (req: Request, res: Response): Promi
         $project: {
           _id: 0,
           resourceId: "$_id",
-          name: "$resourceName",
-          utilizationRate: 1,
+          category: "$resourceName",
+          percentage: "$utilizationRate",
           capacity: 1,
           activeCount: 1,
           snapshotDate: 1,
@@ -645,13 +647,13 @@ export const getEquipmentUtilization = async (req: Request, res: Response): Prom
 
     const rawResults = await ResourceUtilizationModel.aggregate(pipeline as any[]);
 
-    const equipmentUtilization = rawResults.map((r: any) => {
+    const equipment = rawResults.map((r: any) => {
       const weekChange = r.prevRate > 0
         ? Math.round(((r.currentRate - r.prevRate) / r.prevRate) * 10000) / 100
         : 0;
       return {
         name: r._id,
-        currentRate: r.currentRate,
+        percentage: r.currentRate,
         changePercent: Math.abs(weekChange),
         changeDirection: weekChange >= 0 ? "UP" : "DOWN",
         sparkline: r.sparkline,
@@ -659,7 +661,7 @@ export const getEquipmentUtilization = async (req: Request, res: Response): Prom
     });
 
     const data = {
-      equipmentUtilization,
+      equipment,
       meta: { daysBack: 7, hospitalId, cached: false },
     };
 
@@ -701,21 +703,22 @@ export const getFacilityUtilization = async (req: Request, res: Response): Promi
     ];
 
     const rawResults = await ResourceUtilizationModel.aggregate(pipeline as any[]);
-    const facilityUtilization = rawResults.map((r: any) => {
+    const facilities = rawResults.map((r: any) => {
       const weekChange = r.prevRate > 0
         ? Math.round(((r.currentRate - r.prevRate) / r.prevRate) * 10000) / 100
         : 0;
       return {
         name: r._id,
-        currentRate: r.currentRate,
+        percentage: r.currentRate,
         changePercent: Math.abs(weekChange),
         changeDirection: weekChange >= 0 ? "UP" : "DOWN",
+        status: r.currentRate >= 85 ? "Critical" : "Optimal",
         sparkline: r.sparkline,
       };
     });
 
     const data = {
-      facilityUtilization,
+      facilities,
       meta: { daysBack: 7, hospitalId, cached: false },
     };
 
@@ -741,31 +744,30 @@ export const getStaffAllocation = async (req: Request, res: Response): Promise<v
 
     let activePatientsToday = 0;
     if (hospitalId) {
-      const activeRaw = await ScanShareVisitModel.aggregate([
+      const activeRaw = await PatientModel.aggregate([
+        { $match: { hospitalId: toObjectId(hospitalId) } },
+        { $unwind: "$visits" },
         {
           $match: {
-            visitDate: { $gte: todayStart, $lte: now },
-            visitStatus: { $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.PENDING] },
+            "visits.visitDate": { $gte: todayStart, $lte: now },
+            "visits.visitStatus": { $in: ["REGISTERED", "PENDING"] },
           },
         },
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
-        },
-        { $unwind: "$patientInfo" },
-        { $match: { "patientInfo.hospitalId": toObjectId(hospitalId) } },
         { $count: "count" },
       ]);
       activePatientsToday = activeRaw[0]?.count ?? 0;
     } else {
-      activePatientsToday = await ScanShareVisitModel.countDocuments({
-        visitDate: { $gte: todayStart, $lte: now },
-        visitStatus: { $in: [ScanShareVisitStatus.REGISTERED, ScanShareVisitStatus.PENDING] },
-      });
+      const activeRaw = await PatientModel.aggregate([
+        { $unwind: "$visits" },
+        {
+          $match: {
+            "visits.visitDate": { $gte: todayStart, $lte: now },
+            "visits.visitStatus": { $in: ["REGISTERED", "PENDING"] },
+          },
+        },
+        { $count: "count" },
+      ]);
+      activePatientsToday = activeRaw[0]?.count ?? 0;
     }
 
     const docQuery: Record<string, any> = { isActive: { $ne: false }, currentStatus: { $ne: "UNAVAILABLE" } };
@@ -788,20 +790,12 @@ export const getStaffAllocation = async (req: Request, res: Response): Promise<v
     ]);
 
     const totalStaff = availableDoctors + availableNurses;
-    const patientToStaffRatio = totalStaff > 0
-      ? Math.round((activePatientsToday / totalStaff) * 10) / 10
-      : 0;
 
     const data = {
-      activePatientsToday,
-      availableDoctors,
-      availableNurses,
-      totalAvailableStaff: totalStaff,
-      patientToStaffRatio,
-      allocationStatus:
-        patientToStaffRatio > 5 ? "CRITICAL" :
-        patientToStaffRatio > 3 ? "HIGH" :
-        patientToStaffRatio > 1 ? "NORMAL" : "LOW",
+      staffAllocation: [
+        { department: "Doctors", count: availableDoctors, status: availableDoctors >= activePatientsToday / 5 ? "Optimal" : "Critical" },
+        { department: "Nurses", count: availableNurses, status: availableNurses >= activePatientsToday / 3 ? "Optimal" : "Critical" }
+      ],
       meta: { asOf: now.toISOString(), cached: false },
     };
 
@@ -832,33 +826,21 @@ export const getRevenuePerPatient = async (req: Request, res: Response): Promise
     const hospitalObjId = toObjectId(hospitalId);
     const baseMatch = hospitalObjId ? { hospitalId: hospitalObjId } : {};
 
-    // 1. Appointments & Insurance (from ScanShareVisit)
+    // 1. Appointments & Insurance (from Patient visits)
     const visitPipeline: object[] = [
-      ...(hospitalId ? [
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
+      ...(hospitalId ? [{ $match: { hospitalId: hospitalObjId } }] : []),
+      { $unwind: "$visits" },
+      {
+        $match: {
+          "visits.visitDate": { $gte: fourteenDaysAgo },
         },
-        { $unwind: "$patientInfo" },
-        {
-          $match: {
-            "patientInfo.hospitalId": hospitalObjId,
-            visitDate: { $gte: fourteenDaysAgo },
-          },
-        }
-      ] : [
-        { $match: { visitDate: { $gte: fourteenDaysAgo } } }
-      ]),
+      },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$visitDate" } },
-          totalConsultationFee: { $sum: { $ifNull: ["$consultationFee", 0] } },
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$visits.visitDate" } },
+          totalConsultationFee: { $sum: { $ifNull: ["$visits.consultationFee", 0] } },
           visitCount: { $sum: 1 },
-          insuranceCount: { $sum: { $cond: [{ $ifNull: ["$insurance.provider", false] }, 1, 0] } },
+          insuranceCount: { $sum: { $cond: [{ $gt: [{ $size: { $ifNull: ["$insurance", []] } }, 0] }, 1, 0] } },
         },
       },
       { $sort: { _id: 1 } },
@@ -897,7 +879,7 @@ export const getRevenuePerPatient = async (req: Request, res: Response): Promise
     ];
 
     const [visitRaw, billingRaw] = await Promise.all([
-      ScanShareVisitModel.aggregate(visitPipeline as any[]),
+      PatientModel.aggregate(visitPipeline as any[]),
       VisitDayCareBilling.aggregate(billingPipeline as any[]),
     ]);
 
@@ -990,28 +972,12 @@ export const getPatientSafety = async (req: Request, res: Response): Promise<voi
 
     // 1. Visits Pipeline
     const visitsPipeline: object[] = [
-      ...(hospitalId ? [
-        {
-          $lookup: {
-            from: "Patients",
-            localField: "patientId",
-            foreignField: "_id",
-            as: "patientInfo",
-          },
-        },
-        { $unwind: "$patientInfo" },
-        {
-          $match: {
-            "patientInfo.hospitalId": hospitalObjId,
-            visitDate: { $gte: fourteenDaysAgo },
-          },
-        }
-      ] : [
-        { $match: { visitDate: { $gte: fourteenDaysAgo } } }
-      ]),
+      ...(hospitalId ? [{ $match: { hospitalId: hospitalObjId } }] : []),
+      { $unwind: "$visits" },
+      { $match: { "visits.visitDate": { $gte: fourteenDaysAgo } } },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$visitDate" } },
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$visits.visitDate" } },
           count: { $sum: 1 },
         },
       },
@@ -1070,7 +1036,7 @@ export const getPatientSafety = async (req: Request, res: Response): Promise<voi
     ];
 
     const [visitsRaw, readmissionsRaw, incidentsRaw] = await Promise.all([
-      ScanShareVisitModel.aggregate(visitsPipeline as any[]),
+      PatientModel.aggregate(visitsPipeline as any[]),
       VisitAssessmentModel.aggregate(readmissionsPipeline as any[]),
       IncidentReportModel.aggregate(incidentsPipeline as any[]),
     ]);

@@ -40,7 +40,11 @@ router.get("/infection-rates", ...analyticsGuard, getInfectionRates);
 
 router.get("/resource-utilization", ...analyticsGuard, getResourceUtilization);
 
-router.get("/equipment-utilization", ...analyticsGuard, getEquipmentUtilization);
+router.get(
+  "/equipment-utilization",
+  ...analyticsGuard,
+  getEquipmentUtilization,
+);
 
 router.get("/facility-utilization", ...analyticsGuard, getFacilityUtilization);
 

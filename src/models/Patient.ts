@@ -12,6 +12,9 @@ export interface IPatientVisitRef {
   consultationFee?: number;
   visitType?: string;
   description?: string;
+  consultationStartedAt?: Date;
+  consultationEndedAt?: Date;
+  treatmentOutcome?: "SUCCESS" | "ONGOING" | "FAILED";
 }
 
 export interface IPatientInsurance {
@@ -100,6 +103,9 @@ const PatientVisitRefSchema = new Schema<IPatientVisitRef>(
     consultationFee: { type: Number, min: 0 },
     visitType: { type: String },
     description: { type: String },
+    consultationStartedAt: { type: Date },
+    consultationEndedAt: { type: Date },
+    treatmentOutcome: { type: String, enum: ["SUCCESS", "ONGOING", "FAILED"] },
   },
   { _id: false },
 );

@@ -218,3 +218,100 @@ export const getHospitalId = (req: Request): string | undefined => {
   const fromQuery  = req.query.hospitalId as string | undefined;
   return fromSession || fromQuery;
 };
+
+/**
+ * Generates a complete ordered list of period labels between `start` and `end`
+ * for the given `groupBy` granularity. This ensures time-series charts always
+ * render a full skeleton of x-axis buckets even when the database has no
+ * records for certain periods.
+ *
+ * Caps: day → 60 buckets max, week → 26, month → 24, quarter → 12, year → 10.
+ */
+export const generatePeriodSkeleton = (
+  start: Date,
+  end: Date,
+  groupBy: PeriodType
+): string[] => {
+  const labels: string[] = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+
+  const CAPS: Record<PeriodType, number> = {
+    day: 60,
+    week: 26,
+    month: 24,
+    quarter: 12,
+    year: 10,
+  };
+  const cap = CAPS[groupBy] ?? 26;
+
+  while (cursor <= end && labels.length < cap) {
+    const year  = cursor.getFullYear();
+    const month = cursor.getMonth() + 1;
+    const day   = cursor.getDate();
+
+    switch (groupBy) {
+      case "day":
+        labels.push(`${MONTH_NAMES[month - 1]} ${day}, ${year}`);
+        cursor.setDate(cursor.getDate() + 1);
+        break;
+      case "week": {
+        // ISO week number
+        const tmp = new Date(cursor);
+        tmp.setHours(0, 0, 0, 0);
+        tmp.setDate(tmp.getDate() + 3 - ((tmp.getDay() + 6) % 7));
+        const week1 = new Date(tmp.getFullYear(), 0, 4);
+        const weekNo =
+          1 +
+          Math.round(
+            ((tmp.getTime() - week1.getTime()) / 86400000 -
+              3 +
+              ((week1.getDay() + 6) % 7)) /
+              7
+          );
+        labels.push(`Week ${weekNo}, ${year}`);
+        cursor.setDate(cursor.getDate() + 7);
+        break;
+      }
+      case "month":
+        labels.push(`${MONTH_NAMES[month - 1]} ${year}`);
+        cursor.setMonth(cursor.getMonth() + 1);
+        break;
+      case "quarter": {
+        const q = Math.ceil(month / 3);
+        labels.push(`Q${q} ${year}`);
+        cursor.setMonth(cursor.getMonth() + 3);
+        break;
+      }
+      case "year":
+        labels.push(`${year}`);
+        cursor.setFullYear(cursor.getFullYear() + 1);
+        break;
+      default:
+        cursor.setDate(cursor.getDate() + 7);
+    }
+  }
+
+  return labels;
+};
+
+/**
+ * Merges real data points into a full period skeleton.
+ * Any period missing from `realData` gets a zero-filled row using `zeroFactory`.
+ *
+ * @param skeleton  - ordered period labels from generatePeriodSkeleton
+ * @param realData  - the actual aggregation results (must have a `period` string field)
+ * @param periodKey - the field name that holds the period label in each real-data item
+ * @param zeroFactory - function that returns a zeroed-out row for a given period label
+ */
+export const fillPeriodGaps = <T extends Record<string, unknown>>(
+  skeleton: string[],
+  realData: T[],
+  periodKey: keyof T,
+  zeroFactory: (period: string) => T
+): T[] => {
+  const dataMap = new Map<string, T>(
+    realData.map((d) => [String(d[periodKey]), d])
+  );
+  return skeleton.map((label) => dataMap.get(label) ?? zeroFactory(label));
+};

@@ -263,14 +263,15 @@ export const getPatientSatisfaction = async (req: Request, res: Response): Promi
       { $group: { _id: null, avgScore: { $avg: "$score" } } },
     ]);
 
-    const currentScore = current ? Math.round(((current.avgScore ?? 0) / 5) * 1000) / 10 : 0;
-    const previousScore = previous ? Math.round(((previous.avgScore ?? 0) / 5) * 1000) / 10 : 0;
+    const currentScore = current ? Math.round((current.avgScore ?? 0) * 10) / 10 : 0;
+    const previousScore = previous ? Math.round((previous.avgScore ?? 0) * 10) / 10 : 0;
     const changePercent = previousScore > 0
       ? Math.round(((currentScore - previousScore) / previousScore) * 10000) / 100
       : 0;
 
     const data = {
       satisfactionScore: currentScore,
+      satisfactionPercentage: currentScore > 0 ? Math.round((currentScore / 5) * 100) : 0,
       previousPeriodScore: previousScore,
       changePercent: Math.abs(changePercent),
       changeDirection: changePercent >= 0 ? "UP" : "DOWN",
@@ -340,7 +341,7 @@ export const getPrimaryDiagnosis = async (req: Request, res: Response): Promise<
       {
         $group: {
           _id: "$primaryDiagnosis.code",
-          display: { $first: "$primaryDiagnosis.display" },
+          display: { $first: { $ifNull: ["$primaryDiagnosis.display", "$primaryDiagnosis.code"] } },
           cases: { $sum: 1 },
         },
       },
@@ -411,10 +412,11 @@ export const getSecondaryDiagnosis = async (req: Request, res: Response): Promis
         { $match: match }
       ]),
       { $unwind: "$secondaryDiagnoses" },
+      { $match: { "secondaryDiagnoses.code": { $exists: true, $ne: null } } },
       {
         $group: {
           _id: "$secondaryDiagnoses.code",
-          display: { $first: "$secondaryDiagnoses.display" },
+          display: { $first: { $ifNull: ["$secondaryDiagnoses.display", "$secondaryDiagnoses.code"] } },
           cases: { $sum: 1 },
         },
       },
@@ -457,26 +459,38 @@ export const getSocialDeterminants = async (req: Request, res: Response): Promis
       baseMatch.hospitalId = new Types.ObjectId(hospitalId);
     }
 
-    const [totals, eduCount, unemployedCount, economicCount, accessCount, foodCount, crimeCount, employmentCount] = await Promise.all([
-      PatientModel.countDocuments(baseMatch),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.education": { $in: ["NONE", "PRIMARY"] } }),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.employment": "UNEMPLOYED" }),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.incomeLevel": { $in: ["VERY_LOW", "LOW"] } }),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.accessToHealthcare": { $in: ["LIMITED", "NO_ACCESS"] } }),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.foodSecurity": "INSECURE" }),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.hasCriminalSafetyRisk": true }),
-      PatientModel.countDocuments({ ...baseMatch, "socialProfile.employment": { $in: ["UNEMPLOYED", "RETIRED"] } }),
-    ]);
+    const pipeline = [
+      { $match: baseMatch },
+      {
+        $group: {
+          _id: null,
+          totals: { $sum: 1 },
+          eduCount: { $sum: { $cond: [{ $in: ["$socialProfile.education", ["NONE", "PRIMARY"]] }, 1, 0] } },
+          unemployedCount: { $sum: { $cond: [{ $eq: ["$socialProfile.employment", "UNEMPLOYED"] }, 1, 0] } },
+          economicCount: { $sum: { $cond: [{ $in: ["$socialProfile.incomeLevel", ["VERY_LOW", "LOW"]] }, 1, 0] } },
+          accessCount: { $sum: { $cond: [{ $in: ["$socialProfile.accessToHealthcare", ["LIMITED", "NO_ACCESS"]] }, 1, 0] } },
+          foodCount: { $sum: { $cond: [{ $eq: ["$socialProfile.foodSecurity", "INSECURE"] }, 1, 0] } },
+          crimeCount: { $sum: { $cond: [{ $eq: ["$socialProfile.hasCriminalSafetyRisk", true] }, 1, 0] } },
+          employmentCount: { $sum: { $cond: [{ $in: ["$socialProfile.employment", ["UNEMPLOYED", "RETIRED"]] }, 1, 0] } },
+        }
+      }
+    ];
+
+    const results = await PatientModel.aggregate(pipeline as any[]);
+    const aggr = results[0] || {
+      totals: 0, eduCount: 0, unemployedCount: 0, economicCount: 0,
+      accessCount: 0, foodCount: 0, crimeCount: 0, employmentCount: 0
+    };
 
     const factors = [
-      { factor: "Education",                   count: eduCount },
-      { factor: "Unemployment",                count: unemployedCount },
-      { factor: "Economic",                    count: economicCount },
-      { factor: "Access to quality healthcare", count: accessCount },
-      { factor: "Food insecurity",             count: foodCount },
-      { factor: "Crime",                       count: crimeCount },
-      { factor: "Employment status",           count: employmentCount },
-      { factor: "Poverty",                     count: economicCount },
+      { factor: "Education",                   count: aggr.eduCount },
+      { factor: "Unemployment",                count: aggr.unemployedCount },
+      { factor: "Economic",                    count: aggr.economicCount },
+      { factor: "Access to quality healthcare", count: aggr.accessCount },
+      { factor: "Food insecurity",             count: aggr.foodCount },
+      { factor: "Crime",                       count: aggr.crimeCount },
+      { factor: "Employment status",           count: aggr.employmentCount },
+      { factor: "Poverty",                     count: aggr.economicCount },
     ];
 
     const grandTotal = factors.reduce((s, f) => s + f.count, 0);
@@ -488,8 +502,8 @@ export const getSocialDeterminants = async (req: Request, res: Response): Promis
     const data = {
       socialDeterminants,
       meta: {
-        totalPatients: totals,
-        patientsWithProfile: await PatientModel.countDocuments(baseMatch),
+        totalPatients: aggr.totals,
+        patientsWithProfile: aggr.totals,
         computedAt: new Date().toISOString(),
         cached: false,
       },
