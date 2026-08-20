@@ -162,7 +162,11 @@ export const onContextNotify = async (req: Request, res: Response) => {
     const postData = req.body;
     const requestId = postData?.response?.requestId;
     const error = postData?.error;
-    const success = !error && postData?.acknowledgement?.status === "OK";
+    const success =
+      !error &&
+      (postData?.acknowledgement?.status === "OK" ||
+        postData?.acknowledgement?.status === "SUCCESS");
+
 
     if (requestId) {
       await CareContextService.handleContextNotifyCallback(
