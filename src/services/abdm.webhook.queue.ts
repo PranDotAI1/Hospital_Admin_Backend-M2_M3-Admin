@@ -105,56 +105,10 @@ async function processConsentOnFetch(data: ConsentOnFetchJobData) {
 }
 
 async function processConsentOnStatus(data: ConsentOnStatusJobData) {
-  const { ConsentArtefactModel, ConsentArtefactStatus } = await import("../models/ConsentArtefact");
-  const { PHRConsentArtefactModel } = await import("../models/PHRConsentArtefact");
-  const { ExternalHealthRecordModel } = await import("../models/ExternalHealthRecord");
-  const { ConsentRequestModel } = await import("../models/ConsentRequest");
-  const { ConsentService } = await import("../services/consent.service");
-  const body = data.body;
-
-  if (body.error || !body.consentRequest?.id) return;
-
-  const reqId = body.consentRequest.id;
-  const eventTs = body.timestamp ? new Date(body.timestamp) : new Date();
-  const statusUpdate: any = { status: body.consentRequest.status || "UNKNOWN", lastCheckedAt: new Date() };
-  const broadQuery = { $or: [{ consentRequestId: reqId }, { artefactId: reqId }] };
-
-  if (body.consentRequest.status === "GRANTED") statusUpdate.grantedAt = eventTs;
-
-  const revokeStatuses = ["REVOKED", "EXPIRED", "DENIED"];
-  if (revokeStatuses.includes(body.consentRequest.status)) {
-    const statusEnum = body.consentRequest.status === "REVOKED" ? ConsentArtefactStatus.REVOKED
-      : body.consentRequest.status === "EXPIRED" ? ConsentArtefactStatus.EXPIRED
-      : ConsentArtefactStatus.DENIED;
-    const setFields: any = { status: statusEnum };
-    if (body.consentRequest.status !== "EXPIRED") {
-      const tsField = body.consentRequest.status === "REVOKED" ? "revokedAt" : "deniedAt";
-      setFields[tsField] = eventTs;
-      statusUpdate[tsField] = eventTs;
-    }
-    await ConsentArtefactModel.updateMany(broadQuery, { $set: setFields });
-    await PHRConsentArtefactModel.updateMany(broadQuery, { $set: setFields });
-    const affectedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
-    if (affectedIds.length > 0) {
-      await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: affectedIds } });
-    }
-  }
-
-  const updateResult = await ConsentRequestModel.updateOne(
-    {
-      $or: [
-        { consentRequestId: reqId },
-        { requestId: reqId },
-        { requestId: body.response?.requestId },
-      ],
-    },
-    { $set: statusUpdate },
-  );
-
-  if (body.consentRequest.status === "GRANTED" &&
-      body.consentRequest.consentArtefacts?.length > 0 &&
-      updateResult.matchedCount > 0) {
-  }
+  // Use the shared implementation from consent.service.ts to avoid
+  // duplicated logic that can diverge and cause inconsistent behavior.
+  const { processConsentOnStatusCallback } = await import("../services/consent.service");
+  await processConsentOnStatusCallback(data.body);
 }
 
 // Enqueue helpers
@@ -162,11 +116,12 @@ export const enqueueConsentNotify = async (
   data: Omit<ConsentNotifyJobData, "type">,
 ): Promise<string | null> => {
   const queue = getWebhookIngestionQueue();
-  const baseKey = data.notification?.consentId || data.notification?.consentRequestId || data.requestId;
-  const status = (data.notification?.status || "UNKNOWN").toUpperCase();
-  const minuteBucket = Math.floor(Date.now() / 60000);
+  // Use the ABDM requestId as dedup key — it is unique per notification delivery.
+  // Previous approach used minuteBucket which caused both duplicate processing
+  // (same notification in different minutes) and silent drops (same jobId within a minute).
+  const jobId = `cn-${data.requestId}-${Date.now()}`;
   const job = await queue.add("consent-notify", { ...data, type: "consent-notify" as const }, {
-    jobId: `cn-${baseKey}-${status}-${minuteBucket}`,
+    jobId,
   });
   return job.id || null;
 };

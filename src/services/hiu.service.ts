@@ -370,20 +370,21 @@ export const handleHiuTransfer = async (
     return;
   }
 
-  // Reject self-referencing ghost artefacts (artefactId === consentRequestId)
-  // AND unlinked artefacts (consentRequestId is null/empty).
-  // These are artefacts that were created without a real ConsentRequest and break
-  // the REVOKE cascade. Data must not be stored against them.
-  const isGhostOrUnlinked =
-    (consentArtefact.artefactId &&
-      consentArtefact.consentRequestId &&
-      consentArtefact.artefactId === consentArtefact.consentRequestId) ||
-    !consentArtefact.consentRequestId;
+  // Reject self-referencing ghost artefacts (artefactId === consentRequestId).
+  // For unlinked artefacts (consentRequestId is null), only reject if they have
+  // no rawConsentDetail — an artefact with real consent detail but null
+  // consentRequestId is legitimate (e.g. timing issue with on-init callback).
+  const isSelfReferencing =
+    consentArtefact.artefactId &&
+    consentArtefact.consentRequestId &&
+    consentArtefact.artefactId === consentArtefact.consentRequestId;
+  const isUnlinkedGhost =
+    !consentArtefact.consentRequestId && !(consentArtefact as any).rawConsentDetail;
 
-  if (isGhostOrUnlinked) {
-    const reason = !consentArtefact.consentRequestId
-      ? "Unlinked artefact (no consentRequestId)"
-      : "Self-referencing ghost artefact (artefactId === consentRequestId)";
+  if (isSelfReferencing || isUnlinkedGhost) {
+    const reason = isSelfReferencing
+      ? "Self-referencing ghost artefact (artefactId === consentRequestId)"
+      : "Unlinked artefact (no consentRequestId and no consent detail)";
     console.warn(
       `${LOG_PREFIX} [SECURITY] Consent ${hiuRequest.consentArtefactId}: ${reason}. Skipping storage.`,
     );

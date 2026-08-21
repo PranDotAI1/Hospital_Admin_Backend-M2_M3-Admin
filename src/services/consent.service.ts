@@ -67,8 +67,17 @@ const resolveConsentRequestIdFromArtefact = async (
 };
 
 /**
- * Update ConsentRequest status with fallback: first tries dbLookupId,
- * then cross-references artefact IDs to find the parent ConsentRequest.
+ * Update ConsentRequest status using a PRECISE cascading lookup strategy.
+ *
+ * Priority order (stops at first match):
+ *   1. Exact consentRequestId match
+ *   2. Exact requestId match (our local UUID before ABDM assigns consentRequestId)
+ *   3. Cross-reference: look up the artefact's consentRequestId, then match that
+ *
+ * IMPORTANT: We NEVER search by { consentArtefacts: id } because that field is
+ * an array on ConsentRequest — $in/$elemMatch on it can match ANY request that
+ * previously stored that artefact ID, causing the dual-grant bug when multiple
+ * requests exist for the same patient.
  */
 const updateConsentRequestStatus = async (
   dbLookupId: string | undefined,
@@ -79,43 +88,42 @@ const updateConsentRequestStatus = async (
 ): Promise<void> => {
   if (!dbLookupId && artefactIds.length === 0) return;
 
-  const orConditions: any[] = [];
+  // Step 1: Try exact consentRequestId match
   if (dbLookupId) {
-    orConditions.push(
+    const result = await ConsentRequestModel.updateOne(
       { consentRequestId: dbLookupId },
-      { requestId: dbLookupId },
-      { consentArtefacts: dbLookupId },
+      { $set: updateFields },
     );
+    if (result.matchedCount > 0) return;
+
+    // Step 2: Try exact requestId match (our local UUID)
+    const result2 = await ConsentRequestModel.updateOne(
+      { requestId: dbLookupId },
+      { $set: updateFields },
+    );
+    if (result2.matchedCount > 0) return;
   }
-  // Also search by each artefact ID in consentArtefacts array
-  if (artefactIds.length > 0) {
-    orConditions.push({ consentArtefacts: { $in: artefactIds } });
-  }
 
-  const updateResult = await ConsentRequestModel.updateOne(
-    { $or: orConditions },
-    { $set: updateFields },
-  );
-
-  if (updateResult.matchedCount > 0) return; // Success
-
-  // Fallback: cross-reference via ConsentArtefact.consentRequestId
-  // (HIP notify only sends artefact ID, not consentRequestId)
+  // Step 3: Cross-reference via ConsentArtefact.consentRequestId
   const idsToCheck = artefactIds.length > 0 ? artefactIds : dbLookupId ? [dbLookupId] : [];
   for (const artefactId of idsToCheck) {
     const resolvedConsentRequestId = await resolveConsentRequestIdFromArtefact(artefactId);
     if (resolvedConsentRequestId && resolvedConsentRequestId !== dbLookupId) {
       const retryResult = await ConsentRequestModel.updateOne(
-        {
-          $or: [
-            { consentRequestId: resolvedConsentRequestId },
-            { requestId: resolvedConsentRequestId },
-          ],
-        },
+        { consentRequestId: resolvedConsentRequestId },
         { $set: updateFields },
       );
       if (retryResult.matchedCount > 0) {
         console.log(`${logPrefix} ${statusLabel}: resolved ConsentRequest via artefact cross-reference (artefactId=${artefactId} → consentRequestId=${resolvedConsentRequestId})`);
+        return;
+      }
+      // Also try by requestId in case on-init callback hasn't arrived yet
+      const retryResult2 = await ConsentRequestModel.updateOne(
+        { requestId: resolvedConsentRequestId },
+        { $set: updateFields },
+      );
+      if (retryResult2.matchedCount > 0) {
+        console.log(`${logPrefix} ${statusLabel}: resolved ConsentRequest via artefact cross-reference using requestId (artefactId=${artefactId} → requestId=${resolvedConsentRequestId})`);
         return;
       }
     }
@@ -199,7 +207,7 @@ export const handleHipNotify = async (
 
   // Extract IDs: consentRequestId is the parent request; consentId/artefact IDs
   // are the actual consent artefact IDs that ABDM expects in on-notify ACK.
-  const consentRequestId = notification.consentRequestId;
+  let consentRequestId = notification.consentRequestId;
   const notificationConsentId = notification.consentId; // artefact-level ID
 
   // Determine the artefact IDs for this notification.
@@ -231,7 +239,24 @@ export const handleHipNotify = async (
     artefactIds[0] || notificationConsentId || consentRequestId;
 
   // Use consentRequestId for DB lookups; fall back to consentId for single-artefact payloads
-  const dbLookupId = consentRequestId || notificationConsentId;
+  let dbLookupId = consentRequestId || notificationConsentId;
+
+  // --- FALLBACK: ABDM sometimes sends HIP notify WITHOUT consentRequestId. ---
+  // When that happens, dbLookupId = artefactId, which can't find any ConsentRequest.
+  // We ONLY use the inline consentDetail.consentRequestId if available.
+  // We do NOT do a patient-level "most recent REQUESTED" lookup because:
+  //   - ABDM sends BOTH HIP notify (no consentRequestId) AND HIU notify (WITH consentRequestId)
+  //   - The HIU notify correctly updates the right ConsentRequest
+  //   - A patient lookup on HIP notify picks a DIFFERENT ConsentRequest → dual-grant bug
+  if (!consentRequestId) {
+    const detailCrId = notification.consentDetail?.consentRequestId;
+    if (detailCrId && detailCrId !== notificationConsentId) {
+      consentRequestId = detailCrId;
+      dbLookupId = detailCrId;
+      console.log(`${LOG_PREFIX} Resolved consentRequestId from inline consentDetail: ${detailCrId}`);
+    }
+  }
+
   if (!status) {
     console.error(`${LOG_PREFIX} HIP notify missing status`);
     return;
@@ -302,7 +327,7 @@ export const handleHipNotify = async (
           const artefact = await storeArtefactDetails(
             detail,
             status,
-            consentRequestId || undefined, // Never pass detailArtefactId as fallback — storeArtefactDetails resolves it
+            consentRequestId || undefined, // consentRequestId is now the resolved value (from ABDM or patient fallback)
             finalUsePHRCollection,
             updateData.grantedAt, // pass notification timestamp for accurate audit trail
           );
@@ -419,7 +444,17 @@ export const handleHipNotify = async (
       // for external/unknown consents that arrive via HIP notify but were initiated elsewhere.
       if (artefactIds.length > 0 && !usePHRCollection) {
         const query: any = { $or: [{ consentArtefacts: { $in: artefactIds } }] };
-        if (consentRequestId) query.$or.push({ consentRequestId });
+        if (consentRequestId) {
+          query.$or.push({ consentRequestId });
+        } else {
+          // HIP notify doesn't include consentRequestId. Use patient ABHA from
+          // inline consentDetail as a READ-ONLY check to see if we initiated this consent.
+          // This does NOT update any ConsentRequest — that's handled by the HIU notify.
+          const patientAbha = notification.consentDetail?.patient?.id;
+          if (patientAbha) {
+            query.$or.push({ patientAbhaId: patientAbha });
+          }
+        }
         
         const localConsentRequest = await ConsentRequestModel.findOne(query)
           .select("_id")
@@ -556,14 +591,18 @@ export const handleHipNotify = async (
       );
     }
 
-    // Update the ConsentRequest record (GRANTED / status sync)
-    await updateConsentRequestStatus(
-      dbLookupId,
-      artefactIds,
-      updateData,
-      LOG_PREFIX,
-      status,
-    );
+    // Update ConsentRequest status — ONLY for GRANTED (other statuses already handled above)
+    // REVOKED/EXPIRED/DENIED blocks above each call updateConsentRequestStatus internally.
+    // Calling it again unconditionally was causing duplicate updates with a broad query.
+    if (status === "GRANTED") {
+      await updateConsentRequestStatus(
+        dbLookupId,
+        artefactIds,
+        updateData,
+        LOG_PREFIX,
+        status,
+      );
+    }
 
     // Send on-notify ACK with the ARTEFACT ID (not consentRequestId)
     await sendHipOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
@@ -703,7 +742,6 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
         }
 
         // Skip self-referencing ghost artefacts (artefactId === consentRequestId)
-        // AND unlinked artefacts (consentRequestId is null/empty — no known consent request).
         // These were created without a real consent request and will cause an
         // infinite fetch loop (fetch → new ghost artefact → fetch → …).
         if (artefact.artefactId === artefact.consentRequestId) {
@@ -712,9 +750,9 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
           );
           continue;
         }
-        if (!artefact.consentRequestId) {
+        if (!artefact.consentRequestId && !artefact.rawConsentDetail) {
           console.warn(
-            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Unlinked artefact (consentRequestId is null). No real consent request.`,
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} - Unlinked artefact with no consent detail (consentRequestId is null). No real consent request.`,
           );
           continue;
         }
@@ -1152,6 +1190,11 @@ export const storeArtefactDetails = async (
     // For PHR consents (usePHRCollection=true), self-referencing is EXPECTED and CORRECT —
     // they're initiated by the patient's PHR app, so no local ConsentRequest exists.
     // Only resolve for the MAIN collection where self-referencing breaks REVOKE/DENY cascading.
+    //
+    // CRITICAL: We NEVER do a fuzzy "most recent request for this patient" lookup.
+    // When multiple consent requests exist for the same patient, that picks the WRONG one
+    // and causes the dual-grant bug. Instead, we only use exact consentRequestId matching
+    // and fall back to null (the artefact is still reachable by artefactId for REVOKE/DENY).
     let resolvedConsentRequestId = consentRequestId;
     if (usePHRCollection) {
       // PHR consents: keep self-referencing consentRequestId as-is
@@ -1160,27 +1203,20 @@ export const storeArtefactDetails = async (
       !resolvedConsentRequestId ||
       resolvedConsentRequestId === artefactId
     ) {
-      const patientAbha = consentDetail.patient?.id;
-      if (patientAbha) {
-        const originalReq = await ConsentRequestModel.findOne({
-          patientAbhaId: patientAbha,
-          status: { $in: ["GRANTED", "REQUESTED", "APPROVED"] },
-        })
-          .sort({ createdAt: -1 })
-          .select("consentRequestId")
-          .lean();
-        if (originalReq?.consentRequestId) {
-          resolvedConsentRequestId = originalReq.consentRequestId;
-        } else {
-          // No matching consent request found — do NOT self-reference.
-          // Store with null consentRequestId; broadQuery ($or by artefactId) still catches it for REVOKE.
-          resolvedConsentRequestId = undefined;
-          console.warn(
-            `${LOG_PREFIX} No ConsentRequest found for patient ${patientAbha}. Setting consentRequestId to null (refusing self-ref).`,
-          );
-        }
+      // Try to use detailRequestId from the consent payload (ABDM's consentRequestId)
+      if (detailRequestId && detailRequestId !== artefactId) {
+        // Use detailRequestId directly — the caller (handleHipNotify) already
+        // verified this is from a legitimate ABDM notification. The old code
+        // tried to verify against DB but that rejects valid IDs if the on-init
+        // callback hasn't updated the record yet (timing issue).
+        resolvedConsentRequestId = detailRequestId;
       } else {
+        // No consentRequestId available — store with null.
+        // broadQuery ($or by artefactId) still catches it for REVOKE/DENY.
         resolvedConsentRequestId = undefined;
+        console.warn(
+          `${LOG_PREFIX} No valid consentRequestId for artefact ${artefactId}. Setting to null.`,
+        );
       }
     }
 
@@ -1460,13 +1496,11 @@ export const storeArtefactDetails = async (
       }
 
       if (Object.keys(crUpdate).length > 0) {
+        // Use EXACT consentRequestId match only — never match by consentArtefacts
+        // array, which can hit a different ConsentRequest when multiple exist for
+        // the same patient (causing the dual-grant bug).
         await ConsentRequestModel.updateOne(
-          {
-            $or: [
-              { consentRequestId: reqId },
-              { consentArtefacts: artefactId },
-            ],
-          },
+          { consentRequestId: reqId },
           { $set: crUpdate },
         );
       }

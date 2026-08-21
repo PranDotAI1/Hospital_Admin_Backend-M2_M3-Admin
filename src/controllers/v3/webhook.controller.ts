@@ -47,9 +47,38 @@ export const handleConsentOnInit = async (req: any, res: any) => {
         },
       );
       if (updateResult.matchedCount === 0) {
+        // Race condition: ABDM's on-init callback arrived before the DB write
+        // for the consent request completed. Retry asynchronously after a short delay.
+        // We respond to ABDM immediately to prevent timeout.
         console.warn(
-          `${LOG_PREFIX} No consent request found with requestId=${postData.response.requestId}. Callback may have arrived before DB write completed.`,
+          `${LOG_PREFIX} No consent request found with requestId=${postData.response.requestId}. Will retry in background...`,
         );
+        const retryRequestId = postData.response.requestId;
+        const retryConsentRequestId = postData.consentRequest.id;
+        setTimeout(async () => {
+          try {
+            const retryResult = await ConsentRequestModel.updateOne(
+              { requestId: retryRequestId },
+              {
+                $set: {
+                  consentRequestId: retryConsentRequestId,
+                  status: "REQUESTED",
+                },
+              },
+            );
+            if (retryResult.matchedCount === 0) {
+              console.error(
+                `${LOG_PREFIX} Retry failed: still no consent request found with requestId=${retryRequestId}. Request may be stuck in INITIATED.`,
+              );
+            } else {
+              console.log(
+                `${LOG_PREFIX} Retry succeeded: updated consent request with requestId=${retryRequestId}`,
+              );
+            }
+          } catch (err: any) {
+            console.error(`${LOG_PREFIX} Retry error for requestId=${retryRequestId}:`, err.message);
+          }
+        }, 2000);
       }
     } else {
       console.warn(
