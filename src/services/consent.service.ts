@@ -717,6 +717,12 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
 
   // Run async without blocking
   (async () => {
+    // ── CARE-CONTEXT DEDUP ──
+    // ABDM may grant multiple artefacts for the same consent request, all
+    // covering the same care contexts. To avoid fetching the same data twice,
+    // we track which care context sets have already been fetched in this batch.
+    const fetchedCareContextSets = new Set<string>();
+
     for (const artefactId of artefactIds) {
       try {
         // Redis-based dedup (cross-instance safe)
@@ -827,11 +833,37 @@ export const triggerHiuDataFetchAsync = (artefactIds: string[]): void => {
             to: new Date(),
           };
         }
+
+        // ── CARE-CONTEXT DEDUP CHECK ──
+        // ABDM grants multiple artefacts per consent, often covering the exact
+        // same care contexts. If a sibling artefact already fetched these care
+        // contexts in this batch, skip to avoid duplicate external_health_records.
+        const careContextRefs = (artefact.careContexts || [])
+          .map((cc: any) => cc.careContextReference || cc.patientReference || "")
+          .filter(Boolean)
+          .sort();
+        const ccFingerprint = careContextRefs.length > 0
+          ? careContextRefs.join("|")
+          : `single:${artefactId}`; // No care contexts yet → can't dedup, use artefactId
+
+        if (careContextRefs.length > 0 && fetchedCareContextSets.has(ccFingerprint)) {
+          console.log(
+            `${LOG_PREFIX} [AUTO-TRIGGER] Skipping ${artefactId} — care contexts already fetched by sibling artefact: [${careContextRefs.join(", ")}]`,
+          );
+          continue;
+        }
+
         const result = await HiuService.requestHealthInformation(
           artefactId,
           dateRange,
           { storeAsExternalRecord: isHIMS }, // Only store for HIMS consents, not PHR
         );
+
+        // Register this artefact's care contexts as fetched
+        if (careContextRefs.length > 0) {
+          fetchedCareContextSets.add(ccFingerprint);
+        }
+
         // Small delay between requests to avoid rate limiting
         await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error: any) {
