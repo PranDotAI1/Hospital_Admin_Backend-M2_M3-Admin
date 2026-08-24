@@ -2,7 +2,8 @@ import { Router } from "express";
 import { healthInformation } from "../controllers/v2/webhook.controller";
 import {
   handleConsentOnInit,
-  handleConsentHipNotify,
+  handleHipConsentNotify,
+  handleHiuConsentNotify,
   handleConsentOnFetch,
   handleConsentOnStatus,
 } from "../controllers/v3/webhook.controller";
@@ -126,12 +127,18 @@ webook.post(
 // Consent Init callback: ABDM confirms our consent request was received
 webook.post("/api/v3/hiu/consent/request/on-init", handleConsentOnInit);
 
-// HIP Consent Notify: ABDM notifies consent GRANTED/REVOKED/DENIED/EXPIRED
-// This now sends the required on-notify ACK back to ABDM
-webook.post("/api/v3/consent/request/hip/notify", handleConsentHipNotify);
-webook.post("/api/v3/hiu/consent/request/notify", handleConsentHipNotify);
+// HIP Consent Notify: ABDM notifies HIP that consent was GRANTED/REVOKED/EXPIRED
+// Lightweight handler: stores consentDetail + sends HIP ACK
+webook.post("/api/v3/consent/request/hip/notify", handleHipConsentNotify);
+
+// HIU Consent Notify: ABDM notifies HIU that OUR consent request was GRANTED/DENIED/REVOKED/EXPIRED
+// Primary flow: updates ConsentRequest, creates stubs, triggers Step 4 fetch + Step 5 data fetch
+webook.post(
+  "/api/v3/hiu/consent/request/notify",
+  handleHiuConsentNotify,
+);
 // Alias: ABDM may send HIU consent notifications (including REVOKED) to on-notify path
-webook.post("/api/v3/hiu/consent/request/on-notify", handleConsentHipNotify);
+webook.post("/api/v3/hiu/consent/request/on-notify", handleHiuConsentNotify);
 
 // Consent Fetch callback: ABDM returns full artefact details
 webook.post("/:requestid/api/v3/hiu/consent/on-fetch", handleConsentOnFetch);

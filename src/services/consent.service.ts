@@ -176,43 +176,140 @@ const resolveArtefactIds = async (
 };
 
 // ============================================================================
-// 1. Handle HIP Notify (ABDM -> HIP)
+// 1a. Handle HIP Notify (ABDM -> HIP) — Lightweight
 // ============================================================================
 
 /**
- * Process a consent notification from ABDM to this HIP.
+ * Process a consent notification from ABDM to this HIP (data holder).
  *
- * ABDM standards (aligned with our handling):
- * - Consent REQUEST id: assigned at consent init; identifies the request (used for DENIED/status).
- * - Consent ARTEFACT id: generated only when patient APPROVES; one per granted consent (may cover
- *   multiple care contexts). Used for on-notify ACK and for HIU data fetch. We must never store
- *   consent request id as an artefact id.
+ * This callback tells us that someone has consent to access OUR patient's data.
+ * It carries inline consentDetail but NOT consentRequestId (because we didn't
+ * initiate the request).
  *
- * ABDM may send either:
- * - consentArtefacts: [{ id }] (legacy)
- * - consentDetail: { full consent object } (inline, no separate fetch needed)
+ * Responsibilities:
+ * 1. Store the consentDetail for reference (needed when ABDM later asks us
+ *    to push data via /hip/health-information/request).
+ * 2. For REVOKED/EXPIRED: update artefact status by artefactId only.
+ * 3. Send HIP on-notify ACK back to ABDM.
  *
- * We must:
- * 1. Update ConsentRequest status
- * 2. For GRANTED: store artefact (from consentDetail inline or stubs + fetch)
- * 3. For REVOKED: mark artefacts as REVOKED
- * 4. Always send on-notify ACK back to ABDM (use callbackAuthToken when provided to avoid 403)
+ * Does NOT:
+ * - Update ConsentRequest (we have no consentRequestId)
+ * - Trigger HIU data fetch (we're the HIP, not the HIU)
  */
-export const handleHipNotify = async (
+export const handleHipNotifyOnly = async (
+  notification: any,
+  requestId: string,
+  callbackAuthToken?: string,
+): Promise<void> => {
+  const status = notification.status;
+  const notificationConsentId = notification.consentId;
+
+  console.log(
+    `[ABDM_FLOW] ▶ HIP_NOTIFY received | status=${status} | consentId=${notificationConsentId}`,
+  );
+
+  if (!status) {
+    console.error(`${LOG_PREFIX} HIP notify missing status`);
+    return;
+  }
+
+  const ackConsentId = notificationConsentId || notification.consentRequestId;
+
+  try {
+    if (status === "GRANTED" && notification.consentDetail) {
+      const detail = notification.consentDetail;
+      const detailArtefactId = detail.consentId || notificationConsentId;
+
+      if (detailArtefactId) {
+        const isPHRPull = detail.purpose?.code === "PATRQT";
+        console.log(
+          `[ABDM_FLOW]   HIP_NOTIFY - Storing inline consentDetail | artefactId=${detailArtefactId} | isPHR=${isPHRPull}`,
+        );
+
+        await storeArtefactDetails(
+          detail,
+          status,
+          undefined, // No consentRequestId — we're the HIP, not the requester
+          isPHRPull,
+          notification.timestamp ? new Date(notification.timestamp) : new Date(),
+        );
+      }
+    } else if (status === "REVOKED") {
+      console.log(`[ABDM_FLOW]   HIP_NOTIFY - Consent REVOKED | consentId=${notificationConsentId}`);
+      if (notificationConsentId) {
+        const revokedAt = notification.timestamp ? new Date(notification.timestamp) : new Date();
+        await ConsentArtefactModel.updateMany(
+          { artefactId: notificationConsentId },
+          { $set: { status: ConsentArtefactStatus.REVOKED, revokedAt } },
+        );
+        await PHRConsentArtefactModel.updateMany(
+          { artefactId: notificationConsentId },
+          { $set: { status: ConsentArtefactStatus.REVOKED, revokedAt } },
+        );
+      }
+    } else if (status === "EXPIRED") {
+      console.log(`[ABDM_FLOW]   HIP_NOTIFY - Consent EXPIRED | consentId=${notificationConsentId}`);
+      if (notificationConsentId) {
+        await ConsentArtefactModel.updateMany(
+          { artefactId: notificationConsentId },
+          { $set: { status: ConsentArtefactStatus.EXPIRED } },
+        );
+        await PHRConsentArtefactModel.updateMany(
+          { artefactId: notificationConsentId },
+          { $set: { status: ConsentArtefactStatus.EXPIRED } },
+        );
+      }
+    }
+    // DENIED: nothing to update — we never stored anything from a HIP perspective
+
+    // Send HIP ACK
+    console.log(`[ABDM_FLOW] ▶ HIP_NOTIFY ACK - Sending to ABDM | consentId=${ackConsentId}`);
+    const ackOk = await sendHipOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
+    console.log(`[ABDM_FLOW] ${ackOk ? '✔' : '✖'} HIP_NOTIFY ACK ${ackOk ? 'sent' : 'FAILED'} | consentId=${ackConsentId}`);
+  } catch (error: any) {
+    console.error(`${LOG_PREFIX} Error in handleHipNotifyOnly:`, error.message);
+    try {
+      await sendHipOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
+    } catch (ackErr: any) {
+      console.error(`${LOG_PREFIX} HIP ACK failed after error:`, ackErr.message);
+    }
+  }
+};
+
+// ============================================================================
+// 1b. Handle HIU Notify (ABDM -> HIU) — Primary Consent Flow
+// ============================================================================
+
+/**
+ * Process a consent notification from ABDM to this HIU (consent requester).
+ *
+ * This callback tells us that the consent request WE initiated was
+ * GRANTED/DENIED/REVOKED/EXPIRED. It carries consentRequestId (matching our DB)
+ * and artefact IDs, but NO inline consentDetail.
+ *
+ * Responsibilities:
+ * 1. Update ConsentRequest status in DB
+ * 2. For GRANTED: create artefact stubs, trigger Step 4 (fetch artefact details),
+ *    then auto-trigger Step 5 (HIU data fetch)
+ * 3. For REVOKED/EXPIRED/DENIED: update artefact + ConsentRequest status, clean up
+ * 4. Send HIU on-notify ACK back to ABDM
+ */
+export const handleHiuNotify = async (
   notification: any,
   requestId: string,
   callbackAuthToken?: string,
 ): Promise<void> => {
   const status = notification.status;
 
-  // Extract IDs: consentRequestId is the parent request; consentId/artefact IDs
-  // are the actual consent artefact IDs that ABDM expects in on-notify ACK.
+  console.log(
+    `[ABDM_FLOW] ▶ STEP 3 - HIU_NOTIFY received | status=${status} | consentRequestId=${notification.consentRequestId} | artefacts=${JSON.stringify(notification.consentArtefacts?.map((a: any) => a.id) ?? [])}`,
+  );
+
+  // Extract IDs: consentRequestId is the parent request; artefact IDs are returned when user GRANTS.
   let consentRequestId = notification.consentRequestId;
-  const notificationConsentId = notification.consentId; // artefact-level ID
+  const notificationConsentId = notification.consentId;
 
   // Determine the artefact IDs for this notification.
-  // CRITICAL: consentRequestId is the REQUEST id (from init); artefact IDs are only returned when user GRANTS.
-  // Never treat consentRequestId as an artefact ID — otherwise we create fake ConsentArtefact records per request.
   let artefactIds: string[] = [];
   if (
     notification.consentArtefacts &&
@@ -227,27 +324,12 @@ export const handleHipNotify = async (
   artefactIds = [...new Set(artefactIds)].filter(
     (id) => id && id !== consentRequestId,
   );
-  if (
-    consentRequestId &&
-    (notificationConsentId === consentRequestId || artefactIds.length === 0)
-  ) {
-  }
 
-  // The on-notify ACK must use a consent ARTEFACT ID, never the consentRequestId.
-  // If we have artefact IDs, use the first. Otherwise fall back to notificationConsentId.
   const ackConsentId =
     artefactIds[0] || notificationConsentId || consentRequestId;
 
-  // Use consentRequestId for DB lookups; fall back to consentId for single-artefact payloads
+  // HIU notify always carries consentRequestId. If missing, try inline consentDetail.
   let dbLookupId = consentRequestId || notificationConsentId;
-
-  // --- FALLBACK: ABDM sometimes sends HIP notify WITHOUT consentRequestId. ---
-  // When that happens, dbLookupId = artefactId, which can't find any ConsentRequest.
-  // We ONLY use the inline consentDetail.consentRequestId if available.
-  // We do NOT do a patient-level "most recent REQUESTED" lookup because:
-  //   - ABDM sends BOTH HIP notify (no consentRequestId) AND HIU notify (WITH consentRequestId)
-  //   - The HIU notify correctly updates the right ConsentRequest
-  //   - A patient lookup on HIP notify picks a DIFFERENT ConsentRequest → dual-grant bug
   if (!consentRequestId) {
     const detailCrId = notification.consentDetail?.consentRequestId;
     if (detailCrId && detailCrId !== notificationConsentId) {
@@ -269,7 +351,7 @@ export const handleHipNotify = async (
       status: ConsentArtefactStatus.GRANTED,
     });
     if (existing.length === artefactIds.length) {
-      await sendHipOnNotifyAck(
+      await sendHiuOnNotifyAck(
         ackConsentId,
         requestId,
         "OK",
@@ -283,6 +365,7 @@ export const handleHipNotify = async (
     const updateData: any = { status };
 
     if (status === "GRANTED") {
+      console.log(`[ABDM_FLOW]   STEP 3a - Consent GRANTED | artefactIds=${JSON.stringify(artefactIds)} | consentRequestId=${consentRequestId}`);
       // For list UI: "Consent granted on" / "Consent expiry on"
       updateData.grantedAt = notification.timestamp
         ? new Date(notification.timestamp)
@@ -305,95 +388,9 @@ export const handleHipNotify = async (
         }
       }
 
-      if (usePHRCollection) {
-      }
-
-      // ABDM sends EITHER:
-      //  a) consentDetail inline (HIP notify with full object)
-      //  b) consentArtefacts[] array (just IDs, need separate fetch)
-      //  c) consentId only (single artefact)
-
-      if (notification.consentDetail) {
-        // (a) Inline consent detail: store immediately (only if consentId is a real artefact id, not consentRequestId)
-        const detail = notification.consentDetail;
-        const detailArtefactId = detail.consentId || notificationConsentId;
-        if (detailArtefactId) {
-          const isPHRPull = detail.purpose?.code === "PATRQT";
-          const finalUsePHRCollection = isPHRPull || usePHRCollection;
-
-          if (isPHRPull && !usePHRCollection) {
-          }
-
-          const artefact = await storeArtefactDetails(
-            detail,
-            status,
-            consentRequestId || undefined, // consentRequestId is now the resolved value (from ABDM or patient fallback)
-            finalUsePHRCollection,
-            updateData.grantedAt, // pass notification timestamp for accurate audit trail
-          );
-          if (artefact) {
-            updateData.consentArtefacts = [detailArtefactId];
-            if (artefact.expiryDate) {
-              updateData.consentExpiryOn = artefact.expiryDate;
-            } else if (detail.permission?.dataEraseAt) {
-              updateData.consentExpiryOn = new Date(
-                detail.permission.dataEraseAt,
-              );
-            } else if (detail.permission?.dateRange?.to) {
-              updateData.consentExpiryOn = new Date(
-                detail.permission.dateRange.to,
-              );
-            }
-            if (detail.hiTypes) {
-              updateData.approvedHiTypes = detail.hiTypes;
-            }
-            if (detail.permission?.dateRange) {
-              updateData.approvedDateRange = {
-                from: new Date(detail.permission.dateRange.from),
-                to: new Date(detail.permission.dateRange.to),
-              };
-            }
-
-            // Build consolidated approved object
-            const approved: any = {};
-            if (detail.permission?.dateRange) {
-              approved.dateRange = {
-                from: new Date(detail.permission.dateRange.from),
-                to: new Date(detail.permission.dateRange.to),
-              };
-            }
-            if (detail.hiTypes) approved.hiTypes = detail.hiTypes;
-            if (detail.permission?.accessMode)
-              approved.accessMode = detail.permission.accessMode;
-            if (detail.permission?.dataEraseAt)
-              approved.dataEraseAt = new Date(detail.permission.dataEraseAt);
-            approved.expiryDate = updateData.consentExpiryOn || null;
-            updateData.approved = approved;
-            const hasCareContexts =
-              (detail.careContexts &&
-                Array.isArray(detail.careContexts) &&
-                detail.careContexts.length > 0) ||
-              (detail.consentDetail?.careContexts &&
-                Array.isArray(detail.consentDetail.careContexts) &&
-                detail.consentDetail.careContexts.length > 0);
-
-            if (
-              !hasCareContexts &&
-              artefact.careContexts?.length === 0 &&
-              !usePHRCollection
-            ) {
-              console.warn(
-                `${LOG_PREFIX} Inline consentDetail for ${detailArtefactId} has no care contexts. Triggering fetch to get full detail from ABDM.`,
-              );
-              fetchArtefactDetailsAsync(
-                [{ id: detailArtefactId }],
-                callbackAuthToken,
-              );
-            }
-          }
-        }
-      } else if (artefactIds.length > 0) {
-        // (b)/(c) Artefact IDs without inline detail
+      // HIU notify path: we only get artefact IDs, not inline consentDetail.
+      // Create stubs and ALWAYS trigger Step 4 (fetch) to get full artefact details.
+      if (artefactIds.length > 0) {
         let finalUsePHRCollection = usePHRCollection;
         for (const aid of artefactIds) {
           const existingPHR = await PHRConsentArtefactModel.findOne({
@@ -420,18 +417,77 @@ export const handleHipNotify = async (
               consentRequestId || aid,
               finalUsePHRCollection,
             );
+          } else if (consentRequestId && !exists.consentRequestId) {
+            // HIP notify may have created this artefact with null consentRequestId.
+            // We have the real consentRequestId — backfill it.
+            await ArtefactModel.updateOne(
+              { artefactId: aid },
+              { $set: { consentRequestId } },
+            );
+            console.log(`${LOG_PREFIX} Backfilled consentRequestId=${consentRequestId} on artefact ${aid}`);
           }
         }
-        const idsNeedingFetch: string[] = [];
-        for (const aid of artefactIds) {
-          const existing = await ArtefactModel.findOne({ artefactId: aid });
-          if (!existing?.rawConsentDetail) {
-            idsNeedingFetch.push(aid);
+
+        // ── Sync patient-approved values to ConsentRequest ──
+        // The patient may have approved FEWER hiTypes or changed the date range
+        // compared to what we requested. HIP notify stores the actual approved
+        // consentDetail on the artefact. Read it here and write the approved
+        // values to updateData so the ConsentRequest reflects reality.
+        const firstArtefact = await ArtefactModel.findOne({
+          artefactId: { $in: artefactIds },
+          rawConsentDetail: { $exists: true, $ne: null },
+        }).lean();
+
+        if (firstArtefact?.rawConsentDetail) {
+          const detail = firstArtefact.rawConsentDetail;
+          console.log(`[ABDM_FLOW]   STEP 3a - Syncing patient-approved values from artefact ${firstArtefact.artefactId} to ConsentRequest`);
+
+          // Approved hiTypes (may be a subset of what we requested)
+          if (detail.hiTypes && Array.isArray(detail.hiTypes)) {
+            updateData.approvedHiTypes = detail.hiTypes;
           }
+
+          // Approved date range (patient may have narrowed it)
+          if (detail.permission?.dateRange) {
+            updateData.approvedDateRange = {
+              from: new Date(detail.permission.dateRange.from),
+              to: new Date(detail.permission.dateRange.to),
+            };
+          }
+
+          // Approved expiry / dataEraseAt (patient may have changed it)
+          if (detail.permission?.dataEraseAt) {
+            updateData.consentExpiryOn = new Date(detail.permission.dataEraseAt);
+          } else if (firstArtefact.expiryDate) {
+            updateData.consentExpiryOn = firstArtefact.expiryDate;
+          } else if (detail.permission?.dateRange?.to) {
+            updateData.consentExpiryOn = new Date(detail.permission.dateRange.to);
+          }
+
+          // Build consolidated approved object for the UI
+          const approved: any = {};
+          if (detail.permission?.dateRange) {
+            approved.dateRange = {
+              from: new Date(detail.permission.dateRange.from),
+              to: new Date(detail.permission.dateRange.to),
+            };
+          }
+          if (detail.hiTypes) approved.hiTypes = detail.hiTypes;
+          if (detail.permission?.accessMode) approved.accessMode = detail.permission.accessMode;
+          if (detail.permission?.dataEraseAt) approved.dataEraseAt = new Date(detail.permission.dataEraseAt);
+          approved.expiryDate = updateData.consentExpiryOn || null;
+          updateData.approved = approved;
+        } else {
+          console.log(`[ABDM_FLOW]   STEP 3a - No rawConsentDetail on artefacts yet (HIP notify may not have arrived). Will be synced by on-fetch callback.`);
         }
-        if (idsNeedingFetch.length > 0 && !finalUsePHRCollection) {
+
+        // STEP 4: Always trigger artefact fetch to get full consent details from ABDM.
+        // Even if HIP notify already stored inline detail, the HIU should independently
+        // fetch to ensure it has the authoritative artefact details.
+        if (!finalUsePHRCollection) {
+          console.log(`[ABDM_FLOW] ▶ STEP 4 - Triggering artefact FETCH for: ${JSON.stringify(artefactIds)}`);
           fetchArtefactDetailsAsync(
-            idsNeedingFetch.map((id) => ({ id })),
+            artefactIds.map((id) => ({ id })),
             callbackAuthToken,
           );
         }
@@ -439,35 +495,29 @@ export const handleHipNotify = async (
         usePHRCollection = finalUsePHRCollection;
       }
 
-      // ======== AUTO-TRIGGER: Fetch health data (only for HIMS consents; PHR app calls fetch itself) ========
-      // Only auto-trigger if we have a local ConsentRequest — this prevents triggering data fetch
-      // for external/unknown consents that arrive via HIP notify but were initiated elsewhere.
+      // ======== AUTO-TRIGGER STEP 5: Fetch health data (only for HIMS consents) ========
       if (artefactIds.length > 0 && !usePHRCollection) {
+        console.log(`[ABDM_FLOW] ▶ STEP 5 - Checking if local ConsentRequest exists to auto-trigger HIU data fetch`);
         const query: any = { $or: [{ consentArtefacts: { $in: artefactIds } }] };
         if (consentRequestId) {
           query.$or.push({ consentRequestId });
-        } else {
-          // HIP notify doesn't include consentRequestId. Use patient ABHA from
-          // inline consentDetail as a READ-ONLY check to see if we initiated this consent.
-          // This does NOT update any ConsentRequest — that's handled by the HIU notify.
-          const patientAbha = notification.consentDetail?.patient?.id;
-          if (patientAbha) {
-            query.$or.push({ patientAbhaId: patientAbha });
-          }
         }
-        
+
         const localConsentRequest = await ConsentRequestModel.findOne(query)
           .select("_id")
           .lean();
 
         if (!localConsentRequest) {
+          console.warn(`[ABDM_FLOW]   STEP 5 - No local ConsentRequest found. Skipping auto-trigger.`);
         } else {
           const anyInPHR = await PHRConsentArtefactModel.findOne({
             artefactId: { $in: artefactIds },
           });
           if (!anyInPHR) {
+            console.log(`[ABDM_FLOW]   STEP 5 - Auto-triggering HIU data fetch for artefacts: ${JSON.stringify(artefactIds)}`);
             triggerHiuDataFetchAsync(artefactIds);
           } else {
+            console.log(`[ABDM_FLOW]   STEP 5 - Skipping: artefact is in PHR collection.`);
           }
         }
       }
@@ -604,12 +654,14 @@ export const handleHipNotify = async (
       );
     }
 
-    // Send on-notify ACK with the ARTEFACT ID (not consentRequestId)
-    await sendHipOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
+    // Send HIU on-notify ACK
+    console.log(`[ABDM_FLOW] ▶ STEP 3-ACK - Sending HIU on-notify ACK to ABDM | consentId=${ackConsentId} | status=OK`);
+    const ackSuccess = await sendHiuOnNotifyAck(ackConsentId, requestId, "OK", callbackAuthToken);
+    console.log(`[ABDM_FLOW] ${ackSuccess ? '✔' : '✖'} STEP 3-ACK - HIU on-notify ACK ${ackSuccess ? 'sent successfully' : 'FAILED'} | consentId=${ackConsentId}`);
   } catch (error: any) {
-    console.error(`${LOG_PREFIX} Error processing HIP notify:`, error.message);
+    console.error(`${LOG_PREFIX} Error processing HIU notify:`, error.message);
     try {
-      await sendHipOnNotifyAck(
+      await sendHiuOnNotifyAck(
         ackConsentId,
         requestId,
         "OK",
@@ -617,7 +669,7 @@ export const handleHipNotify = async (
       );
     } catch (ackError: any) {
       console.error(
-        `${LOG_PREFIX} Failed to send on-notify ACK after error:`,
+        `${LOG_PREFIX} Failed to send HIU ACK after error:`,
         ackError.message,
       );
     }
@@ -947,6 +999,84 @@ export const sendHipOnNotifyAck = async (
 };
 
 // ============================================================================
+// 2b. Send HIU on-notify ACK
+// ============================================================================
+
+/**
+ * Acknowledge consent notification back to ABDM as HIU.
+ * POST /hiecm/consent/v3/request/hiu/on-notify
+ *
+ * Uses X-HIU-ID header (we are the consent requester).
+ */
+export const sendHiuOnNotifyAck = async (
+  consentId: string,
+  originalRequestId: string,
+  ackStatus: string = "OK",
+  callbackAuthToken?: string,
+): Promise<boolean> => {
+  try {
+    let abdmToken: string;
+    try {
+      abdmToken = await AbdmTokenService.getToken();
+    } catch (tokenError: any) {
+      if (callbackAuthToken && callbackAuthToken.trim()) {
+        abdmToken = callbackAuthToken.trim();
+        if (!abdmToken.toLowerCase().startsWith("bearer ")) {
+          abdmToken = `Bearer ${abdmToken}`;
+        }
+        console.warn(
+          `${LOG_PREFIX} Session token failed for HIU ACK, falling back to callback auth: ${tokenError.message}`,
+        );
+      } else {
+        throw tokenError;
+      }
+    }
+    const requestId = generateUID();
+
+    const payload = {
+      acknowledgement: {
+        status: ackStatus,
+        consentId,
+      },
+      response: {
+        requestId: originalRequestId,
+      },
+    };
+
+    const headers: any = {
+      "Content-Type": "application/json",
+      "REQUEST-ID": requestId,
+      TIMESTAMP: new Date().toISOString(),
+      "X-CM-ID": X_CM_ID,
+      Authorization: abdmToken,
+    };
+    // HIU ACK uses X-HIU-ID; fallback to X-HIP-ID if no HIU ID configured
+    if (X_HIU_ID) {
+      headers["X-HIU-ID"] = X_HIU_ID;
+    } else {
+      headers["X-HIP-ID"] = facilityId;
+    }
+
+    const response = await axios.post(
+      `${process.env.ABDM_BASE_URL}${ENDPOINTS.CONSENT_HIP_ON_NOTIFY}`,
+      payload,
+      { headers },
+    );
+    const ackOk = response.status === 200 || response.status === 202;
+    console.log(
+      `[ABDM_FLOW]   HIU on-notify ACK HTTP ${response.status} | endpoint=${ENDPOINTS.CONSENT_HIP_ON_NOTIFY} | consentId=${consentId}`,
+    );
+    return ackOk;
+  } catch (error: any) {
+    console.error(
+      `${LOG_PREFIX} Failed to send HIU on-notify ACK:`,
+      error.response?.data || error.message,
+    );
+    return false;
+  }
+};
+
+// ============================================================================
 // Shared callback processing functions
 // ============================================================================
 
@@ -994,7 +1124,7 @@ export const processConsentOnFetchCallback = async (
     }
     if (consentStatus === "GRANTED" && !usePHRCollection &&
         artefact.consentRequestId && artefact.consentRequestId !== artefact.artefactId) {
-      // Auto-trigger is handled by handleHipNotify, not here
+      // Auto-trigger is handled by handleHiuNotify, not here
     }
     AbdmLogger.logAccepted({ consentId: artefact.artefactId, sourceType: "CALLBACK" });
   }
@@ -1053,7 +1183,7 @@ export const processConsentOnStatusCallback = async (
   if (body.consentRequest.status === "GRANTED" &&
       body.consentRequest.consentArtefacts?.length > 0 &&
       updateResult.matchedCount > 0) {
-    // Auto-trigger is handled by handleHipNotify, not here
+    // Auto-trigger is handled by handleHiuNotify, not here
   }
 };
 
@@ -1205,7 +1335,7 @@ export const storeArtefactDetails = async (
     ) {
       // Try to use detailRequestId from the consent payload (ABDM's consentRequestId)
       if (detailRequestId && detailRequestId !== artefactId) {
-        // Use detailRequestId directly — the caller (handleHipNotify) already
+        // Use detailRequestId directly — the caller (handleHiuNotify) already
         // verified this is from a legitimate ABDM notification. The old code
         // tried to verify against DB but that rejects valid IDs if the on-init
         // callback hasn't updated the record yet (timing issue).
@@ -1990,8 +2120,10 @@ export const getCareContextRefsForArtefact = async (
 // ============================================================================
 
 export const ConsentService = {
-  handleHipNotify,
+  handleHipNotifyOnly,
+  handleHiuNotify,
   sendHipOnNotifyAck,
+  sendHiuOnNotifyAck,
   fetchConsentArtefact,
   storeArtefactDetails,
   validateConsentForDataPush,

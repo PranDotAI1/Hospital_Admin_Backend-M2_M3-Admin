@@ -93,18 +93,92 @@ export const handleConsentOnInit = async (req: any, res: any) => {
   }
 };
 
-export const handleConsentHipNotify = async (req: any, res: any) => {
+/**
+ * HIP consent notify controller.
+ * Route: POST /api/v3/consent/request/hip/notify
+ *
+ * ABDM tells us as HIP that a consent involving our data was granted/revoked.
+ * Lightweight: store consentDetail + send HIP ACK. No ConsentRequest updates.
+ */
+export const handleHipConsentNotify = async (req: any, res: any) => {
   try {
     const postData = req.body;
     const requestId =
       req.headers["request-id"] || req.headers["REQUEST-ID"] || generateUID();
     const route = req.originalUrl || req.path;
 
-    AbdmLogger.logPayloadDebug(`${LOG_PREFIX} HIP notify callback on ${route}:`, postData);
+    AbdmLogger.logPayloadDebug(
+      `${LOG_PREFIX} [HIP] notify callback on ${route}:`,
+      postData,
+    );
 
     const notification = postData.notification;
     if (!notification) {
       console.error(`${LOG_PREFIX} HIP notify missing notification object`);
+      return res.status(400).json({ error: "Missing notification object" });
+    }
+
+    // Respond immediately
+    res.status(200).json({ status: "success" });
+
+    const callbackAuth =
+      req.headers["authorization"] || req.headers["Authorization"];
+
+    // Try BullMQ queue first
+    try {
+      const { enqueueConsentHipNotify } = await import(
+        "../../services/abdm.webhook.queue"
+      );
+      const jobId = await enqueueConsentHipNotify({
+        notification,
+        requestId,
+        callbackAuth,
+      });
+      if (jobId) {
+        return;
+      }
+    } catch (queueErr: any) {
+      console.warn(
+        `${LOG_PREFIX} BullMQ unavailable (${queueErr.message}), falling back to direct HIP notify processing`,
+      );
+    }
+
+    // Fallback: process directly
+    await ConsentService.handleHipNotifyOnly(notification, requestId, callbackAuth);
+  } catch (error: any) {
+    console.error(
+      `${LOG_PREFIX} Error in handleHipConsentNotify:`,
+      error.message,
+    );
+    if (!res.headersSent) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+};
+
+/**
+ * HIU consent notify controller.
+ * Route: POST /api/v3/hiu/consent/request/notify
+ *        POST /api/v3/hiu/consent/request/on-notify
+ *
+ * ABDM tells us as HIU that the consent request WE initiated was granted/denied/revoked/expired.
+ * Primary flow: update ConsentRequest, create stubs, trigger Step 4 fetch + Step 5 data fetch.
+ */
+export const handleHiuConsentNotify = async (req: any, res: any) => {
+  try {
+    const postData = req.body;
+    const requestId =
+      req.headers["request-id"] || req.headers["REQUEST-ID"] || generateUID();
+    const route = req.originalUrl || req.path;
+
+    AbdmLogger.logPayloadDebug(
+      `${LOG_PREFIX} [HIU] notify callback on ${route}:`,
+      postData,
+    );
+
+    const notification = postData.notification;
+    if (!notification) {
+      console.error(`${LOG_PREFIX} HIU notify missing notification object`);
       return res.status(400).json({ error: "Missing notification object" });
     }
 
@@ -129,15 +203,15 @@ export const handleConsentHipNotify = async (req: any, res: any) => {
       }
     } catch (queueErr: any) {
       console.warn(
-        `${LOG_PREFIX} BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
+        `${LOG_PREFIX} BullMQ unavailable (${queueErr.message}), falling back to direct HIU notify processing`,
       );
     }
 
     // Fallback: process directly
-    await ConsentService.handleHipNotify(notification, requestId, callbackAuth);
+    await ConsentService.handleHiuNotify(notification, requestId, callbackAuth);
   } catch (error: any) {
     console.error(
-      `${LOG_PREFIX} Error in handleConsentHipNotify:`,
+      `${LOG_PREFIX} Error in handleHiuConsentNotify:`,
       error.message,
     );
     if (!res.headersSent) {
@@ -162,9 +236,8 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
 
     // Try BullMQ queue first
     try {
-      const { enqueueConsentOnFetch } = await import(
-        "../../services/abdm.webhook.queue"
-      );
+      const { enqueueConsentOnFetch } =
+        await import("../../services/abdm.webhook.queue");
       const jobId = await enqueueConsentOnFetch({
         body,
         paramRequestId,
@@ -180,9 +253,8 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
 
     // Fallback: process directly using shared function
     try {
-      const { processConsentOnFetchCallback } = await import(
-        "../../services/consent.service"
-      );
+      const { processConsentOnFetchCallback } =
+        await import("../../services/consent.service");
       await processConsentOnFetchCallback(body, paramRequestId);
     } catch (fallbackErr: any) {
       console.error(
@@ -204,7 +276,10 @@ export const handleConsentOnFetch = async (req: any, res: any) => {
 export const handleConsentOnStatus = async (req: any, res: any) => {
   try {
     const body = req.body;
-    AbdmLogger.logPayloadDebug(`${LOG_PREFIX} on-status callback received:`, body);
+    AbdmLogger.logPayloadDebug(
+      `${LOG_PREFIX} on-status callback received:`,
+      body,
+    );
 
     if (body.error) {
       console.error(
@@ -218,9 +293,8 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
 
     // Try BullMQ queue first
     try {
-      const { enqueueConsentOnStatus } = await import(
-        "../../services/abdm.webhook.queue"
-      );
+      const { enqueueConsentOnStatus } =
+        await import("../../services/abdm.webhook.queue");
       const jobId = await enqueueConsentOnStatus({ body });
       if (jobId) {
         return;
@@ -258,9 +332,14 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         await PHRConsentArtefactModel.updateMany(broadQuery, {
           $set: { status: ConsentArtefactStatus.REVOKED, revokedAt: eventTs },
         });
-        const revokedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+        const revokedIds = await ConsentArtefactModel.distinct(
+          "artefactId",
+          broadQuery,
+        );
         if (revokedIds.length > 0) {
-          await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: revokedIds } });
+          await ExternalHealthRecordModel.deleteMany({
+            consentArtefactId: { $in: revokedIds },
+          });
         }
       }
 
@@ -271,9 +350,14 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         await PHRConsentArtefactModel.updateMany(broadQuery, {
           $set: { status: ConsentArtefactStatus.EXPIRED },
         });
-        const expiredIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+        const expiredIds = await ConsentArtefactModel.distinct(
+          "artefactId",
+          broadQuery,
+        );
         if (expiredIds.length > 0) {
-          await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: expiredIds } });
+          await ExternalHealthRecordModel.deleteMany({
+            consentArtefactId: { $in: expiredIds },
+          });
         }
       }
 
@@ -285,9 +369,14 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         await PHRConsentArtefactModel.updateMany(broadQuery, {
           $set: { status: ConsentArtefactStatus.DENIED, deniedAt: eventTs },
         });
-        const deniedIds = await ConsentArtefactModel.distinct("artefactId", broadQuery);
+        const deniedIds = await ConsentArtefactModel.distinct(
+          "artefactId",
+          broadQuery,
+        );
         if (deniedIds.length > 0) {
-          await ExternalHealthRecordModel.deleteMany({ consentArtefactId: { $in: deniedIds } });
+          await ExternalHealthRecordModel.deleteMany({
+            consentArtefactId: { $in: deniedIds },
+          });
         }
       }
 
@@ -308,8 +397,10 @@ export const handleConsentOnStatus = async (req: any, res: any) => {
         updateResult.matchedCount > 0
       ) {
         // AUTO-TRIGGER removed from on-status fallback path.
-        // triggerHiuDataFetchAsync is called ONLY from handleHipNotify.
-        const artefactIds = body.consentRequest.consentArtefacts.map((a: any) => a.id);
+        // triggerHiuDataFetchAsync is called ONLY from handleHiuNotify.
+        const artefactIds = body.consentRequest.consentArtefacts.map(
+          (a: any) => a.id,
+        );
       } else if (
         body.consentRequest.status === "GRANTED" &&
         updateResult.matchedCount === 0

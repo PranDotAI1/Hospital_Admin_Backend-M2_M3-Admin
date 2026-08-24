@@ -229,7 +229,7 @@ export const onHealthInformationTransfer = async (
       console.warn(
         `[HIU_CONTROLLER] BullMQ unavailable (${queueErr.message}), falling back to direct processing`,
       );
-      // Fallback: process directly (same pattern as handleConsentHipNotify)
+      // Fallback: process directly (same pattern as handleHiuConsentNotify)
       try {
         const { handleHiuTransfer } = await import(
           "../../services/hiu.service"

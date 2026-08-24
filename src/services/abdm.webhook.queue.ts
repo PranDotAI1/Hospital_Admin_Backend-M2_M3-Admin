@@ -19,6 +19,13 @@ export interface ConsentNotifyJobData {
   callbackAuth?: string;
 }
 
+export interface ConsentHipNotifyJobData {
+  type: "consent-hip-notify";
+  notification: any;
+  requestId: string;
+  callbackAuth?: string;
+}
+
 export interface ConsentOnFetchJobData {
   type: "consent-on-fetch";
   body: any;
@@ -32,6 +39,7 @@ export interface ConsentOnStatusJobData {
 
 export type WebhookJobData =
   | ConsentNotifyJobData
+  | ConsentHipNotifyJobData
   | ConsentOnFetchJobData
   | ConsentOnStatusJobData;
 
@@ -66,8 +74,13 @@ export const startWebhookIngestionWorker = (): Worker => {
       const { data } = job;
       switch (data.type) {
         case "consent-notify": {
-          const { handleHipNotify } = await import("../services/consent.service");
-          await handleHipNotify(data.notification, data.requestId, data.callbackAuth);
+          const { handleHiuNotify } = await import("../services/consent.service");
+          await handleHiuNotify(data.notification, data.requestId, data.callbackAuth);
+          break;
+        }
+        case "consent-hip-notify": {
+          const { handleHipNotifyOnly } = await import("../services/consent.service");
+          await handleHipNotifyOnly(data.notification, data.requestId, data.callbackAuth);
           break;
         }
         case "consent-on-fetch": {
@@ -121,6 +134,17 @@ export const enqueueConsentNotify = async (
   // (same notification in different minutes) and silent drops (same jobId within a minute).
   const jobId = `cn-${data.requestId}-${Date.now()}`;
   const job = await queue.add("consent-notify", { ...data, type: "consent-notify" as const }, {
+    jobId,
+  });
+  return job.id || null;
+};
+
+export const enqueueConsentHipNotify = async (
+  data: Omit<ConsentHipNotifyJobData, "type">,
+): Promise<string | null> => {
+  const queue = getWebhookIngestionQueue();
+  const jobId = `chn-${data.requestId}-${Date.now()}`;
+  const job = await queue.add("consent-hip-notify", { ...data, type: "consent-hip-notify" as const }, {
     jobId,
   });
   return job.id || null;
