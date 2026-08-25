@@ -86,7 +86,12 @@ const updateConsentRequestStatus = async (
   logPrefix: string,
   statusLabel: string,
 ): Promise<void> => {
-  if (!dbLookupId && artefactIds.length === 0) return;
+  if (!dbLookupId && artefactIds.length === 0) {
+    console.warn(`[ABDM_FLOW]   CR-UPDATE: No dbLookupId and no artefactIds — cannot update ConsentRequest`);
+    return;
+  }
+
+  console.log(`[ABDM_FLOW]   CR-UPDATE: Attempting to update ConsentRequest | dbLookupId=${dbLookupId} | artefactIds=${artefactIds.join(",")} | status=${statusLabel} | fields=${JSON.stringify(Object.keys(updateFields))}`);
 
   // Step 1: Try exact consentRequestId match
   if (dbLookupId) {
@@ -94,14 +99,21 @@ const updateConsentRequestStatus = async (
       { consentRequestId: dbLookupId },
       { $set: updateFields },
     );
-    if (result.matchedCount > 0) return;
+    if (result.matchedCount > 0) {
+      console.log(`[ABDM_FLOW]   CR-UPDATE: ✔ Updated via consentRequestId match | dbLookupId=${dbLookupId}`);
+      return;
+    }
 
     // Step 2: Try exact requestId match (our local UUID)
     const result2 = await ConsentRequestModel.updateOne(
       { requestId: dbLookupId },
       { $set: updateFields },
     );
-    if (result2.matchedCount > 0) return;
+    if (result2.matchedCount > 0) {
+      console.log(`[ABDM_FLOW]   CR-UPDATE: ✔ Updated via requestId match | dbLookupId=${dbLookupId}`);
+      return;
+    }
+    console.warn(`[ABDM_FLOW]   CR-UPDATE: ✖ No match for consentRequestId or requestId | dbLookupId=${dbLookupId}`);
   }
 
   // Step 3: Cross-reference via ConsentArtefact.consentRequestId
@@ -128,7 +140,7 @@ const updateConsentRequestStatus = async (
       }
     }
   }
-  console.warn(`${logPrefix} ${statusLabel}: ConsentRequest not found even after artefact cross-reference. dbLookupId=${dbLookupId}, artefactIds=${artefactIds.join(",")}`);
+  console.warn(`[ABDM_FLOW]   CR-UPDATE: ✖ FAILED — ConsentRequest not found even after artefact cross-reference. dbLookupId=${dbLookupId}, artefactIds=${artefactIds.join(",")}`);
 };
 
 /**
@@ -344,20 +356,21 @@ export const handleHiuNotify = async (
     return;
   }
 
-  // --- Deduplication: if all artefact IDs are already stored and GRANTED, skip ---
+  // --- Deduplication: if all artefact IDs are already stored and GRANTED ---
+  // HIP notify may have created the artefacts before HIU notify arrives.
+  // We MUST still update the ConsentRequest (status, approved values, etc.)
+  // but can skip artefact creation/fetch since they already exist.
+  let artefactsAlreadyGranted = false;
   if (status === "GRANTED" && artefactIds.length > 0) {
     const existing = await ConsentArtefactModel.find({
       artefactId: { $in: artefactIds },
       status: ConsentArtefactStatus.GRANTED,
     });
     if (existing.length === artefactIds.length) {
-      await sendHiuOnNotifyAck(
-        ackConsentId,
-        requestId,
-        "OK",
-        callbackAuthToken,
+      artefactsAlreadyGranted = true;
+      console.log(
+        `[ABDM_FLOW]   STEP 3 - Artefacts already GRANTED by HIP notify. Will update ConsentRequest but skip artefact creation.`,
       );
-      return;
     }
   }
 
@@ -389,7 +402,6 @@ export const handleHiuNotify = async (
       }
 
       // HIU notify path: we only get artefact IDs, not inline consentDetail.
-      // Create stubs and ALWAYS trigger Step 4 (fetch) to get full artefact details.
       if (artefactIds.length > 0) {
         let finalUsePHRCollection = usePHRCollection;
         for (const aid of artefactIds) {
@@ -409,26 +421,40 @@ export const handleHiuNotify = async (
           ? PHRConsentArtefactModel
           : ConsentArtefactModel;
         updateData.consentArtefacts = artefactIds;
-        for (const aid of artefactIds) {
-          const exists = await ArtefactModel.findOne({ artefactId: aid });
-          if (!exists) {
-            await createArtefactStub(
-              aid,
-              consentRequestId || aid,
-              finalUsePHRCollection,
-            );
-          } else if (consentRequestId && !exists.consentRequestId) {
-            // HIP notify may have created this artefact with null consentRequestId.
-            // We have the real consentRequestId — backfill it.
-            await ArtefactModel.updateOne(
-              { artefactId: aid },
-              { $set: { consentRequestId } },
-            );
-            console.log(`${LOG_PREFIX} Backfilled consentRequestId=${consentRequestId} on artefact ${aid}`);
+
+        // ── Create stubs / backfill (skip if HIP notify already created them) ──
+        if (!artefactsAlreadyGranted) {
+          for (const aid of artefactIds) {
+            const exists = await ArtefactModel.findOne({ artefactId: aid });
+            if (!exists) {
+              await createArtefactStub(
+                aid,
+                consentRequestId || aid,
+                finalUsePHRCollection,
+              );
+            } else if (consentRequestId && !exists.consentRequestId) {
+              await ArtefactModel.updateOne(
+                { artefactId: aid },
+                { $set: { consentRequestId } },
+              );
+              console.log(`${LOG_PREFIX} Backfilled consentRequestId=${consentRequestId} on artefact ${aid}`);
+            }
+          }
+        } else {
+          // Even when artefacts already exist, backfill consentRequestId if missing
+          for (const aid of artefactIds) {
+            const exists = await ArtefactModel.findOne({ artefactId: aid });
+            if (exists && consentRequestId && !exists.consentRequestId) {
+              await ArtefactModel.updateOne(
+                { artefactId: aid },
+                { $set: { consentRequestId } },
+              );
+              console.log(`${LOG_PREFIX} Backfilled consentRequestId=${consentRequestId} on artefact ${aid}`);
+            }
           }
         }
 
-        // ── Sync patient-approved values to ConsentRequest ──
+        // ── ALWAYS sync patient-approved values to ConsentRequest ──
         // The patient may have approved FEWER hiTypes or changed the date range
         // compared to what we requested. HIP notify stores the actual approved
         // consentDetail on the artefact. Read it here and write the approved
@@ -481,10 +507,8 @@ export const handleHiuNotify = async (
           console.log(`[ABDM_FLOW]   STEP 3a - No rawConsentDetail on artefacts yet (HIP notify may not have arrived). Will be synced by on-fetch callback.`);
         }
 
-        // STEP 4: Always trigger artefact fetch to get full consent details from ABDM.
-        // Even if HIP notify already stored inline detail, the HIU should independently
-        // fetch to ensure it has the authoritative artefact details.
-        if (!finalUsePHRCollection) {
+        // ── STEP 4: Trigger artefact fetch (skip if already done) ──
+        if (!artefactsAlreadyGranted && !finalUsePHRCollection) {
           console.log(`[ABDM_FLOW] ▶ STEP 4 - Triggering artefact FETCH for: ${JSON.stringify(artefactIds)}`);
           fetchArtefactDetailsAsync(
             artefactIds.map((id) => ({ id })),
@@ -1662,7 +1686,7 @@ export const storeArtefactDetails = async (
         // array, which can hit a different ConsentRequest when multiple exist for
         // the same patient (causing the dual-grant bug).
         await ConsentRequestModel.updateOne(
-          { consentRequestId: reqId },
+          { $or: [{ consentRequestId: reqId }, { requestId: reqId }] },
           { $set: crUpdate },
         );
       }
