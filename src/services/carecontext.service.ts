@@ -677,6 +677,15 @@ const triggerLinkingActions = (
   patient: IPatient,
 ): void => {
   if (!patient.abhaaddress) {
+    if (!patient.ABHANumber && patient.mobile) {
+      import("./sms.notification.service")
+        .then(({ SmsNotificationService }) => {
+          SmsNotificationService.sendSmsNotify2(patient.mobile).catch((err) =>
+            console.error("CareContext Deeplink SMS error:", err),
+          );
+        })
+        .catch((err) => console.error("Failed to load SMS service:", err));
+    }
     return;
   }
 
