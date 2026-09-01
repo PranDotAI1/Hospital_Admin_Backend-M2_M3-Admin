@@ -7,7 +7,10 @@ import {
 } from "../../services/discovery.service";
 import { CareContextModel, CareContextStatus } from "../../models/CareContext";
 import { PatientModel } from "../../models/Patient";
-import { CareContextService, resolveCanonicalHiType } from "../../services/carecontext.service";
+import {
+  CareContextService,
+  resolveCanonicalHiType,
+} from "../../services/carecontext.service";
 import {
   STATUS_CODE,
   generateUID,
@@ -93,12 +96,15 @@ const cacheDiscoveryAbha = async (
 
 const getCachedDiscoveryAbha = async (
   txnId: string,
-): Promise<{
-  abhaAddress?: string;
-  abhaNumber?: string;
-  patientName?: string;
-  patientId?: string;
-} | undefined> => {
+): Promise<
+  | {
+      abhaAddress?: string;
+      abhaNumber?: string;
+      patientName?: string;
+      patientId?: string;
+    }
+  | undefined
+> => {
   if (!txnId) return undefined;
   const redis = getRedis();
   const key = `${DISCOVERY_CACHE_PREFIX}${txnId}`;
@@ -192,12 +198,10 @@ export const onDiscover = async (req: Request, res: Response) => {
           });
 
           for (const [type, ccs] of grouped) {
-            const careContextsList = ccs
-              .slice(0, 20)
-              .map((cc) => ({
-                referenceNumber: cc.referenceNumber,
-                display: cc.display,
-              }));
+            const careContextsList = ccs.slice(0, 20).map((cc) => ({
+              referenceNumber: cc.referenceNumber,
+              display: cc.display,
+            }));
 
             if (careContextsList.length > 0) {
               patientResults.push({
@@ -251,8 +255,7 @@ export const onDiscover = async (req: Request, res: Response) => {
                 cachedPatientId,
               );
             }
-          } catch (_) {
-          }
+          } catch (_) {}
         } else {
           onDiscoverPayload.error = {
             code: 1000,
@@ -539,7 +542,8 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
           }
           // Update name from ABDM profile (cached from onDiscover where ABDM sends it)
           if (DISCOVERY_UPDATE_PATIENT_NAME) {
-            const cachedForConfirm = await getCachedDiscoveryAbha(finalTransactionId);
+            const cachedForConfirm =
+              await getCachedDiscoveryAbha(finalTransactionId);
             const abdmName = cachedForConfirm?.patientName;
             const storedName = (patient as any).name?.trim();
             if (abdmName && abdmName !== storedName) {
@@ -655,15 +659,21 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
               );
             });
           }
-
-          if (patient.mobile) {
-            import("../../services/sms.notification.service")
-              .then(({ SmsNotificationService }) => {
-                SmsNotificationService.sendSmsNotify2(patient.mobile).catch((err) =>
-                  console.error("Discovery: Deeplink SMS error:", err),
+          try {
+            if (patient.mobile) {
+              import("../../services/sms.notification.service")
+                .then(({ SmsNotificationService }) => {
+                  SmsNotificationService.sendSmsNotify2(patient.mobile).catch(
+                    (err) =>
+                      console.error("Discovery: Deeplink SMS error:", err),
+                  );
+                })
+                .catch((err) =>
+                  console.error("Failed to load SMS service:", err),
                 );
-              })
-              .catch((err) => console.error("Failed to load SMS service:", err));
+            }
+          } catch (error) {
+            console.error(error);
           }
         }
       }
