@@ -655,6 +655,16 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
               );
             });
           }
+
+          if (patient.mobile) {
+            import("../../services/sms.notification.service")
+              .then(({ SmsNotificationService }) => {
+                SmsNotificationService.sendSmsNotify2(patient.mobile).catch((err) =>
+                  console.error("Discovery: Deeplink SMS error:", err),
+                );
+              })
+              .catch((err) => console.error("Failed to load SMS service:", err));
+          }
         }
       }
 
