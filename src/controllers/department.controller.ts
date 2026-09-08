@@ -36,7 +36,10 @@ export const departmentList = async (req: any, res: any) => {
         }, STATUS_CODE.SUCCESS);
     }
     catch (error: any) {
-        res.status(STATUS_CODE.ERROR).json({ error: error.message });
+        console.error("[DEPARTMENT_LIST_ERROR]", error?.message || error);
+        res.status(STATUS_CODE.ERROR).json({
+            message: process.env.NODE_ENV === "production" ? "Internal server error" : error.message
+        });
     }
 
 }
@@ -52,10 +55,13 @@ export const addDepartment = async (req: any, res: any) => {
         return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "Department has been suceesfully added");
     }
     catch (error: any) {
-        if (error.code === STATUS_CODE.VALIDATION_ERROR) {
-            res.status(STATUS_CODE.ERROR).json({ error: error.message, message: "Department already exists" });
+        console.error("[ADD_DEPARTMENT_ERROR]", error?.message || error);
+        if (error.code === 11000 || error.code === STATUS_CODE.VALIDATION_ERROR) {
+            res.status(STATUS_CODE.ERROR).json({ message: "Department already exists" });
         } else {
-            res.status(500).json({ error: error.message });
+            res.status(500).json({
+                message: process.env.NODE_ENV === "production" ? "Internal server error" : error.message
+            });
         }
     }
 
@@ -72,10 +78,13 @@ export const updateDepartment = async (req: any, res: any) => {
         return apiResponse(res, { id: id }, STATUS_CODE.SUCCESS, "Department has been suceesfully updated");
     }
     catch (error: any) {
-        if (error.code === STATUS_CODE.VALIDATION_ERROR) {
-            res.status(STATUS_CODE.ERROR).json({ error: error.message, message: "Department already exists" });
+        console.error("[UPDATE_DEPARTMENT_ERROR]", error?.message || error);
+        if (error.code === 11000 || error.code === STATUS_CODE.VALIDATION_ERROR) {
+            res.status(STATUS_CODE.ERROR).json({ message: "Department already exists" });
         } else {
-            res.status(500).json({ error: error.message });
+            res.status(500).json({
+                message: process.env.NODE_ENV === "production" ? "Internal server error" : error.message
+            });
         }
     }
 

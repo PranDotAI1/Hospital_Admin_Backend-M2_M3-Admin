@@ -32,27 +32,46 @@ export const login = async (req: any, res: any) => {
       );
     }
     const tokenPayload = {
-      id: user.id,
+      id: user.id || user._id,
       email: user.email,
       name: user.name,
       role_id: user.role_id,
+      hospital_id: user.hospital_id,
     };
     const accessToken = generateToken(tokenPayload);
 
     const responsePayload = {
-      id: user.id,
+      id: user.id || user._id,
       email: user.email,
       name: user.name,
+      role_id: user.role_id,
+      hospital_id: user.hospital_id,
       access_token: accessToken,
     };
     return apiResponse(res, responsePayload, STATUS_CODE.SUCCESS);
   } catch (error: any) {
-    res.status(STATUS_CODE.ERROR).json({ error: error.message });
+    console.error("[LOGIN_ERROR]", error?.message || error);
+    res
+      .status(STATUS_CODE.ERROR)
+      .json({
+        status: "error",
+        message:
+          process.env.NODE_ENV === "production"
+            ? "An error occurred during authentication"
+            : error.message,
+      });
   }
 };
 
 export const logout = async (req: any, res: any) => {
-  const token = req.headers["authorization"];
-  expiredToken(token);
-  return apiResponse(res, {}, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
+  try {
+    const token = req.headers["authorization"];
+    if (token) {
+      await expiredToken(token);
+    }
+    return apiResponse(res, {}, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
+  } catch (error: any) {
+    console.error("[LOGOUT_ERROR]", error?.message || error);
+    return apiResponse(res, {}, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
+  }
 };

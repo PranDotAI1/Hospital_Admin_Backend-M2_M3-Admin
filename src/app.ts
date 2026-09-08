@@ -19,6 +19,7 @@ import webook from "./routes/webhook";
 import V4router from "./routes/v4";
 import { proxyRequest } from "./controllers/proxy.controller";
 import { apiLimiter } from "./middlewares/rate.limiter";
+import { csrfProtection } from "./middlewares/csrf.protection";
 import { version } from "os";
 
 const app = express();
@@ -29,9 +30,15 @@ const allowedOrigins = process.env.CORS_ORIGIN
       .filter(Boolean)
   : ["http://localhost:3000", "http://localhost:3001"];
 
-// if (process.env.NODE_ENV === "development") {
-app.set("trust proxy", 1);
-// }
+// Prevent IP spoofing: only trust reverse proxy if explicitly configured (e.g., behind ALB/Nginx)
+if (
+  process.env.NODE_ENV === "production" &&
+  (process.env.TRUST_PROXY === "true" || process.env.TRUST_PROXY === "1")
+) {
+  app.set("trust proxy", 1);
+} else {
+  app.set("trust proxy", false);
+}
 
 app.use(
   cors({
@@ -56,12 +63,56 @@ app.use(
 app.set("views", path.join(__dirname, "../views"));
 app.set("view engine", "jade");
 
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        upgradeInsecureRequests:
+          process.env.NODE_ENV === "production" ? [] : null,
+      },
+    },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+    frameguard: {
+      action: "deny",
+    },
+    noSniff: true,
+    referrerPolicy: {
+      policy: "strict-origin-when-cross-origin",
+    },
+    permittedCrossDomainPolicies: {
+      permittedPolicies: "none",
+    },
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+
+// Enforce Permissions-Policy header for privacy compliance
+app.use((_req, res, next) => {
+  res.setHeader(
+    "Permissions-Policy",
+    "geolocation=(), camera=(), microphone=(), payment=()",
+  );
+  next();
+});
+
 app.use(compression());
 app.use(logger(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.use(cookieParser());
+app.use(csrfProtection);
 app.use(express.static(path.join(__dirname, "../public")));
 
 connectDB()

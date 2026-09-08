@@ -552,22 +552,34 @@ export const verifyLinkOTP = async (
   careContextRefs?: string[];
   abhaAddress?: string;
   abhaNumber?: string;
+  error?: string;
 }> => {
   const stored = await LinkOTPModel.findOne({ transactionId });
 
   if (!stored) {
-    return { valid: false };
+    return { valid: false, error: "OTP transaction expired or invalid" };
   }
 
   if (stored.expiresAt < new Date()) {
     await LinkOTPModel.deleteOne({ _id: stored._id });
-    return { valid: false };
+    return { valid: false, error: "OTP has expired" };
   }
 
   if (stored.otp !== otp) {
-    return { valid: false };
+    const attempts = (stored.attempts || 0) + 1;
+    if (attempts >= 3) {
+      // Exceeded max attempts: delete OTP immediately to prevent brute force
+      await LinkOTPModel.deleteOne({ _id: stored._id });
+      return {
+        valid: false,
+        error: "Too many failed attempts. OTP has been invalidated.",
+      };
+    }
+    await LinkOTPModel.updateOne({ _id: stored._id }, { $inc: { attempts: 1 } });
+    return { valid: false, error: "Incorrect OTP" };
   }
 
+  // Single-use guarantee: Invalidate and delete immediately upon successful verification
   await LinkOTPModel.deleteOne({ _id: stored._id });
 
   return {

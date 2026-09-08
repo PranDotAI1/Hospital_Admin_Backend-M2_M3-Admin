@@ -25,12 +25,18 @@ export const listing = async (req: any, res: any) => {
       STATUS_CODE.SUCCESS,
     );
   } catch (error: any) {
+    console.error("[HOSPITAL_ERROR]", error?.message || error);
     if (error.code === 11000) {
       res
         .status(STATUS_CODE.ERROR)
-        .json({ error: error.message, message: "Hospital already exists" });
+        .json({ message: "Hospital with this name or identifier already exists" });
     } else {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({
+        message:
+          process.env.NODE_ENV === "production"
+            ? "Internal server error"
+            : error.message,
+      });
     }
   }
 };
@@ -53,12 +59,18 @@ export const add = async (req: any, res: any) => {
       "Hospital has been suceesfully added",
     );
   } catch (error: any) {
+    console.error("[HOSPITAL_ERROR]", error?.message || error);
     if (error.code === 11000) {
       res
         .status(STATUS_CODE.ERROR)
-        .json({ error: error.message, message: "Hospital already exists" });
+        .json({ message: "Hospital with this name or identifier already exists" });
     } else {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({
+        message:
+          process.env.NODE_ENV === "production"
+            ? "Internal server error"
+            : error.message,
+      });
     }
   }
 };
@@ -104,12 +116,18 @@ export const update = async (req: any, res: any) => {
       "Hospital has been successfully updated",
     );
   } catch (error: any) {
+    console.error("[HOSPITAL_ERROR]", error?.message || error);
     if (error.code === 11000) {
       res
         .status(STATUS_CODE.ERROR)
-        .json({ error: error.message, message: "Hospital already exists" });
+        .json({ message: "Hospital with this name or identifier already exists" });
     } else {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({
+        message:
+          process.env.NODE_ENV === "production"
+            ? "Internal server error"
+            : error.message,
+      });
     }
   }
 };

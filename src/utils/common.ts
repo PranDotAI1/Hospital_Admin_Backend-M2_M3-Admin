@@ -33,6 +33,9 @@ export const generateToken = (payload: object): string => {
   return jwt.sign(payload, SECRET_KEY, { expiresIn: "24h" });
 };
 
+import crypto from "crypto";
+import { getRedisConnection } from "../config/redis";
+
 const stripBearer = (token: string): string => {
   if (token && token.startsWith("Bearer ")) {
     return token.slice(7);
@@ -40,29 +43,92 @@ const stripBearer = (token: string): string => {
   return token;
 };
 
-// A simple in-memory store for blacklisted tokens (use a database/Redis in production)
+// In-memory fallback cache for blacklisted tokens
 const tokenBlacklist = new Set<string>();
 
-export const expiredToken = (token: string) => {
+/**
+ * Revoke/blacklist a JWT token.
+ * Hashes token with SHA-256 and stores in Redis with TTL matching token's remaining lifetime.
+ */
+export const blacklistToken = async (token: string): Promise<boolean> => {
   try {
     const cleanToken = stripBearer(token);
-    jwt.verify(cleanToken, SECRET_KEY);
-    tokenBlacklist.add(cleanToken);
+    if (!cleanToken) return false;
+
+    const tokenHash = crypto.createHash("sha256").update(cleanToken).digest("hex");
+    tokenBlacklist.add(tokenHash);
+
+    // Calculate remaining TTL from JWT exp
+    let ttlSeconds = 86400; // default 24h
+    try {
+      const decoded = jwt.decode(cleanToken) as { exp?: number } | null;
+      if (decoded && decoded.exp) {
+        const remaining = decoded.exp - Math.floor(Date.now() / 1000);
+        ttlSeconds = remaining > 0 ? remaining : 1;
+      }
+    } catch {
+      // Use default TTL if decode fails
+    }
+
+    try {
+      const redis = getRedisConnection();
+      await redis.set(`bl:token:${tokenHash}`, "1", "EX", ttlSeconds);
+    } catch (redisError: any) {
+      console.warn(
+        `[SECURITY] Failed to write token to Redis blacklist, kept in-memory fallback: ${redisError?.message}`,
+      );
+    }
+
     return true;
   } catch (error) {
     return false;
   }
 };
 
-export const isTokenBlacklisted = (token: string): boolean => {
-  return tokenBlacklist.has(stripBearer(token));
+/**
+ * Backwards-compatible alias for blacklistToken
+ */
+export const expiredToken = async (token: string): Promise<boolean> => {
+  return blacklistToken(token);
+};
+
+/**
+ * Check if a token is blacklisted in Redis or in-memory fallback cache
+ */
+export const isTokenBlacklisted = async (token: string): Promise<boolean> => {
+  try {
+    const cleanToken = stripBearer(token);
+    if (!cleanToken) return true;
+
+    const tokenHash = crypto.createHash("sha256").update(cleanToken).digest("hex");
+    if (tokenBlacklist.has(tokenHash)) {
+      return true;
+    }
+
+    try {
+      const redis = getRedisConnection();
+      const exists = await redis.exists(`bl:token:${tokenHash}`);
+      if (exists === 1) {
+        tokenBlacklist.add(tokenHash); // Cache in local memory as well
+        return true;
+      }
+    } catch (redisError: any) {
+      // In case Redis is down, rely on in-memory cache
+      return tokenBlacklist.has(tokenHash);
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
 };
 
 export const verifyToken = (token: string) => {
   try {
     const cleanToken = stripBearer(token);
     if (!cleanToken) return null;
-    if (tokenBlacklist.has(cleanToken)) return null;
+    const tokenHash = crypto.createHash("sha256").update(cleanToken).digest("hex");
+    if (tokenBlacklist.has(tokenHash)) return null;
     const decoded = jwt.verify(cleanToken, SECRET_KEY);
     return decoded;
   } catch (error) {

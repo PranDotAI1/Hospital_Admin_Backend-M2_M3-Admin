@@ -27,7 +27,7 @@ import {
 } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken, requireRole } from "../middlewares/user.authentication";
-import { loginLimiter } from "../middlewares/rate.limiter";
+import { loginLimiter, passwordResetLimiter } from "../middlewares/rate.limiter";
 import { ROLE } from "../utils/constant";
 import {
   getPendingTokens,
@@ -88,6 +88,8 @@ import {
   getPatientLabReports,
   finalizeLabReport,
 } from "../controllers/v3/lab-report.controller";
+import authRoutes from "./v1/auth/auth.routes";
+
 const router = Router();
 
 router.get("/", (req: Request, res: Response, next: NextFunction) => {
@@ -97,6 +99,11 @@ router.get("/", (req: Request, res: Response, next: NextFunction) => {
 router.get("/testing", (req: any, res: any) => {
   res.send("Welcome to the new API");
 });
+
+// Authentication & Password Management Routes
+router.use("/", authRoutes);
+router.use("/auth", authRoutes);
+
 // onboarding Routes
 router.post("/login", loginLimiter, login);
 router.get("/logout", checkToken, logout);
@@ -132,7 +139,12 @@ router.put(
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
   userUpdate,
 );
-router.put("/user/update/password/:id", checkToken, updatePassword);
+router.put(
+  "/user/update/password/:id",
+  passwordResetLimiter,
+  checkToken,
+  updatePassword,
+);
 
 router.post(
   "/user/new-add",

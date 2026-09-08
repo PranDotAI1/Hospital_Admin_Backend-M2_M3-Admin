@@ -48,7 +48,13 @@ export interface IUser extends Document {
     deleted_by?: string;
     updated_by?: string;
     status?: number;
-    reset_otp?: number;
+    reset_otp?: string;
+    otpExpires?: Date;
+    otpAttempts?: number;
+    passwordResetToken?: string;
+    passwordResetExpires?: Date;
+    passwordResetAttempts?: number;
+    passwordResetLastAttempt?: Date;
     role_id?: number;
     is_active?: boolean;
     version_m4?: any;
@@ -150,7 +156,13 @@ const UserSchema = new Schema<IUser>({
     status: { type: Number, default: 1, required: false, },
     version_m4: { type: Object, required: false, },
     previous_passwords: { type: [], required: false },
-    reset_otp: { type: Number, default: null, required: false },
+    reset_otp: { type: String, default: null, required: false },
+    otpExpires: { type: Date, default: null, required: false },
+    otpAttempts: { type: Number, default: 0, required: false },
+    passwordResetToken: { type: String, default: null, required: false },
+    passwordResetExpires: { type: Date, default: null, required: false },
+    passwordResetAttempts: { type: Number, default: 0, required: false },
+    passwordResetLastAttempt: { type: Date, default: null, required: false },
     role_id: { type: Number, default: 4, required: false },
     created_by: { type: String, trim: true, required: false },
     updated_by: { type: String, trim: true, required: false },
