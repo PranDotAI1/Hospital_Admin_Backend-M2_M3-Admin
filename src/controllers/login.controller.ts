@@ -22,6 +22,16 @@ import {
 import { MSG } from "../utils/msgs";
 
 /**
+ * Normalise the COOKIE_SAMESITE env var to a value the cookie package accepts.
+ * Express/cookie only recognises the exact strings "strict", "lax", and "none" (all lowercase).
+ */
+const normaliseSameSite = (): "strict" | "lax" | "none" => {
+  const raw = (process.env.COOKIE_SAMESITE || "").trim().toLowerCase();
+  if (raw === "strict" || raw === "lax" || raw === "none") return raw;
+  return "lax"; // safe default
+};
+
+/**
  * Cookie options helper adhering to security requirements
  */
 const getCookieOptions = (maxAgeMs: number) => {
@@ -29,7 +39,7 @@ const getCookieOptions = (maxAgeMs: number) => {
   return {
     httpOnly: true,
     secure: isProduction || process.env.COOKIE_SECURE === "true",
-    sameSite: (process.env.COOKIE_SAMESITE as any) || "lax",
+    sameSite: normaliseSameSite(),
     maxAge: maxAgeMs,
     path: "/",
     ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
@@ -41,7 +51,7 @@ const getClearCookieOptions = () => {
   return {
     httpOnly: true,
     secure: isProduction || process.env.COOKIE_SECURE === "true",
-    sameSite: (process.env.COOKIE_SAMESITE as any) || "lax",
+    sameSite: normaliseSameSite(),
     path: "/",
     ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
   };

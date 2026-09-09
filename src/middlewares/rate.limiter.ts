@@ -1,7 +1,7 @@
 import rateLimit from "express-rate-limit";
 import RedisStore from "rate-limit-redis";
 import { getRedisConnection } from "../config/redis";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 
 // ---------------------------------------------------------------------------
 // Redis-backed store factory
@@ -29,14 +29,33 @@ function createRedisStore(prefix: string) {
 }
 
 // ---------------------------------------------------------------------------
+// IPv6 normalisation
+// ---------------------------------------------------------------------------
+// Collapse IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 → 1.2.3.4) so that
+// the same client always gets the same rate-limit bucket regardless of
+// whether the connection arrives over IPv4 or IPv6.
+// ---------------------------------------------------------------------------
+function normaliseIp(ip: string | undefined): string {
+  if (!ip) return "unknown";
+  // Strip IPv4-mapped IPv6 prefix
+  if (ip.startsWith("::ffff:")) return ip.slice(7);
+  // Localhost IPv6 → IPv4
+  if (ip === "::1") return "127.0.0.1";
+  return ip;
+}
+
+// ---------------------------------------------------------------------------
 // Key generators
 // ---------------------------------------------------------------------------
 // For login & password-reset we key on IP + lowercase username/email so that:
 //   • One brute-forcing user doesn't lock out everyone behind the same NAT IP
 //   • Attackers can't enumerate usernames across many IPs easily
+//
+// We normalise IPv6 → IPv4 manually (see normaliseIp) and disable the
+// library's built-in IPv6 validation since we handle it ourselves.
 // ---------------------------------------------------------------------------
-function authKeyGenerator(req: Request): string {
-  const ip = req.ip || req.socket.remoteAddress || "unknown";
+function authKeyGenerator(req: Request, _res: Response): string {
+  const ip = normaliseIp(req.ip);
   // Login sends `username` or `email` in the body
   const identity = (
     (req.body?.username || req.body?.email || req.body?.phone || "") as string
@@ -65,13 +84,14 @@ function rateLimitMessage(retryMinutes: number) {
 // ---------------------------------------------------------------------------
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,
+  max: 20,
   standardHeaders: true, // Return `RateLimit-*` headers
   legacyHeaders: false, // Disable `X-RateLimit-*` headers
   keyGenerator: authKeyGenerator,
   store: createRedisStore("login"),
   message: rateLimitMessage(15),
   skipSuccessfulRequests: true, // only count failed logins (non-2xx)
+  validate: { xForwardedForHeader: false, keyGeneratorIpFallback: false },
 });
 
 // ---------------------------------------------------------------------------
@@ -120,6 +140,7 @@ export const otpLimiter = rateLimit({
     message: "Too many OTP attempts. Please try again after 15 minutes.",
     code: 429,
   },
+  validate: { xForwardedForHeader: false, keyGeneratorIpFallback: false },
 });
 
 // ---------------------------------------------------------------------------
@@ -139,4 +160,5 @@ export const passwordResetLimiter = rateLimit({
       "Too many password reset attempts. Please try again after 15 minutes.",
     code: 429,
   },
+  validate: { xForwardedForHeader: false, keyGeneratorIpFallback: false },
 });
