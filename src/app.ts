@@ -30,14 +30,24 @@ const allowedOrigins = process.env.CORS_ORIGIN
       .filter(Boolean)
   : ["http://localhost:3000", "http://localhost:3001"];
 
-// Prevent IP spoofing: only trust reverse proxy if explicitly configured (e.g., behind ALB/Nginx)
-if (
-  process.env.NODE_ENV === "production" &&
-  (process.env.TRUST_PROXY === "true" || process.env.TRUST_PROXY === "1")
-) {
-  app.set("trust proxy", 1);
-} else {
+// Trust proxy configuration for correct client-IP detection behind reverse
+// proxies (ALB, Nginx, Cloudflare, etc.).  Without this, express-rate-limit
+// sees the proxy's IP and rate-limits ALL users as a single client.
+//
+// TRUST_PROXY values:
+//   "false" / "0"  → disabled (direct-facing server, no proxy)
+//   "true"  / "1"  → trust 1 hop (single ALB / Nginx)
+//   "<number>"     → trust N hops (e.g. Cloudflare → ALB → app = 2)
+//   "loopback"     → trust loopback addresses only
+//
+// Default: enabled in production (1 hop), disabled in development.
+const trustProxy = process.env.TRUST_PROXY ?? (process.env.NODE_ENV === "production" ? "1" : "false");
+if (trustProxy === "false" || trustProxy === "0") {
   app.set("trust proxy", false);
+} else if (/^\d+$/.test(trustProxy)) {
+  app.set("trust proxy", parseInt(trustProxy, 10));
+} else {
+  app.set("trust proxy", trustProxy); // "loopback", "linklocal", "uniquelocal", or CIDR
 }
 
 app.use(
