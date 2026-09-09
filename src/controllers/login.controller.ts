@@ -87,12 +87,6 @@ export const isRequestSecure = (req?: any): boolean => {
   return process.env.NODE_ENV === "production";
 };
 
-/**
- * Resolves the appropriate Cookie Domain.
- * For production environments (e.g. hmis.pran.ai and admin.pran.ai / bhmis.pran.ai),
- * setting domain to .pran.ai ensures first-party cookie sharing across subdomains
- * and prevents mobile browsers (Chrome/Safari) from blocking cookies as third-party.
- */
 export const resolveCookieDomain = (req?: any): string | undefined => {
   const host = (req?.headers?.host || req?.hostname || "").toLowerCase().split(":")[0];
   const origin = (
@@ -115,22 +109,16 @@ export const resolveCookieDomain = (req?: any): string | undefined => {
     return undefined;
   }
 
-  // Explicit env override
+  // Explicit env override (use only when you KNOW frontend & API share the same registrable domain)
   if (process.env.COOKIE_DOMAIN) {
     return process.env.COOKIE_DOMAIN;
   }
 
-  // Auto-detect pran.ai domain
-  if (host.endsWith("pran.ai") || origin.includes("pran.ai")) {
-    return ".pran.ai";
-  }
-
-  // Generic two-level domain extraction (e.g. *.example.com -> .example.com)
-  const parts = host.split(".");
-  if (parts.length >= 2 && !host.endsWith(".local")) {
-    return "." + parts.slice(-2).join(".");
-  }
-
+  // When COOKIE_DOMAIN is not set, return undefined so the browser defaults
+  // the cookie domain to the exact host that set it (the API server).
+  // DO NOT auto-detect from Origin header — in cross-origin setups
+  // (e.g. frontend on pran.ai, API on pranamm.ai) the Origin belongs to
+  // a different registrable domain and would cause a domain mismatch.
   return undefined;
 };
 
