@@ -16,6 +16,17 @@ import { UHIDCounterModel } from "../../models/UHIDCounter";
 import { DepartmentModel } from "../../models/Department";
 import { DoctorModel } from "../../models/Doctor";
 import { normalizeAbha, formatAbhaForStorage } from "../../utils/common";
+import {
+  sanitizeInputString,
+  isValidPatientName,
+  isValidMobile,
+  validateAndNormalizeAge,
+  isValidDob,
+  maskAadhaar,
+  maskAbha,
+  sanitizePatientOutput,
+  escapeRegex,
+} from "../../utils/sanitizer";
 
 const generateUHID = async (): Promise<string> => {
   const today = new Date();
@@ -36,17 +47,19 @@ const generateUHID = async (): Promise<string> => {
   return `${datePrefix}${sequence.toString().padStart(6, "0")}`;
 };
 
-const isValidMobile = (mobile: string): boolean => {
-  return /^[6-9]\d{9}$/.test(mobile);
-};
-
+/**
+ * @deprecated Used only by non-refactored functions (updatePatient, addVisit, etc.).
+ * New code should rely on schema validation middleware instead.
+ */
 const sanitizeString = (
   value: unknown,
   maxLength: number = 500,
 ): string | undefined => {
-  if (value === null || value === undefined) return undefined;
-  const str = typeof value === "string" ? value : String(value);
-  return str.trim().slice(0, maxLength);
+  return sanitizeInputString(value, {
+    maxLength,
+    stripHtml: true,
+    disallowObjectString: true,
+  });
 };
 
 const normalizeNameForMatch = (name: string | undefined): string => {
@@ -64,52 +77,38 @@ const getTodayDateString = (): string => {
 
 export const registerPatient = async (req: Request, res: Response) => {
   try {
+    // req.body is already validated by registerPatientSchema middleware.
+    // The controller trusts the schema and only does business logic.
     const body = req.body;
-    const f_name = sanitizeString(body.f_name || body.firstName, 100);
-    const mobile = sanitizeString(body.mobile, 15);
+    const f_name = (body.f_name || body.firstName) as string;
+    const mobile = body.mobile as string;
+    const dob = body.dob as string | undefined;
+    const age = body.age !== undefined && body.age !== null && body.age !== ""
+      ? String(typeof body.age === "number" ? body.age : String(body.age).trim().replace(/\D/g, ""))
+      : undefined;
 
-    let dob = sanitizeString(body.dob, 20);
-    const age = sanitizeString(body.age, 3);
-
-    if (!f_name) {
-      return res.status(STATUS_CODE.ERROR).json({
-        status: "error",
-        message: "First name (f_name) is required",
-      });
-    }
-
-    if (!mobile || !isValidMobile(mobile)) {
-      return res.status(STATUS_CODE.ERROR).json({
-        status: "error",
-        message:
-          "Valid mobile number is required (10 digits starting with 6-9)",
-      });
-    }
-
-    const abhaNumber = sanitizeString(
-      body.abhaNumber || body.ABHANumber || body.abha_number,
-      20,
-    );
-    const abhaAddress = sanitizeString(
+    const abhaNumber = body.abhaNumber || body.ABHANumber || body.abha_number || undefined;
+    const abhaAddress =
       body.abhaAddress ||
         body.abhaaddress ||
         body.abha_id ||
         body.abhaId ||
-        body.abha_address,
-      100,
-    );
+        body.abha_address || undefined;
+
 
     const abhaNumberFormatted = abhaNumber
       ? formatAbhaForStorage(abhaNumber)
       : undefined;
-    const m_name = sanitizeString(body.m_name || body.middleName, 100);
-    const l_name = sanitizeString(body.l_name || body.lastName, 100);
+    const m_name = (body.m_name || body.middleName) as string | undefined;
+    const l_name = (body.l_name || body.lastName) as string | undefined;
+
     const fullName = [f_name, m_name, l_name].filter(Boolean).join(" ");
 
-    const address = sanitizeString(body.address, 500);
-    const pincode = sanitizeString(body.pincode, 10);
-    const state = sanitizeString(body.state, 50);
-    const district = sanitizeString(body.district, 50);
+
+    const address = body.address as string | undefined;
+    const pincode = body.pincode as string | undefined;
+    const state = body.state as string | undefined;
+    const district = body.district as string | undefined;
 
     // 2) If ABHA address matches an existing patient, add a visit to that patient
     //    (only match on abhaAddress, NOT abhaNumber — one person can have multiple ABHA addresses)
@@ -277,7 +276,7 @@ export const registerPatient = async (req: Request, res: Response) => {
       aadhaarNumber: sanitizeString(body.aadhaarNumber, 12),
       ABHANumber: abhaNumberFormatted || abhaNumber || undefined,
       abhaaddress: abhaAddress || undefined,
-      abhaLinkedAt: abhaNumber ? new Date() : undefined,
+      // abhaLinkedAt: abhaNumber ? new Date() : undefined,
       allergies: sanitizeString(body.allergies, 500),
       existingMedicalConditions: sanitizeString(
         body.existingMedicalConditions,
@@ -515,20 +514,122 @@ export const sendDeepLinkSms = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Transforms a full patient document into a minimal, lightweight table item
+ * tailored specifically for OPD/IPD/Patient listing tables.
+ * Slices visits down to only the latest visit and exposes flattened UI properties.
+ */
+const formatPatientForTable = (patient: any) => {
+  const sanitized = sanitizePatientOutput(patient);
+
+  // Extract and sort visits to ensure we find the absolute latest past/present visit (ignore future dates)
+  const now = Date.now();
+  const rawVisits = Array.isArray(sanitized.visits) ? sanitized.visits : [];
+  const sortedVisits = rawVisits
+    .filter((v: any) => v && v.visitDate && new Date(v.visitDate).getTime() <= now)
+    .sort((a: any, b: any) => {
+      const timeA = a.visitDate ? new Date(a.visitDate).getTime() : 0;
+      const timeB = b.visitDate ? new Date(b.visitDate).getTime() : 0;
+      return timeB - timeA;
+    });
+
+  const latestVisit = sortedVisits[0] || null;
+
+  const idStr = sanitized._id ? sanitized._id.toString() : "";
+  const uhid = sanitized.uhid || (idStr ? idStr.slice(-8).toUpperCase() : "");
+
+  // OPD ID: prefer visit.opdId, or last 8 chars of visitId, fallback to uhid
+  const opdId =
+    latestVisit?.opdId ||
+    (latestVisit?.visitId
+      ? latestVisit.visitId.toString().slice(-8).toUpperCase()
+      : uhid);
+
+  const queue = latestVisit?.tokenNumber || "";
+  const doctor = latestVisit?.doctorName || sanitized.lastVisitedDoctor || "";
+  const fee = latestVisit?.consultationFee ?? "";
+  const time =
+    latestVisit?.visitDate ||
+    sanitized.lastVisitDate ||
+    sanitized.updatedAt ||
+    sanitized.createdAt;
+
+  const isAbhaLinked = Boolean(
+    (sanitized.ABHANumber && sanitized.ABHANumber.trim()) ||
+      (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
+  );
+
+  const maskedAbha = isAbhaLinked
+    ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
+    : "";
+
+  return {
+    _id: idStr,
+    uhid,
+    name:
+      sanitized.name ||
+      `${sanitized.f_name || ""} ${sanitized.l_name || ""}`.trim() ||
+      "Patient",
+    mobile: sanitized.mobile || "",
+    gender: sanitized.gender || "",
+    dob: sanitized.dob || "",
+    age: sanitized.age || "",
+
+    // ABHA Identity (Minimal: boolean status and masked display only, NO sensitive/raw ABHA data)
+    isAbhaLinked,
+    maskedAbha,
+
+    // Flattened OPD table columns
+    opdId,
+    queue,
+    doctor,
+    fee,
+    department: latestVisit?.department || "",
+    visitType: latestVisit?.visitType || "OPD",
+    time,
+    lastVisitDate: sanitized.lastVisitDate || (latestVisit ? latestVisit.visitDate : undefined),
+    totalVisits: sanitized.totalVisits || (rawVisits.length > 0 ? rawVisits.length : 1),
+  };
+};
+
+/**
+ * GET /patient/:id and GET /patients/:id
+ * Retrieves complete, rich details for a single patient when clicked in UI.
+ * Sorts all historical visits chronologically (newest first).
+ */
 export const getPatient = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
-    let patient = await PatientModel.findOne({ uhid: id }).lean();
-    if (!patient) {
-      patient = await PatientModel.findById(id).lean();
+    if (!id || String(id).trim() === "") {
+      return res.status(STATUS_CODE.BAD_REQUEST).json({
+        status: "error",
+        message: "Patient ID or UHID is required",
+      });
     }
 
-    if (patient && ((patient as any).isMerged || patient.status === "merged")) {
-      if ((patient as any).mergedToPatient) {
-        patient = await PatientModel.findById(
-          (patient as any).mergedToPatient,
-        ).lean();
+    const cleanId = String(id).trim();
+
+    let patient: any = null;
+    if (Types.ObjectId.isValid(cleanId)) {
+      patient = await PatientModel.findById(cleanId).lean();
+    }
+    if (!patient) {
+      patient = await PatientModel.findOne({ uhid: cleanId }).lean();
+    }
+    if (!patient) {
+      patient = await PatientModel.findOne({
+        $or: [
+          { mobile: cleanId },
+          { ABHANumber: cleanId },
+          { abhaaddress: cleanId },
+        ],
+      }).lean();
+    }
+
+    // Follow merge pointer if patient was merged
+    if (patient && (patient.isMerged || patient.status === "merged")) {
+      if (patient.mergedToPatient) {
+        patient = await PatientModel.findById(patient.mergedToPatient).lean();
       }
     }
 
@@ -539,22 +640,132 @@ export const getPatient = async (req: Request, res: Response) => {
       });
     }
 
+    // Sanitize XSS and legacy artifacts
+    const sanitized = sanitizePatientOutput(patient);
+
+    // Sort ALL past/present visits chronologically (newest visits first, ignoring any future dates)
+    const now = Date.now();
+    const rawVisits = Array.isArray(sanitized.visits) ? sanitized.visits : [];
+    const sortedVisits = rawVisits
+      .filter((v: any) => v && v.visitDate && new Date(v.visitDate).getTime() <= now)
+      .sort((a: any, b: any) => {
+        const timeA = a.visitDate ? new Date(a.visitDate).getTime() : 0;
+        const timeB = b.visitDate ? new Date(b.visitDate).getTime() : 0;
+        return timeB - timeA;
+      });
+
+    const enhancedVisits = sortedVisits.map((v: any) => ({
+      visitId: v.visitId,
+      opdId:
+        v.opdId ||
+        (v.visitId ? v.visitId.toString().slice(-8).toUpperCase() : ""),
+      visitDate: v.visitDate,
+      visitStatus: v.visitStatus || "REGISTERED",
+      department: v.department || "",
+      departmentId: v.departmentId || undefined,
+      doctorName: v.doctorName || "",
+      doctorId: v.doctorId || undefined,
+      consultationFee: v.consultationFee,
+      visitType: v.visitType || "OPD",
+      tokenNumber: v.tokenNumber || "",
+      description: v.description || "",
+      treatmentOutcome: v.treatmentOutcome || undefined,
+      consultationStartedAt: v.consultationStartedAt || undefined,
+      consultationEndedAt: v.consultationEndedAt || undefined,
+    }));
+
+    const latestVisit = enhancedVisits[0] || null;
+
+    // Mask sensitive national identifier (UIDAI / ABDM compliance)
+    const maskedAadhaar = sanitized.aadhaarNumber
+      ? maskAadhaar(sanitized.aadhaarNumber)
+      : undefined;
+
+    const isAbhaLinked = Boolean(
+      (sanitized.ABHANumber && sanitized.ABHANumber.trim()) ||
+        (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
+    );
+
+    const maskedAbha = isAbhaLinked
+      ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
+      : "";
+
+    const patientDetailedName =
+      sanitized.name ||
+      `${sanitized.f_name || ""} ${sanitized.l_name || ""}`.trim() ||
+      "Patient";
+
+    const detailedPatient = {
+      _id: sanitized._id ? sanitized._id.toString() : "",
+      uhid:
+        sanitized.uhid ||
+        (sanitized._id
+          ? sanitized._id.toString().slice(-8).toUpperCase()
+          : ""),
+      name: patientDetailedName,
+      mobile: sanitized.mobile || "",
+      dob: sanitized.dob || "",
+      age: sanitized.age || "",
+      gender: sanitized.gender || "",
+      bloodGroup: sanitized.bloodGroup || "",
+      address: sanitized.address || "",
+      pincode: sanitized.pincode || "",
+      email: sanitized.email || "",
+      emergencyContact: sanitized.emergencyContact || "",
+      status: sanitized.status || "ACTIVE",
+
+      // ABHA Healthcare Identity (Always masked - zero raw ABHA leakage)
+      isAbhaLinked,
+      maskedAbha: maskedAbha || "",
+      abhaAddress: sanitized.abhaaddress || "",
+      abhaLinkedAt: sanitized.abhaLinkedAt || null,
+
+      // Complete sorted visits (newest-first, visits[0] is latest)
+      totalVisits: enhancedVisits.length,
+      lastVisitDate: latestVisit
+        ? latestVisit.visitDate
+        : (sanitized.lastVisitDate || null),
+      lastVisitedDoctor: latestVisit
+        ? (latestVisit.doctorName || "")
+        : (sanitized.lastVisitedDoctor || ""),
+      visits: enhancedVisits,
+
+      // Clinical History & Profile
+      allergies: sanitized.allergies || "",
+      existingMedicalConditions: sanitized.existingMedicalConditions || "",
+      ongoingMedications: sanitized.ongoingMedications || "",
+      insurance: sanitized.insurance || [],
+
+      // Masked Aadhaar (Privacy Compliance)
+      maskedAadhaar: maskedAadhaar || "",
+
+      createdAt: sanitized.createdAt,
+      updatedAt: sanitized.updatedAt,
+    };
+
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      data: patient,
+      success: true,
+      data: detailedPatient,
+      message: "Patient details retrieved successfully",
     });
   } catch (error: any) {
-    console.error("Get Patient error:", error);
+    console.error("Get Patient Details error:", error);
     return res.status(STATUS_CODE.ERROR).json({
       status: "error",
-      message: error.message || "Failed to fetch patient",
+      message: error.message || "Failed to fetch patient details",
     });
   }
 };
 
+/**
+ * GET /patients/all
+ * Ultra-minimal, high-performance table view endpoint.
+ * Strips historical visits, insurance, and medical records to minimize network payload.
+ * Slices visits to only the single latest visit.
+ */
 export const getAllPatients = async (req: Request, res: Response) => {
   try {
-    // RC1: Pagination + compound index (isMerged, status, updatedAt)
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
     const limit = Math.min(
       200,
@@ -562,14 +773,87 @@ export const getAllPatients = async (req: Request, res: Response) => {
     );
     const skip = (page - 1) * limit;
 
-    const filter = {
+    const filter: any = {
       isMerged: { $ne: true },
       status: { $ne: "merged" },
     };
 
-    // Parallel: count + fetch (independent queries, both use the compound index)
+    // Tab filtering (All, OPD, IPD, Emergency, ABHA)
+    const activeTab = (req.query.tab || req.query.type || "")
+      .toString()
+      .toLowerCase()
+      .trim();
+    if (activeTab === "opd") {
+      filter["visits.visitType"] = { $in: ["OPD", "OUTPATIENT", "opd"] };
+    } else if (activeTab === "ipd") {
+      filter["visits.visitType"] = { $in: ["IPD", "INPATIENT", "ipd"] };
+    } else if (activeTab === "emergency" || activeTab === "emergency cases") {
+      filter["visits.visitType"] = {
+        $in: ["EMERGENCY", "CASUALTY", "emergency"],
+      };
+    } else if (activeTab === "abha" || activeTab === "abha opd registrations") {
+      filter.$or = [
+        { ABHANumber: { $exists: true, $ne: "" } },
+        { abhaaddress: { $exists: true, $ne: "" } },
+      ];
+    }
+
+    // Search query filtering across Name, Mobile, UHID, Doctor, ABHA
+    const searchStr = (req.query.search || req.query.query || "")
+      .toString()
+      .trim();
+    if (searchStr) {
+      const escaped = escapeRegex(searchStr);
+      const searchConditions: any[] = [
+        { name: { $regex: escaped, $options: "i" } },
+        { f_name: { $regex: escaped, $options: "i" } },
+        { l_name: { $regex: escaped, $options: "i" } },
+        { mobile: { $regex: escaped, $options: "i" } },
+        { uhid: { $regex: escaped, $options: "i" } },
+        { ABHANumber: { $regex: escaped, $options: "i" } },
+        { abhaaddress: { $regex: escaped, $options: "i" } },
+        { "visits.doctorName": { $regex: escaped, $options: "i" } },
+        { lastVisitedDoctor: { $regex: escaped, $options: "i" } },
+      ];
+
+      if (Types.ObjectId.isValid(searchStr)) {
+        searchConditions.push({ _id: new Types.ObjectId(searchStr) });
+      }
+
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: searchConditions }];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    // Minimal table projection — slices visits to max 5 to prevent DB/network memory bloat
+    const projection = {
+      _id: 1,
+      uhid: 1,
+      name: 1,
+      f_name: 1,
+      m_name: 1,
+      l_name: 1,
+      mobile: 1,
+      gender: 1,
+      age: 1,
+      dob: 1,
+      ABHANumber: 1,
+      abhaaddress: 1,
+      status: 1,
+      totalVisits: 1,
+      lastVisitDate: 1,
+      lastVisitedDoctor: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      visits: { $slice: 5 },
+    };
+
+    // Parallel: fetch light documents + count
     const [patients, total] = await Promise.all([
-      PatientModel.find(filter)
+      PatientModel.find(filter, projection)
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -577,10 +861,12 @@ export const getAllPatients = async (req: Request, res: Response) => {
       PatientModel.countDocuments(filter),
     ]);
 
+    const minimalPatients = patients.map(formatPatientForTable);
+
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       success: true,
-      data: { patients, total },
+      data: { patients: minimalPatients, total },
       pagination: {
         page,
         limit,
@@ -622,7 +908,7 @@ export const listPatients = async (req: Request, res: Response) => {
     const skip = (Number(page) - 1) * Number(limit);
 
     const [patients, total] = await Promise.all([
-      PatientModel.find(query)
+      PatientModel.find(query, { visits: { $slice: 5 } })
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(Number(limit))
@@ -630,9 +916,11 @@ export const listPatients = async (req: Request, res: Response) => {
       PatientModel.countDocuments(query),
     ]);
 
+    const formattedPatients = patients.map(formatPatientForTable);
+
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      data: patients,
+      data: formattedPatients,
       pagination: {
         total,
         page: Number(page),
@@ -659,7 +947,7 @@ export const searchPatients = async (req: Request, res: Response) => {
     };
 
     if (query && String(query).trim() !== "") {
-      const searchVal = String(query).trim();
+      const searchVal = escapeRegex(String(query).trim());
       const orConditions: any[] = [
         { name: { $regex: searchVal, $options: "i" } },
         { f_name: { $regex: searchVal, $options: "i" } },
@@ -680,7 +968,7 @@ export const searchPatients = async (req: Request, res: Response) => {
     const skip = (Number(page) - 1) * Number(limit);
 
     const [patients, total] = await Promise.all([
-      PatientModel.find(filter)
+      PatientModel.find(filter, { visits: { $slice: 5 } })
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(Number(limit))
@@ -688,10 +976,12 @@ export const searchPatients = async (req: Request, res: Response) => {
       PatientModel.countDocuments(filter),
     ]);
 
+    const formattedPatients = patients.map(formatPatientForTable);
+
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       success: true,
-      data: { patients, total },
+      data: { patients: formattedPatients, total },
       pagination: {
         page: Number(page),
         limit: Number(limit),
@@ -1531,9 +1821,36 @@ export const updatePatient = async (req: Request, res: Response) => {
     const f_name = sanitizeString(body.f_name || body.firstName, 100);
     const m_name = sanitizeString(body.m_name || body.middleName, 100);
     const l_name = sanitizeString(body.l_name || body.lastName, 100);
-    if (f_name) setFields.f_name = f_name;
-    if (m_name !== undefined) setFields.m_name = m_name;
-    if (l_name !== undefined) setFields.l_name = l_name;
+
+    if (f_name !== undefined) {
+      if (!isValidPatientName(f_name, { minLength: 2, maxLength: 100, required: true })) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "First name must be at least 2 letters and cannot contain numbers, script tags, or objects",
+        });
+      }
+      setFields.f_name = f_name;
+    }
+
+    if (m_name !== undefined) {
+      if (!isValidPatientName(m_name, { minLength: 1, maxLength: 100, required: false })) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Middle name contains invalid characters or script tags",
+        });
+      }
+      setFields.m_name = m_name;
+    }
+
+    if (l_name !== undefined) {
+      if (!isValidPatientName(l_name, { minLength: 1, maxLength: 100, required: false })) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Last name contains invalid characters or script tags",
+        });
+      }
+      setFields.l_name = l_name;
+    }
 
     // Recompute full name if any name part is provided
     if (f_name || m_name || l_name) {
@@ -1543,14 +1860,38 @@ export const updatePatient = async (req: Request, res: Response) => {
       setFields.name = [newFName, newMName, newLName].filter(Boolean).join(" ");
     }
 
-    const mobile = sanitizeString(body.mobile, 15);
-    if (mobile) setFields.mobile = mobile;
+    if (body.mobile !== undefined) {
+      const mobile = sanitizeString(body.mobile, 15);
+      if (!mobile || !isValidMobile(mobile)) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Valid mobile number is required (10 digits starting with 6-9)",
+        });
+      }
+      setFields.mobile = mobile;
+    }
 
     const dob = sanitizeString(body.dob, 20);
-    if (dob) setFields.dob = dob;
+    if (dob) {
+      if (!isValidDob(dob)) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Date of birth must be a valid past date in YYYY-MM-DD format",
+        });
+      }
+      setFields.dob = dob;
+    }
 
-    const age = sanitizeString(body.age, 3);
-    if (age) setFields.age = age;
+    if (body.age !== undefined && body.age !== null && body.age !== "") {
+      const age = validateAndNormalizeAge(body.age);
+      if (age === undefined) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Age must be an integer between 0 and 125",
+        });
+      }
+      setFields.age = age;
+    }
 
     const gender = sanitizeString(body.gender, 10);
     if (gender) setFields.gender = gender;
@@ -1668,9 +2009,36 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
     const f_name = sanitizeString(body.f_name || body.firstName, 100);
     const m_name = sanitizeString(body.m_name || body.middleName, 100);
     const l_name = sanitizeString(body.l_name || body.lastName, 100);
-    if (f_name) setFields.f_name = f_name;
-    if (m_name !== undefined) setFields.m_name = m_name;
-    if (l_name !== undefined) setFields.l_name = l_name;
+
+    if (f_name !== undefined) {
+      if (!isValidPatientName(f_name, { minLength: 2, maxLength: 100, required: true })) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "First name must be at least 2 letters and cannot contain numbers, script tags, or objects",
+        });
+      }
+      setFields.f_name = f_name;
+    }
+
+    if (m_name !== undefined) {
+      if (!isValidPatientName(m_name, { minLength: 1, maxLength: 100, required: false })) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Middle name contains invalid characters or script tags",
+        });
+      }
+      setFields.m_name = m_name;
+    }
+
+    if (l_name !== undefined) {
+      if (!isValidPatientName(l_name, { minLength: 1, maxLength: 100, required: false })) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Last name contains invalid characters or script tags",
+        });
+      }
+      setFields.l_name = l_name;
+    }
 
     // Recompute full name if any name part is provided
     if (f_name || m_name || l_name) {
@@ -1680,14 +2048,38 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
       setFields.name = [newFName, newMName, newLName].filter(Boolean).join(" ");
     }
 
-    const mobile = sanitizeString(body.mobile, 15);
-    if (mobile) setFields.mobile = mobile;
+    if (body.mobile !== undefined) {
+      const mobile = sanitizeString(body.mobile, 15);
+      if (!mobile || !isValidMobile(mobile)) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Valid mobile number is required (10 digits starting with 6-9)",
+        });
+      }
+      setFields.mobile = mobile;
+    }
 
     const dob = sanitizeString(body.dob, 20);
-    if (dob) setFields.dob = dob;
+    if (dob) {
+      if (!isValidDob(dob)) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Date of birth must be a valid past date in YYYY-MM-DD format",
+        });
+      }
+      setFields.dob = dob;
+    }
 
-    const age = sanitizeString(body.age, 3);
-    if (age) setFields.age = age;
+    if (body.age !== undefined && body.age !== null && body.age !== "") {
+      const age = validateAndNormalizeAge(body.age);
+      if (age === undefined) {
+        return res.status(STATUS_CODE.BAD_REQUEST).json({
+          status: "error",
+          message: "Age must be an integer between 0 and 125",
+        });
+      }
+      setFields.age = age;
+    }
 
     const gender = sanitizeString(body.gender, 10);
     if (gender) setFields.gender = gender;

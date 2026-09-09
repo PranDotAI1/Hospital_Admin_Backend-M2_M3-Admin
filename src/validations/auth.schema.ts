@@ -3,7 +3,7 @@ import { emailSchema, passwordSchema, phoneSchema } from "./common.schema";
 
 export const loginSchema = z.object({
   email: emailSchema,
-  password: passwordSchema,
+  password: z.string().min(1, { message: "Password is required" }),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -87,3 +87,16 @@ export const changePasswordSchema = z
   });
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1, { message: "Refresh token is required" }).optional(),
+});
+
+export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
+
+export const revokeSessionSchema = z.object({
+  sessionId: z.string().min(1, { message: "sessionId is required" }),
+});
+
+export type RevokeSessionInput = z.infer<typeof revokeSessionSchema>;
+

@@ -1,15 +1,22 @@
-import { isTokenBlacklisted, verifyToken } from "../utils/common";
+import { isTokenBlacklisted, verifyAccessToken } from "../utils/common";
 import { STATUS_CODE, USER_ENUM, ROLE } from "../utils/constant";
 import { MSG } from "../utils/msgs";
 import { UserModel } from "../models/User";
+import { validateSession } from "../services/session.service";
 
 export const checkToken = async (req: any, res: any, next: any) => {
   try {
-    const token = req.headers["authorization"];
+    // 1. Primary: Extract from HttpOnly cookie (cookie-based session)
+    // 2. Fallback: Extract from Authorization header (Bearer <token>)
+    let token: string | undefined =
+      req.cookies?.access_token ||
+      req.cookies?.token ||
+      req.headers["authorization"];
+
     if (!token) {
       return res
         .status(STATUS_CODE.UNAUTHORIZED)
-        .json({ message: "Authorization header is required", code: STATUS_CODE.UNAUTHORIZED });
+        .json({ message: "Authentication required (missing session cookie or authorization header)", code: STATUS_CODE.UNAUTHORIZED });
     }
 
     // Check if token was revoked/blacklisted
@@ -21,11 +28,26 @@ export const checkToken = async (req: any, res: any, next: any) => {
     }
 
     // Verify JWT cryptographic signature & expiry
-    const decoded: any = verifyToken(token);
+    const decoded: any = verifyAccessToken(token);
     if (!decoded || (!decoded.id && !decoded._id)) {
       return res
         .status(STATUS_CODE.UNAUTHORIZED)
         .json({ message: MSG.TOKEN_EXPIRED, code: STATUS_CODE.UNAUTHORIZED });
+    }
+
+    // ─── CRITICAL: Server-Side Session Validation ───
+    if (decoded.sessionId) {
+      const session = await validateSession(decoded.sessionId);
+      if (!session || !session.isValid) {
+        return res
+          .status(STATUS_CODE.UNAUTHORIZED)
+          .json({
+            message: "Session has expired or was revoked. Please log in again.",
+            code: STATUS_CODE.UNAUTHORIZED,
+            sessionRevoked: true,
+          });
+      }
+      req.sessionId = decoded.sessionId;
     }
 
     // Validate active user in database

@@ -9,7 +9,14 @@ import {
   updateDepartment,
 } from "../controllers/department.controller";
 import { add, listing, update } from "../controllers/hospital.controller";
-import { login, logout } from "../controllers/login.controller";
+import {
+  login,
+  logout,
+  refreshSession,
+  listActiveSessions,
+  revokeSessionHandler,
+  revokeOtherSessionsHandler,
+} from "../controllers/login.controller";
 import {
   abhauserListing,
   updatePassword,
@@ -27,7 +34,27 @@ import {
 } from "../controllers/v2/abha.controller";
 import { linkTokenGeneration } from "../controllers/v2/webhook.controller";
 import { checkToken, requireRole } from "../middlewares/user.authentication";
-import { loginLimiter, passwordResetLimiter } from "../middlewares/rate.limiter";
+import {
+  loginLimiter,
+  refreshLimiter,
+  passwordResetLimiter,
+} from "../middlewares/rate.limiter";
+import { validate } from "../middlewares/validate";
+import {
+  registerPatientSchema,
+  updatePatientSchema,
+  updatePatientAndAddVisitSchema,
+  addVisitSchema,
+  checkExistingPatientsSchema,
+} from "../validations/patient.schema";
+import {
+  loginSchema,
+  refreshTokenSchema,
+  revokeSessionSchema,
+} from "../validations/auth.schema";
+import { addUserSchema, updateUserSchema } from "../validations/user.schema";
+import { addDepartmentSchema, updateDepartmentSchema } from "../validations/department.schema";
+import { addHospitalSchema, updateHospitalSchema } from "../validations/hospital.schema";
 import { ROLE } from "../utils/constant";
 import {
   getPendingTokens,
@@ -105,9 +132,27 @@ router.use("/", authRoutes);
 router.use("/auth", authRoutes);
 
 // onboarding Routes
-router.post("/login", loginLimiter, login);
+router.post("/login", loginLimiter, validate(loginSchema), login);
+router.post("/refresh-token", refreshLimiter, validate(refreshTokenSchema), refreshSession);
 router.get("/logout", checkToken, logout);
+router.post("/logout", checkToken, logout);
 router.get("/profile", checkToken, userProfile);
+router.get("/me", checkToken, userProfile);
+router.get("/auth/me", checkToken, userProfile);
+
+// Active Session Management
+router.get("/auth/sessions", checkToken, listActiveSessions);
+router.post(
+  "/auth/sessions/revoke",
+  checkToken,
+  validate(revokeSessionSchema),
+  revokeSessionHandler,
+);
+router.post(
+  "/auth/sessions/revoke-all-others",
+  checkToken,
+  revokeOtherSessionsHandler,
+);
 
 //Hospital Routes
 router.get("/hospital", checkToken, listing);
@@ -115,12 +160,14 @@ router.post(
   "/hospital",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(addHospitalSchema),
   add,
 );
 router.put(
   "/hospital/:id",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(updateHospitalSchema),
   update,
 );
 
@@ -131,12 +178,14 @@ router.post(
   "/user/add",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(addUserSchema),
   userAdd,
 );
 router.put(
   "/user/:id",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(updateUserSchema),
   userUpdate,
 );
 router.put(
@@ -150,6 +199,7 @@ router.post(
   "/user/new-add",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(addUserSchema),
   userNewAdd,
 );
 
@@ -159,12 +209,14 @@ router.post(
   "/department",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(addDepartmentSchema),
   addDepartment,
 );
 router.put(
   "/department/:id",
   checkToken,
   requireRole(ROLE.SUPER_ADMIN, ROLE.HOSPITAL_ADMIN),
+  validate(updateDepartmentSchema),
   updateDepartment,
 );
 
@@ -199,21 +251,43 @@ router.get(
   getPatientVisitHistory,
 );
 
-router.post("/patient/register", checkToken, registerPatient);
-router.post("/patient/check-existing", checkToken, checkExistingPatients);
+router.post(
+  "/patient/register",
+  checkToken,
+  validate(registerPatientSchema),
+  registerPatient,
+);
+router.post(
+  "/patient/check-existing",
+  checkToken,
+  validate(checkExistingPatientsSchema),
+  checkExistingPatients,
+);
 router.post("/patient/check-abha", checkToken, checkAbhaNumber);
 router.get("/patient/search", checkToken, searchPatients);
-router.post("/patient/:id/visit", checkToken, addVisit);
-router.patch("/patient/:id", checkToken, updatePatient);
+router.post(
+  "/patient/:id/visit",
+  checkToken,
+  validate(addVisitSchema),
+  addVisit,
+);
+router.patch(
+  "/patient/:id",
+  checkToken,
+  validate(updatePatientSchema),
+  updatePatient,
+);
 router.patch(
   "/patient/:id/update-and-visit",
   checkToken,
+  validate(updatePatientAndAddVisitSchema),
   updatePatientAndAddVisit,
 );
 router.post("/patient/:id/link-abha", checkToken, linkAbha);
 router.post("/patient/link-to-abha", checkToken, mergeAbhaPatient);
 router.get("/patient/:id", checkToken, getPatient);
 router.get("/patients/all", checkToken, getAllPatients);
+router.get("/patients/:id", checkToken, getPatient);
 router.get("/patients", checkToken, listPatients);
 router.post("/patient/:id/notify2", checkToken, sendDeepLinkSms);
 

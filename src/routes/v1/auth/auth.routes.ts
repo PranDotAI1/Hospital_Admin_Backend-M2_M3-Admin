@@ -8,8 +8,18 @@ import {
   resetPasswordWithOtp,
   changePassword,
 } from "../../../controllers/password.controller";
+import {
+  refreshSession,
+  listActiveSessions,
+  revokeSessionHandler,
+  revokeOtherSessionsHandler,
+} from "../../../controllers/login.controller";
 import { checkToken } from "../../../middlewares/user.authentication";
-import { passwordResetLimiter } from "../../../middlewares/rate.limiter";
+import {
+  loginLimiter,
+  refreshLimiter,
+  passwordResetLimiter,
+} from "../../../middlewares/rate.limiter";
 import { validate } from "../../../middlewares/validate";
 import { asyncHandler } from "../../../utils/asyncHandler";
 import {
@@ -20,6 +30,8 @@ import {
   verifyOtpSchema,
   resetPasswordOtpSchema,
   changePasswordSchema,
+  refreshTokenSchema,
+  revokeSessionSchema,
 } from "../../../validations/auth.schema";
 
 const router = Router();
@@ -74,6 +86,41 @@ router.post(
   checkToken,
   validate(changePasswordSchema),
   asyncHandler(changePassword),
+);
+
+// ── Refresh Token ──
+router.post(
+  "/refresh",
+  refreshLimiter,
+  validate(refreshTokenSchema),
+  asyncHandler(refreshSession),
+);
+
+router.post(
+  "/refresh-token",
+  refreshLimiter,
+  validate(refreshTokenSchema),
+  asyncHandler(refreshSession),
+);
+
+// ── Session Management ──
+router.get(
+  "/sessions",
+  checkToken,
+  asyncHandler(listActiveSessions),
+);
+
+router.post(
+  "/sessions/revoke",
+  checkToken,
+  validate(revokeSessionSchema),
+  asyncHandler(revokeSessionHandler),
+);
+
+router.post(
+  "/sessions/revoke-all-others",
+  checkToken,
+  asyncHandler(revokeOtherSessionsHandler),
 );
 
 export default router;

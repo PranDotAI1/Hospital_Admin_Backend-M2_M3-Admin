@@ -59,6 +59,8 @@ export interface IUser extends Document {
     is_active?: boolean;
     version_m4?: any;
     previous_passwords?:[];
+    failedLoginAttempts?: number;
+    lockUntil?: Date | null;
     age:number;
     contact: string;
     pan: string;
@@ -164,6 +166,8 @@ const UserSchema = new Schema<IUser>({
     passwordResetAttempts: { type: Number, default: 0, required: false },
     passwordResetLastAttempt: { type: Date, default: null, required: false },
     role_id: { type: Number, default: 4, required: false },
+    failedLoginAttempts: { type: Number, default: 0, required: false },
+    lockUntil: { type: Date, default: null, required: false },
     created_by: { type: String, trim: true, required: false },
     updated_by: { type: String, trim: true, required: false },
     deleted_by: { type: String, trim: true, required: false }

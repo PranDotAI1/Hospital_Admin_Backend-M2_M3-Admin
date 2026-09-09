@@ -43,15 +43,20 @@ export const listing = async (req: any, res: any) => {
 
 export const add = async (req: any, res: any) => {
   try {
-    let input = req.body;
+    // req.body is now validated by addHospitalSchema middleware.
+    const { name, add1, add2, city, state, pincode, country, is_active } = req.body;
     let hospitalExists = await HospitalModel.findOne({
-      name: input.name,
+      name,
       is_active: true,
     });
     if (hospitalExists) {
       return apiResponse(res, "Hospital already exists", STATUS_CODE.ERROR);
     }
-    let response = await HospitalModel.create(input);
+    const createPayload: Record<string, any> = { name, add1, city, state, pincode };
+    if (add2 !== undefined) createPayload.add2 = add2;
+    if (country !== undefined) createPayload.country = country;
+    if (is_active !== undefined) createPayload.is_active = is_active;
+    let response = await HospitalModel.create(createPayload);
     return apiResponse(
       res,
       { id: response?._id },

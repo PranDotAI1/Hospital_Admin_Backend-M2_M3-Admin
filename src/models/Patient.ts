@@ -230,6 +230,106 @@ const PatientSchema = new Schema<IPatient>(
   },
 );
 
+// --- Pre-validate & Pre-save Data Integrity & Sanitization Hooks ---
+PatientSchema.pre("validate", function (next) {
+  const sanitizeText = (val: unknown): string | undefined => {
+    if (typeof val !== "string") return undefined;
+    let s = val.replace(/\[object\s+Object\]/gi, "").trim();
+    s = s.replace(/<[^>]*>/g, "").replace(/javascript:|on\w+\s*=/gi, "").replace(/[<>]/g, "");
+    return s.trim() || undefined;
+  };
+
+  if (this.f_name) {
+    const cleaned = sanitizeText(this.f_name);
+    if (!cleaned) {
+      return next(new Error("First name cannot be empty or contain invalid object/script tags"));
+    }
+    this.f_name = cleaned;
+  }
+
+  if (this.m_name) {
+    this.m_name = sanitizeText(this.m_name);
+  }
+
+  if (this.l_name) {
+    this.l_name = sanitizeText(this.l_name);
+  }
+
+  // Ensure full name is clean and does not contain [object Object]
+  const computed = [this.f_name, this.m_name, this.l_name].filter(Boolean).join(" ");
+  this.name = computed || sanitizeText(this.name) || "Patient";
+
+  if (this.mobile) {
+    const cleanMobile = sanitizeText(this.mobile);
+    if (!cleanMobile || !/^[6-9]\d{9}$/.test(cleanMobile)) {
+      return next(new Error("Valid 10-digit mobile number starting with 6-9 is required"));
+    }
+    this.mobile = cleanMobile;
+  }
+
+  if (this.dob) {
+    const cleanDob = sanitizeText(this.dob);
+    this.dob = cleanDob;
+  }
+
+  if (this.aadhaarNumber) {
+    const digits = this.aadhaarNumber.replace(/\D/g, "");
+    if (digits.length === 12) {
+      this.aadhaarNumber = `XXXX-XXXX-${digits.slice(8, 12)}`;
+    }
+  }
+
+  if (this.address) this.address = sanitizeText(this.address);
+  if (this.allergies) this.allergies = sanitizeText(this.allergies);
+  if (this.existingMedicalConditions)
+    this.existingMedicalConditions = sanitizeText(this.existingMedicalConditions);
+  if (this.ongoingMedications)
+    this.ongoingMedications = sanitizeText(this.ongoingMedications);
+
+  next();
+});
+
+// Sanitize fields during findOneAndUpdate / update operations
+PatientSchema.pre(["findOneAndUpdate", "updateOne", "updateMany"], function (next) {
+  const update = this.getUpdate() as any;
+  if (!update) return next();
+
+  const sanitizeText = (val: unknown): string | undefined => {
+    if (typeof val !== "string") return undefined;
+    let s = val.replace(/\[object\s+Object\]/gi, "").trim();
+    s = s.replace(/<[^>]*>/g, "").replace(/javascript:|on\w+\s*=/gi, "").replace(/[<>]/g, "");
+    return s.trim() || undefined;
+  };
+
+  const sanitizeOps = (ops: any) => {
+    if (!ops) return;
+    if (ops.f_name !== undefined) ops.f_name = sanitizeText(ops.f_name);
+    if (ops.m_name !== undefined) ops.m_name = sanitizeText(ops.m_name);
+    if (ops.l_name !== undefined) ops.l_name = sanitizeText(ops.l_name);
+    if (ops.name !== undefined) ops.name = sanitizeText(ops.name);
+    if (ops.mobile !== undefined) {
+      const cleanMob = sanitizeText(ops.mobile);
+      if (cleanMob && /^[6-9]\d{9}$/.test(cleanMob)) {
+        ops.mobile = cleanMob;
+      } else {
+        delete ops.mobile;
+      }
+    }
+    if (ops.dob !== undefined) ops.dob = sanitizeText(ops.dob);
+    if (ops.aadhaarNumber !== undefined && typeof ops.aadhaarNumber === "string") {
+      const digits = ops.aadhaarNumber.replace(/\D/g, "");
+      if (digits.length === 12) {
+        ops.aadhaarNumber = `XXXX-XXXX-${digits.slice(8, 12)}`;
+      }
+    }
+  };
+
+  if (update.$set) sanitizeOps(update.$set);
+  sanitizeOps(update);
+
+  next();
+});
+
 PatientSchema.index({ ABHANumber: 1 }, { sparse: true });
 PatientSchema.index({ abhaaddress: 1 }, { unique: true, sparse: true });
 PatientSchema.index({ mobile: 1 });

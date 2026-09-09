@@ -1,77 +1,471 @@
-import { STATUS_CODE } from "../utils/constant";
+import crypto from "crypto";
+import { STATUS_CODE, USER_ENUM } from "../utils/constant";
 import { UserModel } from "../models/User";
 import {
   comparePassword,
   apiResponse,
-  generateToken,
+  generateAccessToken,
+  generateRefreshToken,
+  verifyRefreshToken,
+  blacklistToken,
   expiredToken,
+  ACCESS_TOKEN_EXPIRY_SECONDS,
+  REFRESH_TOKEN_EXPIRY_SECONDS,
 } from "../utils/common";
-import { USER_ENUM } from "../utils/constant";
+import {
+  createSession,
+  rotateSessionToken,
+  revokeSession,
+  getUserActiveSessions,
+  revokeAllUserSessions,
+} from "../services/session.service";
 import { MSG } from "../utils/msgs";
 
+/**
+ * Cookie options helper adhering to security requirements
+ */
+const getCookieOptions = (maxAgeMs: number) => {
+  const isProduction = process.env.NODE_ENV === "production";
+  return {
+    httpOnly: true,
+    secure: isProduction || process.env.COOKIE_SECURE === "true",
+    sameSite: (process.env.COOKIE_SAMESITE as any) || "lax",
+    maxAge: maxAgeMs,
+    path: "/",
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+};
+
+const getClearCookieOptions = () => {
+  const isProduction = process.env.NODE_ENV === "production";
+  return {
+    httpOnly: true,
+    secure: isProduction || process.env.COOKIE_SECURE === "true",
+    sameSite: (process.env.COOKIE_SAMESITE as any) || "lax",
+    path: "/",
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+};
+
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes lockout
+// Pre-computed bcrypt hash (work factor 12) for constant-time comparison on non-existent users (timing attack mitigation)
+const DUMMY_BCRYPT_HASH =
+  "$2b$12$e8Yh9YI5jT9R3dY8zE2UWeJqBvM.G3u0uU2SgX8lI6i3wQe1rE7.K";
+
+/**
+ * POST /login
+ * Authenticates user, creates server-side session (max 3 per user),
+ * and issues short-lived access token (15m) + long-lived refresh token (7d).
+ */
 export const login = async (req: any, res: any) => {
   try {
-    let input = req.body;
+    const input = req.body;
     const user: any = await UserModel.findOne({
-      email: input.email,
+      email: input.email?.toLowerCase().trim(),
       status: USER_ENUM.ACTIVE,
     });
+
     if (!user) {
+      // Mitigate timing attacks by executing a constant-time bcrypt comparison
+      await comparePassword(input.password || "", DUMMY_BCRYPT_HASH);
       return apiResponse(
         res,
         MSG.INVALID_EMAIL_PASSWORD,
         STATUS_CODE.UNAUTHORIZED,
       );
     }
+
+    const now = new Date();
+
+    // Check account lockout
+    if (user.lockUntil && user.lockUntil > now) {
+      const remainingMs = user.lockUntil.getTime() - now.getTime();
+      const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
+      return apiResponse(
+        res,
+        `Account is temporarily locked due to ${MAX_FAILED_LOGIN_ATTEMPTS} consecutive failed login attempts. Please try again in ${remainingMinutes} minute(s).`,
+        STATUS_CODE.UNAUTHORIZED,
+        "Account Locked",
+      );
+    }
+
     const isMatch = await comparePassword(input.password, user.password);
     if (!isMatch) {
-      return apiResponse(
-        res,
-        MSG.INVALID_EMAIL_PASSWORD,
-        STATUS_CODE.UNAUTHORIZED,
-      );
+      // If previous lockout expired, reset counter to 1, otherwise increment
+      const currentAttempts =
+        user.lockUntil && user.lockUntil <= now
+          ? 1
+          : (user.failedLoginAttempts || 0) + 1;
+
+      if (currentAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        await UserModel.findByIdAndUpdate(user._id, {
+          failedLoginAttempts: currentAttempts,
+          lockUntil: new Date(Date.now() + LOCKOUT_DURATION_MS),
+        });
+        return apiResponse(
+          res,
+          "Account has been temporarily locked for 15 minutes due to 5 consecutive failed login attempts.",
+          STATUS_CODE.UNAUTHORIZED,
+          "Account Locked",
+        );
+      } else {
+        await UserModel.findByIdAndUpdate(user._id, {
+          failedLoginAttempts: currentAttempts,
+          lockUntil: null,
+        });
+        const remainingAttempts = MAX_FAILED_LOGIN_ATTEMPTS - currentAttempts;
+        return apiResponse(
+          res,
+          `Invalid email or password. ${remainingAttempts} attempt(s) remaining before account lockout.`,
+          STATUS_CODE.UNAUTHORIZED,
+          "Authentication Failed",
+        );
+      }
     }
-    const tokenPayload = {
-      id: user.id || user._id,
+
+    // Reset failed login attempts and lockout upon successful authentication
+    if ((user.failedLoginAttempts || 0) > 0 || user.lockUntil) {
+      await UserModel.findByIdAndUpdate(user._id, {
+        failedLoginAttempts: 0,
+        lockUntil: null,
+      });
+    }
+
+    const userId = (user.id || user._id).toString();
+    const sessionId = crypto.randomUUID();
+
+    // Generate tokens
+    const accessToken = generateAccessToken({
+      id: userId,
       email: user.email,
       name: user.name,
       role_id: user.role_id,
       hospital_id: user.hospital_id,
-    };
-    const accessToken = generateToken(tokenPayload);
+      sessionId,
+    });
+
+    const refreshToken = generateRefreshToken({
+      id: userId,
+      sessionId,
+    });
+
+    // Create server-side session in MongoDB & Redis (enforcing max 3 concurrent sessions)
+    const clientIp =
+      req.ip ||
+      (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+      req.connection?.remoteAddress ||
+      "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+
+    await createSession({
+      sessionId,
+      userId,
+      email: user.email,
+      role_id: user.role_id,
+      hospital_id: user.hospital_id,
+      refreshToken,
+      userAgent,
+      ipAddress: clientIp,
+    });
+
+    // Set HttpOnly cookies:
+    // - access_token: 15 minutes
+    // - token: 15 minutes (backwards-compat)
+    // - refresh_token: 7 days
+    res.cookie(
+      "access_token",
+      accessToken,
+      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+    );
+    res.cookie(
+      "token",
+      accessToken,
+      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+    );
+    res.cookie(
+      "refresh_token",
+      refreshToken,
+      getCookieOptions(REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
+    );
 
     const responsePayload = {
-      id: user.id || user._id,
+      id: userId,
       email: user.email,
       name: user.name,
       role_id: user.role_id,
       hospital_id: user.hospital_id,
-      access_token: accessToken,
     };
+
     return apiResponse(res, responsePayload, STATUS_CODE.SUCCESS);
   } catch (error: any) {
     console.error("[LOGIN_ERROR]", error?.message || error);
-    res
-      .status(STATUS_CODE.ERROR)
-      .json({
-        status: "error",
-        message:
-          process.env.NODE_ENV === "production"
-            ? "An error occurred during authentication"
-            : error.message,
-      });
+    return res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message:
+        process.env.NODE_ENV === "production"
+          ? "An error occurred during authentication"
+          : error.message,
+    });
   }
 };
 
+/**
+ * POST /refresh-token or POST /auth/refresh
+ * Validates refresh token, executes Refresh Token Rotation (RTR),
+ * guards against token reuse attacks, and issues new token pair.
+ */
+export const refreshSession = async (req: any, res: any) => {
+  try {
+    // 1. Extract refresh token from cookie or body or header
+    const refreshToken =
+      req.cookies?.refresh_token ||
+      req.body?.refreshToken ||
+      req.body?.refresh_token ||
+      req.headers["x-refresh-token"];
+
+    if (!refreshToken) {
+      return res.status(STATUS_CODE.UNAUTHORIZED).json({
+        message: "Refresh token is required",
+        code: STATUS_CODE.UNAUTHORIZED,
+      });
+    }
+
+    // 2. Verify refresh token cryptographic signature & expiry
+    const decoded = verifyRefreshToken(refreshToken);
+    if (!decoded || !decoded.sessionId || !decoded.id) {
+      return res.status(STATUS_CODE.UNAUTHORIZED).json({
+        message: "Invalid or expired refresh token",
+        code: STATUS_CODE.UNAUTHORIZED,
+      });
+    }
+
+    // 3. Verify user account in database is active
+    const user: any = await UserModel.findById(decoded.id).lean();
+    if (!user || user.status !== USER_ENUM.ACTIVE || user.is_active === false) {
+      await revokeSession(decoded.sessionId);
+      return res.status(STATUS_CODE.UNAUTHORIZED).json({
+        message: "User account is inactive or disabled",
+        code: STATUS_CODE.UNAUTHORIZED,
+      });
+    }
+
+    const userId = user._id.toString();
+
+    // 4. Generate rotated token pair
+    const newRefreshToken = generateRefreshToken({
+      id: userId,
+      sessionId: decoded.sessionId,
+    });
+
+    const newAccessToken = generateAccessToken({
+      id: userId,
+      email: user.email,
+      name: user.name,
+      role_id: user.role_id,
+      hospital_id: user.hospital_id,
+      sessionId: decoded.sessionId,
+    });
+
+    // 5. Rotate session token in Redis & MongoDB (with automatic reuse detection!)
+    const rotation = await rotateSessionToken(
+      decoded.sessionId,
+      refreshToken,
+      newRefreshToken,
+    );
+
+    if (!rotation.success) {
+      // ─── REUSE ATTACK DETECTED: TERMINATE CLIENT SESSIONS ───
+      if (rotation.error === "TOKEN_REUSE_DETECTED") {
+        const clearOpts = getClearCookieOptions();
+        res.clearCookie("access_token", clearOpts);
+        res.clearCookie("token", clearOpts);
+        res.clearCookie("refresh_token", clearOpts);
+
+        return res.status(STATUS_CODE.UNAUTHORIZED).json({
+          message:
+            "Security violation: Refresh token reuse detected. Session terminated immediately.",
+          code: STATUS_CODE.UNAUTHORIZED,
+          securityViolation: true,
+        });
+      }
+
+      return res.status(STATUS_CODE.UNAUTHORIZED).json({
+        message: "Session has expired or was revoked",
+        code: STATUS_CODE.UNAUTHORIZED,
+      });
+    }
+
+    // 6. Set rotated HttpOnly cookies
+    res.cookie(
+      "access_token",
+      newAccessToken,
+      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+    );
+    res.cookie(
+      "token",
+      newAccessToken,
+      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+    );
+    res.cookie(
+      "refresh_token",
+      newRefreshToken,
+      getCookieOptions(REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
+    );
+
+    const responsePayload = {
+      session_id: decoded.sessionId,
+      ...(rotation.isGracePeriod ? { is_grace_period: true } : {}),
+    };
+
+    return apiResponse(
+      res,
+      responsePayload,
+      STATUS_CODE.SUCCESS,
+      "Token refreshed successfully",
+    );
+  } catch (error: any) {
+    console.error("[REFRESH_SESSION_ERROR]", error?.message || error);
+    return res.status(STATUS_CODE.UNAUTHORIZED).json({
+      message: "An error occurred while refreshing the session",
+      code: STATUS_CODE.UNAUTHORIZED,
+    });
+  }
+};
+
+/**
+ * POST /logout
+ * Destroys server-side session, blacklists access token, and clears all session cookies.
+ */
 export const logout = async (req: any, res: any) => {
   try {
-    const token = req.headers["authorization"];
-    if (token) {
-      await expiredToken(token);
+    const token =
+      req.cookies?.access_token ||
+      req.cookies?.token ||
+      req.headers["authorization"];
+
+    // Revoke server-side session
+    const sessionId = req.sessionId;
+    if (sessionId) {
+      await revokeSession(sessionId);
     }
+
+    // Blacklist current access token
+    if (token) {
+      await blacklistToken(token);
+    }
+
+    const clearOpts = getClearCookieOptions();
+    res.clearCookie("access_token", clearOpts);
+    res.clearCookie("token", clearOpts);
+    res.clearCookie("refresh_token", clearOpts);
+
     return apiResponse(res, {}, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
   } catch (error: any) {
     console.error("[LOGOUT_ERROR]", error?.message || error);
+    const clearOpts = getClearCookieOptions();
+    res.clearCookie("access_token", clearOpts);
+    res.clearCookie("token", clearOpts);
+    res.clearCookie("refresh_token", clearOpts);
     return apiResponse(res, {}, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
+  }
+};
+
+/**
+ * GET /auth/sessions
+ * Returns the list of active sessions for the authenticated user.
+ */
+export const listActiveSessions = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id || req.user?._id;
+    if (!userId) {
+      return res
+        .status(STATUS_CODE.UNAUTHORIZED)
+        .json({ message: "Unauthorized", code: STATUS_CODE.UNAUTHORIZED });
+    }
+
+    const sessions = await getUserActiveSessions(userId);
+    const currentSessionId = req.sessionId;
+
+    const formattedSessions = sessions.map((s) => ({
+      sessionId: s.sessionId,
+      userAgent: s.userAgent,
+      ipAddress: s.ipAddress,
+      createdAt: s.createdAt,
+      lastActiveAt: s.lastActiveAt,
+      expiresAt: s.expiresAt,
+      isCurrent: s.sessionId === currentSessionId,
+    }));
+
+    return apiResponse(res, formattedSessions, STATUS_CODE.SUCCESS);
+  } catch (error: any) {
+    console.error("[LIST_SESSIONS_ERROR]", error?.message || error);
+    return res
+      .status(STATUS_CODE.ERROR)
+      .json({ message: "Failed to retrieve sessions", code: STATUS_CODE.ERROR });
+  }
+};
+
+/**
+ * POST /auth/sessions/revoke
+ * Revokes a specific session belonging to the user.
+ */
+export const revokeSessionHandler = async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res
+        .status(STATUS_CODE.BAD_REQUEST)
+        .json({ message: "sessionId is required", code: STATUS_CODE.BAD_REQUEST });
+    }
+
+    await revokeSession(sessionId);
+
+    // If revoking current session, clear cookies
+    if (sessionId === req.sessionId) {
+      const clearOpts = getClearCookieOptions();
+      res.clearCookie("access_token", clearOpts);
+      res.clearCookie("token", clearOpts);
+      res.clearCookie("refresh_token", clearOpts);
+    }
+
+    return apiResponse(res, { revoked: true }, STATUS_CODE.SUCCESS, "Session revoked successfully");
+  } catch (error: any) {
+    console.error("[REVOKE_SESSION_ERROR]", error?.message || error);
+    return res
+      .status(STATUS_CODE.ERROR)
+      .json({ message: "Failed to revoke session", code: STATUS_CODE.ERROR });
+  }
+};
+
+/**
+ * POST /auth/sessions/revoke-all-others
+ * Revokes all sessions for the user except the current one.
+ */
+export const revokeOtherSessionsHandler = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id || req.user?._id;
+    const currentSessionId = req.sessionId;
+
+    const sessions = await getUserActiveSessions(userId);
+    let count = 0;
+    for (const s of sessions) {
+      if (s.sessionId !== currentSessionId) {
+        await revokeSession(s.sessionId);
+        count++;
+      }
+    }
+
+    return apiResponse(
+      res,
+      { revokedCount: count },
+      STATUS_CODE.SUCCESS,
+      `Revoked ${count} other active session(s)`,
+    );
+  } catch (error: any) {
+    console.error("[REVOKE_OTHER_SESSIONS_ERROR]", error?.message || error);
+    return res
+      .status(STATUS_CODE.ERROR)
+      .json({ message: "Failed to revoke other sessions", code: STATUS_CODE.ERROR });
   }
 };

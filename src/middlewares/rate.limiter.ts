@@ -13,6 +13,19 @@ export const loginLimiter = rateLimit({
   },
 });
 
+// Refresh token limiter: max 100 requests per 15 minutes per IP (supports multiple tabs / hospital NAT IP)
+export const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: "error",
+    message: "Too many token refresh attempts. Please try again later.",
+    code: 429,
+  },
+});
+
 // General API limiter: max 500 requests per 5 minutes per IP
 export const apiLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,

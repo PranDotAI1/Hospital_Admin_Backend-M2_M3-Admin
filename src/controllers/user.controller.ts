@@ -9,8 +9,10 @@ import {
   hashPassword,
 } from "../utils/common";
 import { validatePasswordStrength } from "../utils/password.validator";
-import { ROLE, STATUS_CODE } from "../utils/constant";
+import { ROLE, STATUS_CODE, USER_ENUM } from "../utils/constant";
 import { Types } from "mongoose";
+import { escapeRegex } from "../utils/sanitizer";
+import { revokeAllUserSessions } from "../services/session.service";
 
 export const userListing = async (req: any, res: any) => {
   try {
@@ -41,10 +43,11 @@ export const userListing = async (req: any, res: any) => {
       }
     }
     if (search) {
+      const escapedSearch = escapeRegex(String(search));
       match.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-        { phone: { $regex: search, $options: "i" } },
+        { name: { $regex: escapedSearch, $options: "i" } },
+        { email: { $regex: escapedSearch, $options: "i" } },
+        { phone: { $regex: escapedSearch, $options: "i" } },
       ];
     }
 
@@ -94,7 +97,35 @@ export const userListing = async (req: any, res: any) => {
 
 export const userAdd = async (req: any, res: any) => {
   try {
-    let input = req.body;
+    // req.body is now validated by addUserSchema middleware.
+    // Extract only the validated fields — never pass raw req.body to MongoDB.
+    const validated = req.body;
+    const input: Record<string, any> = {
+      name: validated.name,
+      f_name: validated.f_name,
+      m_name: validated.m_name,
+      l_name: validated.l_name,
+      firstName: validated.firstName,
+      middleName: validated.middleName,
+      lastName: validated.lastName,
+      email: validated.email,
+      mobile: validated.mobile,
+      contact: validated.contact,
+      role_id: validated.role_id,
+      department_id: validated.department_id,
+      hospital_id: validated.hospital_id,
+      age: validated.age,
+      gender: validated.gender,
+      shift: validated.shift,
+      aadhaar: validated.aadhaar,
+      reg_no: validated.reg_no,
+      pan: validated.pan,
+      specialize: validated.specialize,
+      status: validated.status,
+    };
+    // Remove undefined keys
+    Object.keys(input).forEach(key => input[key] === undefined && delete input[key]);
+
     let userExists = await UserModel.findOne({ email: input.email });
     if (userExists) {
       return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
@@ -102,12 +133,18 @@ export const userAdd = async (req: any, res: any) => {
     input.unique_id = generateUniqueAlphaNumericId();
 
     // Enforce password strength
-    if (input.password) {
-      const pwdValidation = validatePasswordStrength(input.password);
+    if (validated.password) {
+      const pwdValidation = validatePasswordStrength(validated.password, {
+        email: validated.email,
+        name:
+          validated.name ||
+          `${validated.f_name || validated.firstName || ""} ${validated.l_name || validated.lastName || ""}`.trim(),
+        mobile: validated.mobile,
+      });
       if (!pwdValidation.valid) {
         return apiResponse(res, pwdValidation.message, STATUS_CODE.BAD_REQUEST);
       }
-      input.password = await hashPassword(input.password);
+      input.password = await hashPassword(validated.password);
     }
 
     // IDOR / Multi-tenant: non-superadmin users can only create users in their own hospital
@@ -143,7 +180,33 @@ export const userAdd = async (req: any, res: any) => {
 
 export const userNewAdd = async (req: any, res: any) => {
   try {
-    let input = req.body;
+    // req.body is now validated by addUserSchema middleware.
+    const validated = req.body;
+    const input: Record<string, any> = {
+      name: validated.name,
+      f_name: validated.f_name,
+      m_name: validated.m_name,
+      l_name: validated.l_name,
+      firstName: validated.firstName,
+      middleName: validated.middleName,
+      lastName: validated.lastName,
+      email: validated.email,
+      mobile: validated.mobile,
+      contact: validated.contact,
+      role_id: validated.role_id,
+      department_id: validated.department_id,
+      hospital_id: validated.hospital_id,
+      age: validated.age,
+      gender: validated.gender,
+      shift: validated.shift,
+      aadhaar: validated.aadhaar,
+      reg_no: validated.reg_no,
+      pan: validated.pan,
+      specialize: validated.specialize,
+      status: validated.status,
+    };
+    Object.keys(input).forEach(key => input[key] === undefined && delete input[key]);
+
     let userExists = await UserModel.findOne({ email: input.email });
     if (userExists) {
       return apiResponse(res, "User already exists", STATUS_CODE.ERROR);
@@ -151,12 +214,18 @@ export const userNewAdd = async (req: any, res: any) => {
     input.unique_id = generateUniqueAlphaNumericId();
 
     // Enforce password strength
-    if (input.password) {
-      const pwdValidation = validatePasswordStrength(input.password);
+    if (validated.password) {
+      const pwdValidation = validatePasswordStrength(validated.password, {
+        email: validated.email,
+        name:
+          validated.name ||
+          `${validated.f_name || validated.firstName || ""} ${validated.l_name || validated.lastName || ""}`.trim(),
+        mobile: validated.mobile,
+      });
       if (!pwdValidation.valid) {
         return apiResponse(res, pwdValidation.message, STATUS_CODE.BAD_REQUEST);
       }
-      input.password = await hashPassword(input.password);
+      input.password = await hashPassword(validated.password);
     }
 
     // IDOR / Multi-tenant: non-superadmin users can only create users in their own hospital
@@ -266,6 +335,15 @@ export const userUpdate = async (req: any, res: any) => {
     }
 
     await UserModel.updateOne({ _id: id }, sanitizedInput);
+
+    // If user account is deactivated, revoke all active sessions immediately
+    if (
+      (sanitizedInput.status !== undefined &&
+        sanitizedInput.status !== USER_ENUM.ACTIVE) ||
+      sanitizedInput.is_active === false
+    ) {
+      await revokeAllUserSessions(id);
+    }
     return apiResponse(
       res,
       { id: id },
@@ -301,15 +379,21 @@ export const updatePassword = async (req: any, res: any) => {
       return apiResponse(res, "New password is required", STATUS_CODE.BAD_REQUEST);
     }
 
-    // Enforce strict password complexity
-    const strengthCheck = validatePasswordStrength(input.password);
-    if (!strengthCheck.valid) {
-      return apiResponse(res, strengthCheck.message, STATUS_CODE.BAD_REQUEST);
-    }
-
     let userDetails: any = await UserModel.findById(id);
     if (!userDetails) {
       return apiResponse(res, "User not found", STATUS_CODE.NOT_FOUND);
+    }
+
+    // Enforce strict password complexity and contextual identity checks
+    const strengthCheck = validatePasswordStrength(input.password, {
+      email: userDetails.email,
+      name:
+        userDetails.name ||
+        `${userDetails.f_name || userDetails.firstName || ""} ${userDetails.l_name || userDetails.lastName || ""}`.trim(),
+      mobile: userDetails.mobile,
+    });
+    if (!strengthCheck.valid) {
+      return apiResponse(res, strengthCheck.message, STATUS_CODE.BAD_REQUEST);
     }
 
     const isSelf =
@@ -365,7 +449,7 @@ export const updatePassword = async (req: any, res: any) => {
       }
     }
 
-    // Check password history (cannot reuse last 3 passwords or current password)
+    // Check password history (cannot reuse last 5 passwords or current password)
     const previousPasswords: string[] = Array.isArray(
       userDetails.previous_passwords,
     )
@@ -377,7 +461,7 @@ export const updatePassword = async (req: any, res: any) => {
       if (isMatch) {
         return apiResponse(
           res,
-          "You cannot reuse your last 3 passwords",
+          "You cannot reuse any of your last 5 passwords",
           STATUS_CODE.BAD_REQUEST,
         );
       }
@@ -400,7 +484,7 @@ export const updatePassword = async (req: any, res: any) => {
       userDetails.password,
     ]
       .filter(Boolean)
-      .slice(-3);
+      .slice(-5);
 
     // Update user's password and previous_passwords
     await UserModel.updateOne(
@@ -408,8 +492,13 @@ export const updatePassword = async (req: any, res: any) => {
       {
         password: hashedNewPassword,
         previous_passwords: updatedHistory,
+        failedLoginAttempts: 0,
+        lockUntil: null,
       },
     );
+
+    // Invalidate all active sessions across all devices for this user
+    await revokeAllUserSessions(id);
 
     return apiResponse(
       res,
@@ -482,35 +571,176 @@ export const userNotifyResponse = async (req: any, res: any) => {
   }
 };
 
-export const userProfile = async (req: any, res: any) => {
-  const profile = req.user;
-  if (!profile?.email) {
-    return apiResponse(res, null, STATUS_CODE.UNAUTHORIZED);
+/**
+ * Helper to mask sensitive national identity strings (Aadhaar, PAN)
+ */
+const maskAadhaar = (aadhaar?: string): string | undefined => {
+  if (!aadhaar) return undefined;
+  const clean = aadhaar.replace(/\D/g, "");
+  if (clean.length < 4) return "XXXX-XXXX-XXXX";
+  return `XXXX-XXXX-${clean.slice(-4)}`;
+};
+
+const maskPan = (pan?: string): string | undefined => {
+  if (!pan) return undefined;
+  const trimmed = pan.trim();
+  if (trimmed.length < 4) return "XXXXX-XXXX";
+  return `XXXXX${trimmed.slice(-4)}`;
+};
+
+const getRoleName = (roleId?: number): string => {
+  switch (roleId) {
+    case ROLE.SUPER_ADMIN:
+      return "SUPER_ADMIN";
+    case ROLE.HOSPITAL_ADMIN:
+      return "HOSPITAL_ADMIN";
+    case ROLE.DOCTOR:
+      return "DOCTOR";
+    case ROLE.STAFF:
+      return "STAFF";
+    case ROLE.NURSE:
+      return "NURSE";
+    default:
+      return "UNKNOWN";
   }
-  const users = await UserModel.aggregate([
-    { $match: { email: profile.email } },
-    {
-      $lookup: {
-        from: "departments",
-        localField: "department_id",
-        foreignField: "_id",
-        as: "department",
+};
+
+/**
+ * GET /me, GET /profile, GET /auth/me
+ * Production-grade User Profile endpoint with strict allowlist DTO projection.
+ * Never leaks passwords, reset tokens, OTPs, or raw national identifiers.
+ */
+export const userProfile = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id || req.user?._id;
+    const userEmail = req.user?.email;
+
+    if (!userId && !userEmail) {
+      return apiResponse(res, null, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    const matchQuery: any = userId
+      ? { _id: new Types.ObjectId(userId.toString()) }
+      : { email: userEmail.toLowerCase().trim() };
+
+    const users = await UserModel.aggregate([
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: "departments",
+          localField: "department_id",
+          foreignField: "_id",
+          as: "department",
+          pipeline: [
+            {
+              $project: {
+                _id: 1,
+                name: 1,
+                department_id: 1,
+                description: 1,
+                status: 1,
+              },
+            },
+          ],
+        },
       },
-    },
-    { $unwind: { path: "$department", preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: "hospitals",
-        localField: "hospital_id",
-        foreignField: "_id",
-        as: "hospital",
+      { $unwind: { path: "$department", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "hospitals",
+          localField: "hospital_id",
+          foreignField: "_id",
+          as: "hospital",
+          pipeline: [
+            {
+              $project: {
+                _id: 1,
+                name: 1,
+                city: 1,
+                state: 1,
+                pincode: 1,
+                country: 1,
+                is_active: 1,
+              },
+            },
+          ],
+        },
       },
-    },
-    { $unwind: { path: "$hospital", preserveNullAndEmptyArrays: true } },
-    { $project: { password: 0, previous_passwords: 0 } },
-  ]);
-  const user = users && users.length ? users[0] : null;
-  return apiResponse(res, user, STATUS_CODE.SUCCESS);
+      { $unwind: { path: "$hospital", preserveNullAndEmptyArrays: true } },
+    ]);
+
+    const user = users && users.length ? users[0] : null;
+    if (!user) {
+      return apiResponse(res, null, STATUS_CODE.NOT_FOUND, "User profile not found");
+    }
+
+    // ─── STRICT PRODUCTION WHITELIST DTO ───
+    // Guarantees zero sensitive data leakage (no passwords, reset tokens, OTPs, or internal credentials)
+    const displayName =
+      user.name ||
+      `${user.firstName || user.f_name || ""} ${user.lastName || user.l_name || ""}`.trim() ||
+      user.email;
+
+    const safeProfile = {
+      id: user._id.toString(),
+      _id: user._id,
+      email: user.email,
+      name: displayName,
+      firstName: user.firstName || user.f_name || "",
+      middleName: user.middleName || user.m_name || "",
+      lastName: user.lastName || user.l_name || "",
+      f_name: user.f_name || user.firstName || "",
+      l_name: user.l_name || user.lastName || "",
+      role_id: user.role_id,
+      role_name: getRoleName(user.role_id),
+      is_super_admin: user.is_super_admin || user.role_id === ROLE.SUPER_ADMIN,
+      status: user.status,
+      is_active: user.is_active !== false,
+      mobile: user.mobile || user.contact || "",
+      contact: user.contact || user.mobile || "",
+      gender: user.gender || "",
+      age: user.age || undefined,
+      shift: user.shift || "",
+      unique_id: user.unique_id || "",
+
+      // Professional / ABDM Healthcare Identity
+      hprId: user.hprId || user.hprIdNumber || "",
+      hprIdNumber: user.hprIdNumber || user.hprId || "",
+      reg_no: user.reg_no || "",
+      specialize: user.specialize || undefined,
+      categories: user.categories || undefined,
+
+      // Associated Organization & Department
+      hospital_id: user.hospital_id || undefined,
+      hospital: user.hospital || undefined,
+      department_id: user.department_id || undefined,
+      department: user.department || undefined,
+
+      // Authorization & Permissions
+      permissions: user.permissions || user.userPermissions || [],
+      userPermissions: user.userPermissions || user.permissions || [],
+
+      // Contact & Address
+      address: user.address || undefined,
+
+      // Masked PII (Protected under ABDM / DPDP Act / UIDAI Aadhaar Act)
+      aadhaar_masked: maskAadhaar(user.aadhaar),
+      pan_masked: maskPan(user.pan),
+
+      // Current Session Context
+      sessionId: req.sessionId || undefined,
+
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    return apiResponse(res, safeProfile, STATUS_CODE.SUCCESS, "User profile retrieved successfully");
+  } catch (error: any) {
+    console.error("[USER_PROFILE_ERROR]", error?.message || error);
+    return res
+      .status(STATUS_CODE.ERROR)
+      .json({ message: "Failed to retrieve user profile", code: STATUS_CODE.ERROR });
+  }
 };
 
 export const updateStatus = async (req: any, res: any) => {
@@ -580,10 +810,11 @@ export const doctorListing = async (req: any, res: any) => {
     }
 
     if (search) {
+      const escapedSearch = escapeRegex(String(search));
       match.$or = [
-        { firstName: { $regex: search, $options: "i" } },
-        { lastName: { $regex: search, $options: "i" } },
-        { specialization: { $regex: search, $options: "i" } },
+        { firstName: { $regex: escapedSearch, $options: "i" } },
+        { lastName: { $regex: escapedSearch, $options: "i" } },
+        { specialization: { $regex: escapedSearch, $options: "i" } },
       ];
     }
 

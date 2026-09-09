@@ -1,6 +1,7 @@
+import crypto from "crypto";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-const SALT_ROUNDS = 10;
+const SALT_ROUNDS = 12; // OWASP recommendation for bcrypt key expansion ($2^{12} = 4096$ iterations)
 
 if (!process.env.JWT_SECRET) {
   throw new Error(
@@ -8,6 +9,13 @@ if (!process.env.JWT_SECRET) {
   );
 }
 const SECRET_KEY: string = process.env.JWT_SECRET;
+const REFRESH_SECRET_KEY: string =
+  process.env.JWT_REFRESH_SECRET || `${process.env.JWT_SECRET}_refresh_secret`;
+
+export const ACCESS_TOKEN_EXPIRY = "15m";
+export const REFRESH_TOKEN_EXPIRY = "7d";
+export const ACCESS_TOKEN_EXPIRY_SECONDS = 15 * 60; // 900 seconds
+export const REFRESH_TOKEN_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 604,800 seconds
 
 export const hashPassword = async (password: string): Promise<string> => {
   return bcrypt.hash(password, SALT_ROUNDS);
@@ -29,11 +37,39 @@ export const apiResponse = (
   return res.status(code).json({ data: data, msg: msg, code: code });
 };
 
-export const generateToken = (payload: object): string => {
-  return jwt.sign(payload, SECRET_KEY, { expiresIn: "24h" });
+/**
+ * Generates a short-lived access token (15 minutes) with user claims, sessionId, and RFC 7519 jti
+ */
+export const generateAccessToken = (payload: object): string => {
+  return jwt.sign({ ...payload, jti: crypto.randomUUID() }, SECRET_KEY, {
+    expiresIn: ACCESS_TOKEN_EXPIRY,
+  });
 };
 
-import crypto from "crypto";
+/**
+ * Generates a long-lived refresh token (7 days) tied to the sessionId with unique RFC 7519 jti
+ */
+export const generateRefreshToken = (payload: {
+  id: string;
+  sessionId: string;
+}): string => {
+  return jwt.sign(
+    { ...payload, jti: crypto.randomUUID(), type: "refresh" },
+    REFRESH_SECRET_KEY,
+    {
+      expiresIn: REFRESH_TOKEN_EXPIRY,
+    },
+  );
+};
+
+/**
+ * Backwards-compatible alias for generateAccessToken
+ */
+export const generateToken = (payload: object): string => {
+  return generateAccessToken(payload);
+};
+
+
 import { getRedisConnection } from "../config/redis";
 
 const stripBearer = (token: string): string => {
@@ -123,7 +159,10 @@ export const isTokenBlacklisted = async (token: string): Promise<boolean> => {
   }
 };
 
-export const verifyToken = (token: string) => {
+/**
+ * Verifies access token cryptographic validity, blacklist status, and expiration
+ */
+export const verifyAccessToken = (token: string) => {
   try {
     const cleanToken = stripBearer(token);
     if (!cleanToken) return null;
@@ -134,6 +173,30 @@ export const verifyToken = (token: string) => {
   } catch (error) {
     return null;
   }
+};
+
+/**
+ * Verifies refresh token cryptographic signature and expiration
+ */
+export const verifyRefreshToken = (token: string): { id: string; sessionId: string; type: string } | null => {
+  try {
+    const cleanToken = stripBearer(token);
+    if (!cleanToken) return null;
+    const decoded = jwt.verify(cleanToken, REFRESH_SECRET_KEY) as any;
+    if (decoded && decoded.type === "refresh" && decoded.sessionId) {
+      return decoded;
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+};
+
+/**
+ * Backwards-compatible alias for verifyAccessToken
+ */
+export const verifyToken = (token: string) => {
+  return verifyAccessToken(token);
 };
 export const FHIR_BUNDLES = [
   {

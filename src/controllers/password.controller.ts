@@ -10,6 +10,7 @@ import {
   sendOtpEmail,
 } from "../services/email.service";
 import { sendOTPUnified } from "../services/twilio.otp.service";
+import { revokeAllUserSessions } from "../services/session.service";
 import type {
   ForgotPasswordInput,
   VerifyResetTokenInput,
@@ -26,7 +27,7 @@ const PASSWORD_RESET_EXPIRY_MINUTES = parseInt(
 );
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
 const RATE_LIMIT_WINDOW_HOURS = 1;
-const PASSWORD_HISTORY_COUNT = 3;
+const PASSWORD_HISTORY_COUNT = 5;
 const MAX_OTP_VERIFY_ATTEMPTS = 5;
 
 const generateSecureToken = (): string => {
@@ -185,22 +186,14 @@ export const resetPassword = async (
   try {
     const { token, password } = req.body;
 
-    const strength = validatePasswordStrength(password);
-    if (!strength.valid) {
-      return apiResponse(
-        res,
-        null,
-        STATUS_CODE.BAD_REQUEST,
-        strength.message || "Password does not meet complexity requirements",
-      );
-    }
-
     const hashedToken = hashToken(token);
 
     const user = await UserModel.findOne({
       passwordResetToken: hashedToken,
       passwordResetExpires: { $gt: new Date() },
-    }).select("_id password previous_passwords");
+    }).select(
+      "_id email name mobile f_name l_name firstName lastName password previous_passwords",
+    );
 
     if (!user) {
       return apiResponse(
@@ -208,6 +201,22 @@ export const resetPassword = async (
         null,
         STATUS_CODE.BAD_REQUEST,
         MSG.PASSWORD_RESET_INVALID,
+      );
+    }
+
+    const strength = validatePasswordStrength(password, {
+      email: user.email,
+      name:
+        user.name ||
+        `${user.f_name || user.firstName || ""} ${user.l_name || user.lastName || ""}`.trim(),
+      mobile: user.mobile,
+    });
+    if (!strength.valid) {
+      return apiResponse(
+        res,
+        null,
+        STATUS_CODE.BAD_REQUEST,
+        strength.message || "Password does not meet complexity requirements",
       );
     }
 
@@ -244,8 +253,13 @@ export const resetPassword = async (
       passwordResetToken: null,
       passwordResetExpires: null,
       passwordResetAttempts: 0,
+      failedLoginAttempts: 0,
+      lockUntil: null,
       previous_passwords: trimmedHistory,
     });
+
+    // Invalidate all active sessions across all devices for this user
+    await revokeAllUserSessions(user._id);
 
     return apiResponse(
       res,
@@ -410,20 +424,12 @@ export const resetPasswordWithOtp = async (
   try {
     const { email, otp, password } = req.body;
 
-    const strength = validatePasswordStrength(password);
-    if (!strength.valid) {
-      return apiResponse(
-        res,
-        null,
-        STATUS_CODE.BAD_REQUEST,
-        strength.message || "Password does not meet complexity requirements",
-      );
-    }
-
     const user = await UserModel.findOne({
       email: email.toLowerCase(),
       otpExpires: { $gt: new Date() },
-    }).select("_id password reset_otp otpAttempts previous_passwords");
+    }).select(
+      "_id email name mobile f_name l_name firstName lastName password reset_otp otpAttempts previous_passwords",
+    );
 
     if (!user || !user.reset_otp) {
       return apiResponse(
@@ -431,6 +437,22 @@ export const resetPasswordWithOtp = async (
         null,
         STATUS_CODE.BAD_REQUEST,
         MSG.PASSWORD_RESET_INVALID,
+      );
+    }
+
+    const strength = validatePasswordStrength(password, {
+      email: user.email,
+      name:
+        user.name ||
+        `${user.f_name || user.firstName || ""} ${user.l_name || user.lastName || ""}`.trim(),
+      mobile: user.mobile,
+    });
+    if (!strength.valid) {
+      return apiResponse(
+        res,
+        null,
+        STATUS_CODE.BAD_REQUEST,
+        strength.message || "Password does not meet complexity requirements",
       );
     }
 
@@ -496,8 +518,13 @@ export const resetPasswordWithOtp = async (
       otpExpires: null,
       otpAttempts: 0,
       passwordResetAttempts: 0,
+      failedLoginAttempts: 0,
+      lockUntil: null,
       previous_passwords: trimmedHistory,
     });
+
+    // Invalidate all active sessions across all devices for this user
+    await revokeAllUserSessions(user._id);
 
     return apiResponse(
       res,
@@ -525,7 +552,21 @@ export const changePassword = async (
       return apiResponse(res, null, STATUS_CODE.UNAUTHORIZED, MSG.UNAUTHORIZED);
     }
 
-    const strength = validatePasswordStrength(newPassword);
+    const user = await UserModel.findById(userId).select(
+      "+password email name mobile f_name l_name firstName lastName previous_passwords",
+    );
+
+    if (!user) {
+      return apiResponse(res, null, STATUS_CODE.NOT_FOUND, MSG.USER_NOT_FOUND);
+    }
+
+    const strength = validatePasswordStrength(newPassword, {
+      email: user.email,
+      name:
+        user.name ||
+        `${user.f_name || user.firstName || ""} ${user.l_name || user.lastName || ""}`.trim(),
+      mobile: user.mobile,
+    });
     if (!strength.valid) {
       return apiResponse(
         res,
@@ -533,14 +574,6 @@ export const changePassword = async (
         STATUS_CODE.BAD_REQUEST,
         strength.message || "Password does not meet complexity requirements",
       );
-    }
-
-    const user = await UserModel.findById(userId).select(
-      "+password previous_passwords",
-    );
-
-    if (!user) {
-      return apiResponse(res, null, STATUS_CODE.NOT_FOUND, MSG.USER_NOT_FOUND);
     }
 
     if (!user.password) {
@@ -595,6 +628,9 @@ export const changePassword = async (
       passwordResetAttempts: 0,
       previous_passwords: trimmedHistory,
     });
+
+    // Invalidate all active sessions across all devices for this user
+    await revokeAllUserSessions(userId);
 
     return apiResponse(
       res,

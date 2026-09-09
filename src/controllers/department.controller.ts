@@ -46,12 +46,16 @@ export const departmentList = async (req: any, res: any) => {
 
 export const addDepartment = async (req: any, res: any) => {
     try {
-        let input = req.body;
-        let departmentxists = await DepartmentModel.findOne({ name: input.name, is_active: true });
+        // req.body is now validated by addDepartmentSchema middleware.
+        const { name, description, status } = req.body;
+        let departmentxists = await DepartmentModel.findOne({ name, is_active: true });
         if (departmentxists) {
             return apiResponse(res, "Department already exists", STATUS_CODE.ERROR);
         }
-        let response = await DepartmentModel.create(input);
+        const createPayload: Record<string, any> = { name };
+        if (description !== undefined) createPayload.description = description;
+        if (status !== undefined) createPayload.status = status;
+        let response = await DepartmentModel.create(createPayload);
         return apiResponse(res, { id: response?._id }, STATUS_CODE.SUCCESS, "Department has been suceesfully added");
     }
     catch (error: any) {
@@ -69,12 +73,20 @@ export const addDepartment = async (req: any, res: any) => {
 
 export const updateDepartment = async (req: any, res: any) => {
     try {
-        let input = req.body;
+        // req.body is now validated by updateDepartmentSchema middleware.
+        const { name, description, status } = req.body;
         let { id } = req.params;
         if (!id) {
             return apiResponse(res, "Department ID is required", STATUS_CODE.ERROR);
         }
-        await DepartmentModel.updateOne({ _id: id }, input);
+        const updatePayload: Record<string, any> = {};
+        if (name !== undefined) updatePayload.name = name;
+        if (description !== undefined) updatePayload.description = description;
+        if (status !== undefined) updatePayload.status = status;
+        if (Object.keys(updatePayload).length === 0) {
+            return apiResponse(res, "No valid fields to update", STATUS_CODE.ERROR);
+        }
+        await DepartmentModel.updateOne({ _id: id }, updatePayload);
         return apiResponse(res, { id: id }, STATUS_CODE.SUCCESS, "Department has been suceesfully updated");
     }
     catch (error: any) {

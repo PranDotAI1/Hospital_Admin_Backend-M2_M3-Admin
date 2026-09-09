@@ -15,6 +15,7 @@ import {
   ABDM_PHR_WEB_BASE_URL,
 } from "../../utils/constant";
 import { formatAbhaForStorage } from "../../utils/common";
+import { sanitizeInputString, isValidMobile } from "../../utils/sanitizer";
 import { ENDPOINTS } from "../../utils/endpoints";
 import { STATUS_CODE } from "../../utils/constant";
 import { DepartmentModel } from "../../models/Department";
@@ -51,6 +52,9 @@ const isValidObjectId = (id: string): boolean => {
   return /^[a-fA-F0-9]{24}$/.test(id);
 };
 
+// OPD receives data from ABDM (external system) where we can't control the payload format.
+// For this path, we use sanitizeInputString (sanitize, not reject) as a practical compromise.
+// For all other write paths, validation schemas REJECT bad input via middleware.
 const sanitizeString = (
   value: unknown,
   maxLength: number = 500,
@@ -58,7 +62,13 @@ const sanitizeString = (
   if (value === undefined || value === null) return undefined;
   const str = String(value).trim();
   if (str.length === 0) return undefined;
-  return str.slice(0, maxLength);
+  // Reject object serialization and HTML, but don't throw
+  if (/\[object\s+[^\]]+\]/gi.test(str)) return undefined;
+  if (/<[^>]*>/g.test(str) || /javascript:|data:text\/html|vbscript:|on\w+\s*=/gi.test(str)) return undefined;
+  // Strip control chars
+  const cleaned = str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200D\uFEFF]/g, "").trim();
+  if (!cleaned) return undefined;
+  return cleaned.slice(0, maxLength);
 };
 
 const safeNumber = (value: unknown): number | undefined => {
@@ -74,10 +84,6 @@ const safeBoolean = (value: unknown): boolean | undefined => {
   if (value === "true" || value === "1") return true;
   if (value === "false" || value === "0") return false;
   return undefined;
-};
-
-const isValidMobile = (mobile: string): boolean => {
-  return /^[6-9]\d{9}$/.test(mobile);
 };
 
 const isValidPincode = (pincode: string): boolean => {
@@ -607,9 +613,15 @@ export const completeRegistration = async (req: Request, res: Response) => {
           description: updatedVisit.description,
         };
 
-        const fullName = updatedVisit.name || scanShareVisit.name || "";
+        const rawFullName = updatedVisit.name || scanShareVisit.name || "";
+        const fullName =
+          sanitizeInputString(rawFullName, {
+            maxLength: 150,
+            stripHtml: true,
+            disallowObjectString: true,
+          }) || "Patient";
         const nameParts = fullName.trim().split(/\s+/);
-        const firstName = nameParts[0] || "";
+        const firstName = nameParts[0] || "Patient";
         const middleName =
           nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : undefined;
         const lastName =
@@ -642,6 +654,12 @@ export const completeRegistration = async (req: Request, res: Response) => {
 
         let patientId: Types.ObjectId;
 
+        const rawMobile = updatedVisit.mobile || scanShareVisit.mobile;
+        const cleanMobile =
+          typeof rawMobile === "string" && isValidMobile(rawMobile)
+            ? rawMobile.trim()
+            : "9999999999";
+
         if (existingPatient) {
           let shouldAddInsurance = false;
           if (hasNewInsurance) {
@@ -661,7 +679,7 @@ export const completeRegistration = async (req: Request, res: Response) => {
             $set: {
               lastVisitDate: updatedVisit.visitDate,
               ...(fullName && { name: fullName }),
-              ...(updatedVisit.mobile && { mobile: updatedVisit.mobile }),
+              ...(cleanMobile && { mobile: cleanMobile }),
               ...(updatedVisit.dob && { dob: updatedVisit.dob }),
               ...(updatedVisit.gender && { gender: updatedVisit.gender }),
               ...(addressString && { address: addressString }),
@@ -687,6 +705,17 @@ export const completeRegistration = async (req: Request, res: Response) => {
             };
           }
 
+          if (
+            !existingPatient.abhaLinkedAt &&
+            (existingPatient.ABHANumber ||
+              existingPatient.abhaaddress ||
+              scanShareVisit.abhaNumber ||
+              scanShareVisit.abhaAddress)
+          ) {
+            updateOps.$set = updateOps.$set || {};
+            updateOps.$set.abhaLinkedAt = new Date();
+          }
+
           await PatientModel.findByIdAndUpdate(existingPatient._id, updateOps);
 
           patientId = existingPatient._id as Types.ObjectId;
@@ -701,17 +730,21 @@ export const completeRegistration = async (req: Request, res: Response) => {
               ]
             : [];
 
+          const hasAbhaData = Boolean(
+            scanShareVisit.abhaNumber || scanShareVisit.abhaAddress,
+          );
+
           const newPatient = await PatientModel.create({
-            f_name: firstName || "Unknown",
+            f_name: firstName || "Patient",
             m_name: middleName,
             l_name: lastName,
-            name: fullName || "Unknown",
-            mobile:
-              updatedVisit.mobile || scanShareVisit.mobile || "0000000000",
-            dob: updatedVisit.dob || scanShareVisit.dob || "1900-01-01",
+            name: fullName || "Patient",
+            mobile: cleanMobile,
+            dob: updatedVisit.dob || scanShareVisit.dob || "1990-01-01",
             address: addressString,
             ABHANumber: scanShareVisit.abhaNumber || undefined,
             abhaaddress: scanShareVisit.abhaAddress || undefined,
+            abhaLinkedAt: hasAbhaData ? new Date() : undefined,
             gender: updatedVisit.gender || scanShareVisit.gender,
             status: "active",
             pincode: addr?.pincode,
