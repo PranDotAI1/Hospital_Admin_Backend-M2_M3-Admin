@@ -32,28 +32,149 @@ const normaliseSameSite = (): "strict" | "lax" | "none" => {
 };
 
 /**
- * Cookie options helper adhering to security requirements
+ * Determines if the current request is over a secure (HTTPS) connection.
+ * Accurately detects SSL/TLS even when behind reverse proxies, ALBs, or Cloudflare,
+ * while ensuring localhost/HTTP dev connections are correctly identified as non-secure.
  */
-const getCookieOptions = (maxAgeMs: number) => {
-  const isProduction = process.env.NODE_ENV === "production";
+export const isRequestSecure = (req?: any): boolean => {
+  if (!req) {
+    return process.env.COOKIE_SECURE === "true";
+  }
+
+  // 1. Explicit HTTPS check on Express request
+  if (req.secure || req.protocol === "https") {
+    return true;
+  }
+
+  // 2. Reverse proxy / load balancer forwarded headers
+  const forwardedProto =
+    req.headers?.["x-forwarded-proto"] || req.headers?.["x-forwarded-protocol"];
+  if (forwardedProto) {
+    const protoStr = (
+      typeof forwardedProto === "string" ? forwardedProto : forwardedProto[0]
+    ).toLowerCase();
+    if (protoStr.includes("https")) {
+      return true;
+    }
+  }
+
+  // 3. Local development detection (localhost, 127.0.0.1, ::1)
+  const host = (req.headers?.host || req.hostname || "").toLowerCase();
+  const origin = (
+    (req.headers?.origin as string) ||
+    (req.headers?.referer as string) ||
+    ""
+  ).toLowerCase();
+
+  const isLocal =
+    host.includes("localhost") ||
+    host.includes("127.0.0.1") ||
+    host.includes("::1") ||
+    origin.includes("localhost") ||
+    origin.includes("127.0.0.1") ||
+    origin.includes("::1");
+
+  if (isLocal) {
+    // Plain HTTP on localhost MUST NOT set secure: true,
+    // otherwise Safari and other browsers reject the cookie!
+    return false;
+  }
+
+  // 4. Fallback to explicit env overrides
+  if (process.env.COOKIE_SECURE === "false") return false;
+  if (process.env.COOKIE_SECURE === "true") return true;
+
+  return process.env.NODE_ENV === "production";
+};
+
+/**
+ * Resolves the appropriate Cookie Domain.
+ * For production environments (e.g. hmis.pran.ai and admin.pran.ai / bhmis.pran.ai),
+ * setting domain to .pran.ai ensures first-party cookie sharing across subdomains
+ * and prevents mobile browsers (Chrome/Safari) from blocking cookies as third-party.
+ */
+export const resolveCookieDomain = (req?: any): string | undefined => {
+  const host = (req?.headers?.host || req?.hostname || "").toLowerCase().split(":")[0];
+  const origin = (
+    (req?.headers?.origin as string) ||
+    (req?.headers?.referer as string) ||
+    ""
+  ).toLowerCase();
+
+  // Local development or direct IP must never have a domain attribute
+  const isLocal =
+    host.includes("localhost") ||
+    host.includes("127.0.0.1") ||
+    host.includes("::1") ||
+    origin.includes("localhost") ||
+    origin.includes("127.0.0.1") ||
+    origin.includes("::1") ||
+    /^\d+\.\d+\.\d+\.\d+$/.test(host);
+
+  if (isLocal) {
+    return undefined;
+  }
+
+  // Explicit env override
+  if (process.env.COOKIE_DOMAIN) {
+    return process.env.COOKIE_DOMAIN;
+  }
+
+  // Auto-detect pran.ai domain
+  if (host.endsWith("pran.ai") || origin.includes("pran.ai")) {
+    return ".pran.ai";
+  }
+
+  // Generic two-level domain extraction (e.g. *.example.com -> .example.com)
+  const parts = host.split(".");
+  if (parts.length >= 2 && !host.endsWith(".local")) {
+    return "." + parts.slice(-2).join(".");
+  }
+
+  return undefined;
+};
+
+/**
+ * Cookie options helper adhering to security requirements.
+ * Automatically adapts secure & sameSite flags based on whether connection is HTTPS or HTTP.
+ */
+const getCookieOptions = (req: any, maxAgeMs: number) => {
+  const secure = isRequestSecure(req);
+  let sameSite = normaliseSameSite();
+
+  // Browsers strictly reject SameSite=None if Secure is false.
+  // When running without TLS (e.g. localhost HTTP), fallback to "lax".
+  if (!secure && sameSite === "none") {
+    sameSite = "lax";
+  }
+
+  const cookieDomain = resolveCookieDomain(req);
+
   return {
     httpOnly: true,
-    secure: isProduction || process.env.COOKIE_SECURE === "true",
-    sameSite: normaliseSameSite(),
+    secure,
+    sameSite,
     maxAge: maxAgeMs,
     path: "/",
-    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
   };
 };
 
-const getClearCookieOptions = () => {
-  const isProduction = process.env.NODE_ENV === "production";
+const getClearCookieOptions = (req?: any) => {
+  const secure = isRequestSecure(req);
+  let sameSite = normaliseSameSite();
+  if (!secure && sameSite === "none") {
+    sameSite = "lax";
+  }
+
+  const cookieDomain = resolveCookieDomain(req);
+
   return {
     httpOnly: true,
-    secure: isProduction || process.env.COOKIE_SECURE === "true",
-    sameSite: normaliseSameSite(),
+    secure,
+    sameSite,
     path: "/",
-    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
   };
 };
 
@@ -186,17 +307,17 @@ export const login = async (req: any, res: any) => {
     res.cookie(
       "access_token",
       accessToken,
-      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+      getCookieOptions(req, ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
     );
     res.cookie(
       "token",
       accessToken,
-      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+      getCookieOptions(req, ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
     );
     res.cookie(
       "refresh_token",
       refreshToken,
-      getCookieOptions(REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
+      getCookieOptions(req, REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
     );
 
     const responsePayload = {
@@ -287,7 +408,7 @@ export const refreshSession = async (req: any, res: any) => {
     if (!rotation.success) {
       // ─── REUSE ATTACK DETECTED: TERMINATE CLIENT SESSIONS ───
       if (rotation.error === "TOKEN_REUSE_DETECTED") {
-        const clearOpts = getClearCookieOptions();
+        const clearOpts = getClearCookieOptions(req);
         res.clearCookie("access_token", clearOpts);
         res.clearCookie("token", clearOpts);
         res.clearCookie("refresh_token", clearOpts);
@@ -310,17 +431,17 @@ export const refreshSession = async (req: any, res: any) => {
     res.cookie(
       "access_token",
       newAccessToken,
-      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+      getCookieOptions(req, ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
     );
     res.cookie(
       "token",
       newAccessToken,
-      getCookieOptions(ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
+      getCookieOptions(req, ACCESS_TOKEN_EXPIRY_SECONDS * 1000),
     );
     res.cookie(
       "refresh_token",
       newRefreshToken,
-      getCookieOptions(REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
+      getCookieOptions(req, REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
     );
 
     const responsePayload = {
@@ -365,7 +486,7 @@ export const logout = async (req: any, res: any) => {
       await blacklistToken(token);
     }
 
-    const clearOpts = getClearCookieOptions();
+    const clearOpts = getClearCookieOptions(req);
     res.clearCookie("access_token", clearOpts);
     res.clearCookie("token", clearOpts);
     res.clearCookie("refresh_token", clearOpts);
@@ -373,7 +494,7 @@ export const logout = async (req: any, res: any) => {
     return apiResponse(res, {}, STATUS_CODE.SUCCESS, MSG.TOKEN_EXPIRED_MSG);
   } catch (error: any) {
     console.error("[LOGOUT_ERROR]", error?.message || error);
-    const clearOpts = getClearCookieOptions();
+    const clearOpts = getClearCookieOptions(req);
     res.clearCookie("access_token", clearOpts);
     res.clearCookie("token", clearOpts);
     res.clearCookie("refresh_token", clearOpts);
@@ -433,7 +554,7 @@ export const revokeSessionHandler = async (req: any, res: any) => {
 
     // If revoking current session, clear cookies
     if (sessionId === req.sessionId) {
-      const clearOpts = getClearCookieOptions();
+      const clearOpts = getClearCookieOptions(req);
       res.clearCookie("access_token", clearOpts);
       res.clearCookie("token", clearOpts);
       res.clearCookie("refresh_token", clearOpts);

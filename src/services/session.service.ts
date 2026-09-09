@@ -4,7 +4,10 @@ import { getRedisConnection } from "../config/redis";
 import { ISession, SessionModel } from "../models/Session";
 
 export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days in seconds
-export const MAX_CONCURRENT_SESSIONS_PER_USER = 3; // Maximum concurrent sessions per user
+export const MAX_CONCURRENT_SESSIONS_PER_USER = parseInt(
+  process.env.MAX_CONCURRENT_SESSIONS || "3",
+  10,
+); // Maximum concurrent sessions per user (defaults to 3, configurable via env)
 export const ROTATION_GRACE_PERIOD_MS = 30 * 1000; // 30 seconds grace period for concurrent in-flight requests
 
 export interface SessionData {
@@ -60,8 +63,24 @@ export const createSession = async (
       : params.hospital_id
     : undefined;
 
-  // 1. Enforce concurrent session limit (max 3 active sessions per user)
+  // 1. Enforce concurrent session limit (max active sessions per user)
   try {
+    // If user is logging in again from the EXACT same client (same userAgent & ipAddress),
+    // supersede/revoke the previous session from that device so ghost sessions don't pile up.
+    if (params.userAgent && params.ipAddress) {
+      const sameClientSessions = await SessionModel.find({
+        userId: userIdObj,
+        isValid: true,
+        userAgent: params.userAgent,
+        ipAddress: params.ipAddress,
+        expiresAt: { $gt: new Date() },
+      });
+
+      for (const oldClientSession of sameClientSessions) {
+        await revokeSession(oldClientSession.sessionId);
+      }
+    }
+
     const activeSessions = await SessionModel.find({
       userId: userIdObj,
       isValid: true,
@@ -171,6 +190,13 @@ export const validateSession = async (
             .set(`session:${sessionId}`, JSON.stringify(data), "EX", remainingTtl)
             .catch(() => {});
         }
+        // Asynchronously keep MongoDB lastActiveAt in sync so eviction accurately identifies inactive sessions
+        SessionModel.updateOne(
+          { sessionId },
+          { lastActiveAt: new Date() },
+        ).catch((err) =>
+          console.warn(`[SESSION] Failed to sync lastActiveAt to DB: ${err?.message}`),
+        );
       }
 
       return data;
