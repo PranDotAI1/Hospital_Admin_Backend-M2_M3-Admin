@@ -3,6 +3,7 @@ import { STATUS_CODE, USER_ENUM, ROLE } from "../utils/constant";
 import { MSG } from "../utils/msgs";
 import { UserModel } from "../models/User";
 import { validateSession } from "../services/session.service";
+import { resolvePermissions, ROLE_METADATA } from "../utils/permissions";
 
 export const checkToken = async (req: any, res: any, next: any) => {
   try {
@@ -66,6 +67,11 @@ export const checkToken = async (req: any, res: any, next: any) => {
         .json({ message: "User account is inactive or disabled", code: STATUS_CODE.UNAUTHORIZED });
     }
 
+    // Resolve effective permissions purely from role
+    const roleId = user.role_id ?? ROLE.STAFF;
+    const permissions = resolvePermissions(roleId);
+    const roleMeta = ROLE_METADATA[roleId] || { name: "Unknown" };
+
     // Attach comprehensive user context to request
     req.user = {
       _id: user._id,
@@ -73,10 +79,11 @@ export const checkToken = async (req: any, res: any, next: any) => {
       email: user.email,
       name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim(),
       role_id: user.role_id,
+      role_name: roleMeta.name,
       hospital_id: user.hospital_id,
       department_id: user.department_id,
       is_super_admin: user.is_super_admin || user.role_id === ROLE.SUPER_ADMIN,
-      permissions: user.permissions,
+      permissions: permissions,
     };
     req.token = token;
 

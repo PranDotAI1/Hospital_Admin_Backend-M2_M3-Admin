@@ -38,7 +38,7 @@ export const addUserSchema = z.object({
   contact: optionalCleanStringSchema(20),
 
   // Role & org
-  role_id: z.number().int().min(1).max(10).optional(),
+  role_id: z.number().int().min(1).max(11).optional(),
   department_id: z.string().regex(/^[a-fA-F0-9]{24}$/, { message: "Invalid department ID" }).optional(),
   hospital_id: z.string().regex(/^[a-fA-F0-9]{24}$/, { message: "Invalid hospital ID" }).optional(),
 

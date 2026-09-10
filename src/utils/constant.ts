@@ -35,6 +35,12 @@ export const ROLE = {
   DOCTOR: 3,
   STAFF: 4,
   NURSE: 5,
+  LAB_TECHNICIAN: 6,
+  PHARMACIST: 7,       // Phase 2 — full pharmacy module pending
+  BILLING: 8,
+  RECEPTIONIST: 9,
+  DEPARTMENT_HEAD: 10,
+  AUDITOR: 11,         // Phase 2 — read-only compliance role
 };
 
 export const generateUID = () => {

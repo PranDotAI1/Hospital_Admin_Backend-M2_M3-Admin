@@ -1,5 +1,4 @@
 import { DepartmentModel } from "../../models/Department";
-import { RoleModel } from "../../models/Role"
 import { apiResponse } from "../../utils/common";
 import { STATUS_CODE } from "../../utils/constant";
 

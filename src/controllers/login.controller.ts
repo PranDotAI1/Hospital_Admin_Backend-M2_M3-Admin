@@ -20,6 +20,7 @@ import {
   revokeAllUserSessions,
 } from "../services/session.service";
 import { MSG } from "../utils/msgs";
+import { ROLE_METADATA } from "../utils/permissions";
 
 /**
  * Normalise the COOKIE_SAMESITE env var to a value the cookie package accepts.
@@ -308,11 +309,14 @@ export const login = async (req: any, res: any) => {
       getCookieOptions(req, REFRESH_TOKEN_EXPIRY_SECONDS * 1000),
     );
 
+    const roleMeta = (user.role_id ? ROLE_METADATA[user.role_id] : undefined) || { name: "Unknown" };
+
     const responsePayload = {
       id: userId,
       email: user.email,
       name: user.name,
       role_id: user.role_id,
+      role_name: roleMeta.name,
       hospital_id: user.hospital_id,
     };
 

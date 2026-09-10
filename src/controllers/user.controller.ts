@@ -13,6 +13,7 @@ import { ROLE, STATUS_CODE, USER_ENUM } from "../utils/constant";
 import { Types } from "mongoose";
 import { escapeRegex } from "../utils/sanitizer";
 import { revokeAllUserSessions } from "../services/session.service";
+import { resolvePermissions, ROLE_METADATA } from "../utils/permissions";
 
 export const userListing = async (req: any, res: any) => {
   try {
@@ -589,20 +590,9 @@ const maskPan = (pan?: string): string | undefined => {
 };
 
 const getRoleName = (roleId?: number): string => {
-  switch (roleId) {
-    case ROLE.SUPER_ADMIN:
-      return "SUPER_ADMIN";
-    case ROLE.HOSPITAL_ADMIN:
-      return "HOSPITAL_ADMIN";
-    case ROLE.DOCTOR:
-      return "DOCTOR";
-    case ROLE.STAFF:
-      return "STAFF";
-    case ROLE.NURSE:
-      return "NURSE";
-    default:
-      return "UNKNOWN";
-  }
+  if (roleId === undefined || roleId === null) return "UNKNOWN";
+  const meta = ROLE_METADATA[roleId];
+  return meta ? meta.name : "UNKNOWN";
 };
 
 /**
@@ -681,6 +671,9 @@ export const userProfile = async (req: any, res: any) => {
       `${user.firstName || user.f_name || ""} ${user.lastName || user.l_name || ""}`.trim() ||
       user.email;
 
+    // Resolve effective permissions purely from role
+    const permissions = resolvePermissions(user.role_id ?? 4);
+
     const safeProfile = {
       id: user._id.toString(),
       _id: user._id,
@@ -717,8 +710,7 @@ export const userProfile = async (req: any, res: any) => {
       department: user.department || undefined,
 
       // Authorization & Permissions
-      permissions: user.permissions || user.userPermissions || [],
-      userPermissions: user.userPermissions || user.permissions || [],
+      permissions: permissions,
 
       // Contact & Address
       address: user.address || undefined,

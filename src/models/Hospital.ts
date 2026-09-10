@@ -8,6 +8,7 @@ export interface IHospital extends Document {
     state: string;
     pincode: number;
     country: string;
+    data_scope?: string;
     is_active: boolean;
 }
 
@@ -48,6 +49,11 @@ const HospitalSchema = new Schema<IHospital>({
         required: true,
         trim: true,
         default: "india"
+    },
+    data_scope: {
+        type: String,
+        enum: ['department', 'hospital'],
+        default: 'hospital'
     },
     is_active: {
         type: Boolean,
