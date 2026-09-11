@@ -57,6 +57,18 @@ import {
 import { addUserSchema, updateUserSchema } from "../validations/user.schema";
 import { addDepartmentSchema, updateDepartmentSchema } from "../validations/department.schema";
 import { addHospitalSchema, updateHospitalSchema } from "../validations/hospital.schema";
+import {
+  recordSoapNotesSchema,
+  recordPrescriptionSchema,
+  recordDischargeSummarySchema,
+  recordLabResultsSchema,
+  pharmacyDispenseSchema,
+  recordImmunizationSchema,
+  recordAssessmentSchema,
+  labReportUpsertSchema,
+  labReportUpdateTestSchema,
+  updatePasswordSchema,
+} from "../validations/clinical.schema";
 import { ROLE } from "../utils/constant";
 import {
   listing as roleListing,
@@ -205,6 +217,7 @@ router.put(
   "/user/update/password/:id",
   passwordResetLimiter,
   checkToken,
+  validate(updatePasswordSchema),
   updatePassword,
 );
 
@@ -320,6 +333,7 @@ router.post(
   "/visit/:visitId/clinical/prescription",
   checkToken,
   requirePermission(PERMISSIONS.CLINICAL_PRESCRIPTION_WRITE),
+  validate(recordPrescriptionSchema),
   recordPrescription,
 );
 router.get(
@@ -328,12 +342,19 @@ router.get(
   requireAnyPermission(PERMISSIONS.CLINICAL_PRESCRIPTION_READ, PERMISSIONS.PHARMACY_VIEW_ORDERS),
   getEnrichedPrescriptionByVisit,
 );
-router.post("/visit/:visitId/clinical/soap-notes", checkToken, requirePermission(PERMISSIONS.CLINICAL_SOAP_WRITE), recordSoapNotes);
+router.post(
+  "/visit/:visitId/clinical/soap-notes",
+  checkToken,
+  requirePermission(PERMISSIONS.CLINICAL_SOAP_WRITE),
+  validate(recordSoapNotesSchema),
+  recordSoapNotes,
+);
 router.get("/visit/:visitId/clinical/soap-notes", checkToken, requirePermission(PERMISSIONS.CLINICAL_SOAP_READ), getSoapNotes);
 router.post(
   "/visit/:visitId/clinical/lab-results",
   checkToken,
   requirePermission(PERMISSIONS.LAB_ENTER_RESULTS),
+  validate(recordLabResultsSchema),
   recordLabResults,
 );
 router.get("/visit/:visitId/clinical/lab-results", checkToken, requirePermission(PERMISSIONS.LAB_READ), getLabResults);
@@ -341,6 +362,7 @@ router.post(
   "/visit/:visitId/clinical/discharge-summary",
   checkToken,
   requirePermission(PERMISSIONS.CLINICAL_DISCHARGE_WRITE),
+  validate(recordDischargeSummarySchema),
   recordDischargeSummary,
 );
 router.get(
@@ -353,6 +375,7 @@ router.post(
   "/visit/:visitId/clinical/immunization",
   checkToken,
   requirePermission(PERMISSIONS.CLINICAL_IMMUNIZATION_WRITE),
+  validate(recordImmunizationSchema),
   recordImmunization,
 );
 
@@ -361,6 +384,7 @@ router.post(
   checkToken,
   requirePermission(PERMISSIONS.CLINICAL_ASSESSMENT_WRITE),
   upload.array("files"),
+  validate(recordAssessmentSchema),
   recordAssessment,
 );
 
@@ -497,17 +521,17 @@ router.get("/terminology/conditions", checkToken, requirePermission(PERMISSIONS.
 // ── Lab Test Templates & Structured Lab Reports ──
 router.get("/lab-tests/types", checkToken, requirePermission(PERMISSIONS.LAB_VIEW_TEMPLATES), getAvailableTestTypes);
 router.get("/lab-tests/parameters/:testType", checkToken, requirePermission(PERMISSIONS.LAB_VIEW_TEMPLATES), getTestParameters);
-router.post("/lab-reports/upsert", checkToken, requirePermission(PERMISSIONS.LAB_ENTER_RESULTS), upsertLabTest);
+router.post("/lab-reports/upsert", checkToken, requirePermission(PERMISSIONS.LAB_ENTER_RESULTS), validate(labReportUpsertSchema), upsertLabTest);
 router.get("/lab-reports/visit/:visitId", checkToken, requirePermission(PERMISSIONS.LAB_READ), getVisitLabReport);
 router.get("/lab-reports/patient/:patientId", checkToken, requirePermission(PERMISSIONS.LAB_READ), getPatientLabReports);
 router.get("/lab-reports/:id", checkToken, requirePermission(PERMISSIONS.LAB_READ), getLabReport);
-router.put("/lab-reports/:id/test/:testType", checkToken, requirePermission(PERMISSIONS.LAB_ENTER_RESULTS), updateLabTest);
+router.put("/lab-reports/:id/test/:testType", checkToken, requirePermission(PERMISSIONS.LAB_ENTER_RESULTS), validate(labReportUpdateTestSchema), updateLabTest);
 router.patch("/lab-reports/:id/finalize", checkToken, requirePermission(PERMISSIONS.LAB_FINALIZE), finalizeLabReport);
 
 // ── Pharmacy Dispensing Module ──
 router.get("/pharmacy/queue", checkToken, requirePermission(PERMISSIONS.PHARMACY_VIEW_ORDERS), getPharmacyQueue);
 router.get("/pharmacy/orders", checkToken, requirePermission(PERMISSIONS.PHARMACY_VIEW_ORDERS), getPharmacyQueue);
-router.post("/pharmacy/dispense", checkToken, requirePermission(PERMISSIONS.PHARMACY_DISPENSE), dispensePrescription);
+router.post("/pharmacy/dispense", checkToken, requirePermission(PERMISSIONS.PHARMACY_DISPENSE), validate(pharmacyDispenseSchema), dispensePrescription);
 router.get("/pharmacy/dispense/by-visit/:visitId", checkToken, requirePermission(PERMISSIONS.PHARMACY_VIEW_ORDERS), getDispenseByVisit);
 
 export default router;

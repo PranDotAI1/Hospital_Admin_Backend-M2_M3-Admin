@@ -102,6 +102,84 @@ export const containsHtmlOrScript = (val: string): boolean => {
   return HTML_TAG_REGEX.test(val) || SCRIPT_PATTERN_REGEX.test(val) || /[<>]/.test(val);
 };
 
+const DANGEROUS_HTML_PATTERNS: readonly RegExp[] = [
+  /<\s*\/?\s*[a-zA-Z][^>]*>/i,                                   // Any HTML tag (<tag...>, </tag>)
+  /<\s*[a-zA-Z]/i,                                                // Unclosed start of HTML tag (<img, <script)
+  /<\s*s\s*c\s*r\s*i\s*p\s*t/i,                                 // Obfuscated <script
+  /\bon[a-z]{3,}\s*=/i,                                          // Any event handler (onerror=, onload=, onclick=, onfocus=)
+  /j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i,                 // Obfuscated javascript:
+  /v\s*b\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i,                         // Obfuscated vbscript:
+  /d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l/i,    // data:text/html
+  /\bsrcdoc\s*=/i,                                               // iframe srcdoc
+  /expression\s*\(/i,                                            // CSS expression(...)
+];
+
+/**
+ * Detects HTML tags, script blocks, event handlers, and pseudo-protocols.
+ * Normalizes entity encodings to prevent bypasses, while safely permitting
+ * valid mathematical/medical comparison signs like "BP > 140" or "Age < 5".
+ */
+export const containsDangerousHtmlOrScript = (val: string): boolean => {
+  if (typeof val !== "string") return false;
+
+  // Unescape common HTML entities like &lt; &gt; &#60; &#x3c; to catch encoded payloads
+  let normalized = val.replace(/&lt;/gi, "<").replace(/&gt;/gi, ">");
+  if (/&#x?[0-9a-f]+/i.test(normalized)) {
+    normalized = normalized.replace(/&#x?([0-9a-f]+);?/gi, (match, hex) => {
+      const code = match.toLowerCase().includes("x") ? parseInt(hex, 16) : parseInt(hex, 10);
+      return !isNaN(code) && code > 0 && code < 65536 ? String.fromCharCode(code) : "";
+    });
+  }
+
+  return DANGEROUS_HTML_PATTERNS.some((pattern) => pattern.test(normalized));
+};
+
+/**
+ * Strips script tags, style tags, HTML markup, and event handlers while
+ * preserving legitimate medical notes and mathematical comparisons.
+ */
+export const sanitizeClinicalText = (
+  value: unknown,
+  maxLength: number = 10000,
+): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "string") {
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    return undefined;
+  }
+
+  let str = value;
+
+  // Unescape common HTML entities (&lt; &gt; &#60; &#62; &#x3c; &#x3e;) to catch entity-encoded payloads
+  if (/&(?:lt|gt|#60|#62|#x3c|#x3e);?/i.test(str)) {
+    str = str
+      .replace(/&(?:lt|#60|#x3c);?/gi, "<")
+      .replace(/&(?:gt|#62|#x3e);?/gi, ">");
+  }
+
+  // 1. Remove script blocks and contents
+  str = str.replace(/<\s*script\b[^>]*>[\s\S]*?<\s*\/\s*script\s*>/gi, "");
+  // 2. Remove style blocks and contents
+  str = str.replace(/<\s*style\b[^>]*>[\s\S]*?<\s*\/\s*style\s*>/gi, "");
+  // 3. Remove iframe blocks and contents
+  str = str.replace(/<\s*iframe\b[^>]*>[\s\S]*?<\s*\/\s*iframe\s*>/gi, "");
+  // 4. Remove all HTML tags (closed and unclosed)
+  str = str.replace(/<\s*\/?\s*[a-zA-Z][^>]*>/gi, "");
+  str = str.replace(/<\s*[a-zA-Z][^>]*/gi, "");
+  // 5. Remove dangerous URI schemes
+  str = str.replace(/j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/gi, "");
+  str = str.replace(/v\s*b\s*s\s*c\s*r\s*i\s*p\s*t\s*:/gi, "");
+  str = str.replace(/d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l/gi, "");
+  // 6. Remove event handlers
+  str = str.replace(/\bon[a-z]{3,}\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  // 7. Strip invisible/control characters
+  str = str.replace(INVISIBLE_AND_CONTROL_CHARS_REGEX, "");
+
+  str = str.trim();
+  if (!str) return undefined;
+  return str.slice(0, maxLength);
+};
+
 /**
  * Returns true if the string contains invisible or control characters.
  */

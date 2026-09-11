@@ -4,6 +4,7 @@ import { ScanShareVisitModel } from "../../models/ScanShareVisit";
 import { PatientModel } from "../../models/Patient";
 import { CareContextService } from "../../services/carecontext.service";
 import { STATUS_CODE } from "../../utils/constant";
+import { sanitizeClinicalText } from "../../utils/sanitizer";
 import type { HIType } from "../../models/CareContext";
 import { VisitPrescriptionModel } from "../../models/VisitPrescription";
 import { VisitLabReportModel } from "../../models/VisitLabReport";
@@ -138,9 +139,16 @@ export const recordPrescription = async (req: Request, res: Response) => {
       advice?: string;
     };
     const medications = Array.isArray(body?.medications)
-      ? body.medications
+      ? body.medications.map((m) => ({
+          ...m,
+          medicine: sanitizeClinicalText(m.medicine, 200) || m.medicine,
+          dosage: sanitizeClinicalText(m.dosage, 100) || m.dosage,
+          instructions: sanitizeClinicalText(m.instructions, 500),
+          customInstructions: sanitizeClinicalText(m.customInstructions, 500),
+          form: sanitizeClinicalText(m.form, 100),
+        }))
       : [];
-    const advice = typeof body?.advice === "string" ? body.advice : undefined;
+    const advice = sanitizeClinicalText(body?.advice, 3000);
 
     await VisitPrescriptionModel.findOneAndUpdate(
       { visitId: resolved.visitId },
@@ -204,16 +212,21 @@ export const recordSoapNotes = async (req: Request, res: Response) => {
       assessment?: string;
       plan?: string;
     };
+    const subjective = sanitizeClinicalText(body?.subjective, 5000);
+    const objective = sanitizeClinicalText(body?.objective, 5000);
+    const assessment = sanitizeClinicalText(body?.assessment, 5000);
+    const plan = sanitizeClinicalText(body?.plan, 5000);
+
     await VisitSoapNotesModel.findOneAndUpdate(
       { visitId: resolved.visitId },
       {
         $set: {
           visitId: resolved.visitId,
           patientId: resolved.patientId,
-          subjective: body?.subjective,
-          objective: body?.objective,
-          assessment: body?.assessment,
-          plan: body?.plan,
+          subjective,
+          objective,
+          assessment,
+          plan,
         },
       },
       { upsert: true, new: true },
@@ -412,7 +425,12 @@ export const recordDischargeSummary = async (req: Request, res: Response) => {
       }>;
     };
     const dischargeMedications = Array.isArray(body?.dischargeMedications)
-      ? body.dischargeMedications
+      ? body.dischargeMedications.map((m: any) => ({
+          ...m,
+          medicine: sanitizeClinicalText(m.medicine, 200) || m.medicine,
+          dosage: sanitizeClinicalText(m.dosage, 100) || m.dosage,
+          instructions: sanitizeClinicalText(m.instructions, 500),
+        }))
       : [];
 
     await VisitDischargeSummaryModel.findOneAndUpdate(
@@ -427,18 +445,18 @@ export const recordDischargeSummary = async (req: Request, res: Response) => {
           dischargeDate: body?.dischargeDate
             ? new Date(body.dischargeDate)
             : undefined,
-          ward: body?.ward,
-          bed: body?.bed,
-          diagnosis: body?.diagnosis,
-          conditionAtDischarge: body?.conditionAtDischarge,
-          clinicalSummary: body?.clinicalSummary,
-          admissionNotes: body?.admissionNotes,
-          treatmentGiven: body?.treatmentGiven,
-          investigationsResults: body?.investigationsResults,
-          followUpInstructions: body?.followUpInstructions,
-          surgicalProcedures: body?.surgicalProcedures,
-          surgicalNote: body?.surgicalNote,
-          doctorSignature: body?.doctorSignature,
+          ward: sanitizeClinicalText(body?.ward, 100),
+          bed: sanitizeClinicalText(body?.bed, 50),
+          diagnosis: sanitizeClinicalText(body?.diagnosis, 2000),
+          conditionAtDischarge: sanitizeClinicalText(body?.conditionAtDischarge, 1000),
+          clinicalSummary: sanitizeClinicalText(body?.clinicalSummary, 10000),
+          admissionNotes: sanitizeClinicalText(body?.admissionNotes, 5000),
+          treatmentGiven: sanitizeClinicalText(body?.treatmentGiven, 5000),
+          investigationsResults: sanitizeClinicalText(body?.investigationsResults, 5000),
+          followUpInstructions: sanitizeClinicalText(body?.followUpInstructions, 5000),
+          surgicalProcedures: sanitizeClinicalText(body?.surgicalProcedures, 5000),
+          surgicalNote: sanitizeClinicalText(body?.surgicalNote, 5000),
+          doctorSignature: sanitizeClinicalText(body?.doctorSignature, 200),
           dischargeMedications,
         },
       },
