@@ -671,27 +671,71 @@ export const recordAssessment = async (req: Request, res: Response) => {
       (file) =>
         file.size > 0 && file.originalname && file.originalname.trim() !== "",
     );
-    const newUploads = validFiles.map((file) => ({
+    const newUploads: any[] = validFiles.map((file) => ({
       fileName: file.originalname,
       mimeType: file.mimetype,
       fileData: file.buffer,
       uploadDate: new Date(),
     }));
 
-    const updateQuery: any = {
-      $set: {
-        visitId: resolved.visitId,
-        patientId: resolved.patientId,
-        vitals: body?.vitals,
-        immunization: immunization ?? body?.immunization,
-        symptomsComplaints: body?.symptomsComplaints,
-        medicalHistory: body?.medicalHistory,
-        surgicalHistory: body?.surgicalHistory,
-        physicalActivity: body?.physicalActivity,
-        lifestyle: body?.lifestyle,
-        womenHealth: body?.womenHealth,
-      },
+    const bodyFiles = (body as any).documentUploads || (body as any).files;
+    if (bodyFiles) {
+      const parsedFiles = Array.isArray(bodyFiles) ? bodyFiles : parseIfString(bodyFiles);
+      if (Array.isArray(parsedFiles)) {
+        parsedFiles.forEach((f: any) => {
+          if (f && (f.fileData || f.buffer || f.data || f.fileUrl)) {
+            let bufferData;
+            const dataStr = f.fileData || f.buffer || f.data;
+            if (dataStr) {
+              if (typeof dataStr === "string") {
+                const base64Str = dataStr.includes("base64,") ? dataStr.split("base64,")[1] : dataStr;
+                bufferData = Buffer.from(base64Str, "base64");
+              } else if (Buffer.isBuffer(dataStr)) {
+                bufferData = dataStr;
+              } else if (dataStr.type === "Buffer" && Array.isArray(dataStr.data)) {
+                bufferData = Buffer.from(dataStr.data);
+              }
+            }
+            if ((bufferData && bufferData.length > 0) || f.fileUrl) {
+              newUploads.push({
+                fileName: f.fileName || f.name || f.originalname || "document",
+                mimeType: f.mimeType || f.type || f.mimetype || "application/octet-stream",
+                ...(bufferData && bufferData.length > 0 ? { fileData: bufferData } : {}),
+                ...(f.fileUrl ? { fileUrl: f.fileUrl } : {}),
+                uploadDate: new Date(),
+              });
+            }
+          }
+        });
+      }
+    }
+
+    const setFields: any = {
+      visitId: resolved.visitId,
+      patientId: resolved.patientId,
     };
+
+    // Only include fields that were actually provided in the request body
+    // so that a partial save (e.g. only vitals) doesn't null-out other sections.
+    if (body?.vitals !== undefined) setFields.vitals = body.vitals;
+    if ((immunization ?? body?.immunization) !== undefined)
+      setFields.immunization = immunization ?? body.immunization;
+    if (body?.symptomsComplaints !== undefined)
+      setFields.symptomsComplaints = body.symptomsComplaints;
+    if (body?.medicalHistory !== undefined)
+      setFields.medicalHistory = body.medicalHistory;
+    if (body?.surgicalHistory !== undefined)
+      setFields.surgicalHistory = body.surgicalHistory;
+    if (body?.physicalActivity !== undefined)
+      setFields.physicalActivity = body.physicalActivity;
+    if (body?.lifestyle !== undefined) setFields.lifestyle = body.lifestyle;
+    if (body?.womenHealth !== undefined)
+      setFields.womenHealth = body.womenHealth;
+
+    // NOTE: documentUploads is NEVER included in $set.
+    // This prevents subsequent saves (without new files) from wiping
+    // previously uploaded documents via schema defaults.
+    const updateQuery: any = { $set: setFields };
 
     if (newUploads.length > 0) {
       updateQuery.$push = { documentUploads: { $each: newUploads } };
@@ -950,11 +994,28 @@ const getClinicalByVisit = async (
           visitId: resolved.visitId,
         }).lean();
         break;
-      case "assessment":
-        data = await VisitAssessmentModel.findOne({
+      case "assessment": {
+        const raw = await VisitAssessmentModel.findOne({
           visitId: resolved.visitId,
         }).lean();
+        if (raw) {
+          // Strip raw binary fileData from each document upload and replace
+          // it with a download URL so the GET response stays lightweight.
+          const docs = (raw as any).documentUploads ?? [];
+          (raw as any).documentUploads = docs.map(
+            (doc: any, idx: number) => ({
+              fileName: doc.fileName,
+              mimeType: doc.mimeType,
+              uploadDate: doc.uploadDate,
+              fileUrl:
+                doc.fileUrl ||
+                `/api/visit/${resolved.visitId}/clinical/assessment/document/${idx}`,
+            }),
+          );
+        }
+        data = raw;
         break;
+      }
     }
 
     res.status(STATUS_CODE.SUCCESS).json({
@@ -984,3 +1045,143 @@ export const getDischargeSummary = (req: Request, res: Response) =>
 
 export const getAssessment = (req: Request, res: Response) =>
   getClinicalByVisit(req, res, "assessment");
+
+/**
+ * Serve an individual uploaded document from the assessment by its array index.
+ * GET /visit/:visitId/clinical/assessment/document/:docIndex
+ */
+export const getAssessmentDocument = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const visitId = req.params.visitId as string;
+    const docIndex = parseInt(req.params.docIndex as string, 10);
+    const patientIdParam = req.query.patientId as string | undefined;
+    const resolved = await resolvePatientAndVisitId(visitId, patientIdParam);
+
+    if (!resolved) {
+      res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Visit not found or invalid visitId.",
+      });
+      return;
+    }
+
+    const assessment = await VisitAssessmentModel.findOne({
+      visitId: resolved.visitId,
+    });
+
+    if (
+      !assessment ||
+      !assessment.documentUploads ||
+      !assessment.documentUploads[docIndex]
+    ) {
+      res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Document not found at the specified index.",
+      });
+      return;
+    }
+
+    const doc = assessment.documentUploads[docIndex];
+
+    if (!doc.fileData && !doc.fileUrl) {
+      res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Document file data is not available.",
+      });
+      return;
+    }
+
+    // If the file is stored externally, redirect
+    if (doc.fileUrl) {
+      res.redirect(doc.fileUrl);
+      return;
+    }
+
+    res.set({
+      "Content-Type": doc.mimeType || "application/octet-stream",
+      "Content-Disposition": `inline; filename="${doc.fileName}"`,
+      "Content-Length": doc.fileData!.length.toString(),
+    });
+    res.send(doc.fileData);
+  } catch (error: any) {
+    console.error("getAssessmentDocument error:", error);
+    res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to retrieve document.",
+    });
+  }
+};
+
+/**
+ * Delete an individual uploaded document from the assessment by its array index.
+ * DELETE /visit/:visitId/clinical/assessment/document/:docIndex
+ */
+export const deleteAssessmentDocument = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const visitId = req.params.visitId as string;
+    const docIndex = parseInt(req.params.docIndex as string, 10);
+    const patientIdParam = req.query.patientId as string | undefined;
+    const resolved = await resolvePatientAndVisitId(visitId, patientIdParam);
+
+    if (!resolved) {
+      res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Visit not found or invalid visitId.",
+      });
+      return;
+    }
+
+    if (isNaN(docIndex) || docIndex < 0) {
+      res.status(STATUS_CODE.BAD_REQUEST).json({
+        status: "error",
+        message: "Invalid document index.",
+      });
+      return;
+    }
+
+    const assessment = await VisitAssessmentModel.findOne({
+      visitId: resolved.visitId,
+    });
+
+    if (
+      !assessment ||
+      !assessment.documentUploads ||
+      !assessment.documentUploads[docIndex]
+    ) {
+      res.status(STATUS_CODE.NOT_FOUND).json({
+        status: "error",
+        message: "Document not found at the specified index.",
+      });
+      return;
+    }
+
+    // Remove the element at the given index using $unset + $pull pattern:
+    // 1. Set the element at the index to null
+    // 2. Pull all null entries from the array
+    await VisitAssessmentModel.updateOne(
+      { visitId: resolved.visitId },
+      { $unset: { [`documentUploads.${docIndex}`]: 1 } },
+    );
+    await VisitAssessmentModel.updateOne(
+      { visitId: resolved.visitId },
+      { $pull: { documentUploads: null } } as any,
+    );
+
+    res.status(STATUS_CODE.SUCCESS).json({
+      status: "success",
+      message: "Document deleted successfully.",
+    });
+  } catch (error: any) {
+    console.error("deleteAssessmentDocument error:", error);
+    res.status(STATUS_CODE.ERROR).json({
+      status: "error",
+      message: error.message || "Failed to delete document.",
+    });
+  }
+};

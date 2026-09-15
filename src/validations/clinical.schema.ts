@@ -184,7 +184,7 @@ export const recordAssessmentSchema = z.object({
   physicalActivity: z.any().optional(),
   lifestyle: z.any().optional(),
   womenHealth: z.any().optional(),
-});
+}).passthrough();
 
 // ─── LAB REPORT UPSERT SCHEMA ──────────────────────────────────────────────────
 const labParameterSchema = z.object({

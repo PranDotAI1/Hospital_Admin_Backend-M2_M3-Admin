@@ -116,6 +116,8 @@ import {
   getLabResults,
   getDischargeSummary,
   getAssessment,
+  getAssessmentDocument,
+  deleteAssessmentDocument,
   recordAssessment,
 } from "../controllers/v3/visit.clinical.controller";
 import {
@@ -383,12 +385,24 @@ router.post(
   "/visit/:visitId/clinical/assessment",
   checkToken,
   requirePermission(PERMISSIONS.CLINICAL_ASSESSMENT_WRITE),
-  upload.array("files"),
+  upload.any(),
   validate(recordAssessmentSchema),
   recordAssessment,
 );
 
 router.get("/visit/:visitId/clinical/assessment", checkToken, requirePermission(PERMISSIONS.CLINICAL_ASSESSMENT_READ), getAssessment);
+router.get(
+  "/visit/:visitId/clinical/assessment/document/:docIndex",
+  checkToken,
+  requirePermission(PERMISSIONS.CLINICAL_ASSESSMENT_READ),
+  getAssessmentDocument,
+);
+router.delete(
+  "/visit/:visitId/clinical/assessment/document/:docIndex",
+  checkToken,
+  requirePermission(PERMISSIONS.CLINICAL_ASSESSMENT_WRITE),
+  deleteAssessmentDocument,
+);
 
 import * as CareContextController from "../controllers/v3/carecontext.controller";
 import { SmsNotificationService } from "../services/sms.notification.service";
