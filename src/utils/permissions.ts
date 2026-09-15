@@ -263,6 +263,7 @@ export const ROLE_PERMISSIONS: Record<number, string[]> = {
     P.CLINICAL_ASSESSMENT_READ,
     P.CLINICAL_IMMUNIZATION_WRITE,
     // Lab
+    P.LAB_ENTER_RESULTS,
     P.LAB_ORDER,
     P.LAB_FINALIZE,
     P.LAB_READ,
