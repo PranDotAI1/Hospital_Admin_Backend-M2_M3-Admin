@@ -11,7 +11,15 @@ import {
 import { validatePasswordStrength } from "../utils/password.validator";
 import { ROLE, STATUS_CODE, USER_ENUM } from "../utils/constant";
 import { Types } from "mongoose";
-import { escapeRegex } from "../utils/sanitizer";
+import {
+  escapeRegex,
+  maskAadhaar,
+  maskPan,
+  maskMobile,
+  maskEmail,
+  maskAddress,
+  maskHprId,
+} from "../utils/sanitizer";
 import { revokeAllUserSessions } from "../services/session.service";
 import { resolvePermissions, ROLE_METADATA } from "../utils/permissions";
 
@@ -572,23 +580,6 @@ export const userNotifyResponse = async (req: any, res: any) => {
   }
 };
 
-/**
- * Helper to mask sensitive national identity strings (Aadhaar, PAN)
- */
-const maskAadhaar = (aadhaar?: string): string | undefined => {
-  if (!aadhaar) return undefined;
-  const clean = aadhaar.replace(/\D/g, "");
-  if (clean.length < 4) return "XXXX-XXXX-XXXX";
-  return `XXXX-XXXX-${clean.slice(-4)}`;
-};
-
-const maskPan = (pan?: string): string | undefined => {
-  if (!pan) return undefined;
-  const trimmed = pan.trim();
-  if (trimmed.length < 4) return "XXXXX-XXXX";
-  return `XXXXX${trimmed.slice(-4)}`;
-};
-
 const getRoleName = (roleId?: number): string => {
   if (roleId === undefined || roleId === null) return "UNKNOWN";
   const meta = ROLE_METADATA[roleId];
@@ -664,20 +655,28 @@ export const userProfile = async (req: any, res: any) => {
       return apiResponse(res, null, STATUS_CODE.NOT_FOUND, "User profile not found");
     }
 
-    // ─── STRICT PRODUCTION WHITELIST DTO ───
-    // Guarantees zero sensitive data leakage (no passwords, reset tokens, OTPs, or internal credentials)
+    // ─── STRICT PRODUCTION WHITELIST DTO & PII MASKING (WASA / DPDP / ABDM COMPLIANCE) ───
+    // Guarantees zero sensitive data leakage (no passwords, reset tokens, OTPs, or raw PII)
     const displayName =
       user.name ||
       `${user.firstName || user.f_name || ""} ${user.lastName || user.l_name || ""}`.trim() ||
-      user.email;
+      maskEmail(user.email);
 
     // Resolve effective permissions purely from role
     const permissions = resolvePermissions(user.role_id ?? 4);
 
+    const maskedEmail = maskEmail(user.email);
+    const maskedMobile = maskMobile(user.mobile || user.contact);
+    const maskedContact = maskMobile(user.contact || user.mobile);
+    const maskedHprId = maskHprId(user.hprId || user.hprIdNumber);
+    const maskedAddress = maskAddress(user.address);
+    const maskedAadhaarVal = maskAadhaar(user.aadhaar);
+    const maskedPanVal = maskPan(user.pan);
+
     const safeProfile = {
       id: user._id.toString(),
       _id: user._id,
-      email: user.email,
+      email: maskedEmail,
       name: displayName,
       firstName: user.firstName || user.f_name || "",
       middleName: user.middleName || user.m_name || "",
@@ -689,16 +688,16 @@ export const userProfile = async (req: any, res: any) => {
       is_super_admin: user.is_super_admin || user.role_id === ROLE.SUPER_ADMIN,
       status: user.status,
       is_active: user.is_active !== false,
-      mobile: user.mobile || user.contact || "",
-      contact: user.contact || user.mobile || "",
+      mobile: maskedMobile,
+      contact: maskedContact,
       gender: user.gender || "",
       age: user.age || undefined,
       shift: user.shift || "",
       unique_id: user.unique_id || "",
 
       // Professional / ABDM Healthcare Identity
-      hprId: user.hprId || user.hprIdNumber || "",
-      hprIdNumber: user.hprIdNumber || user.hprId || "",
+      hprId: maskedHprId,
+      hprIdNumber: maskedHprId,
       reg_no: user.reg_no || "",
       specialize: user.specialize || undefined,
       categories: user.categories || undefined,
@@ -712,12 +711,12 @@ export const userProfile = async (req: any, res: any) => {
       // Authorization & Permissions
       permissions: permissions,
 
-      // Contact & Address
-      address: user.address || undefined,
+      // Contact & Address (Masked)
+      address: maskedAddress,
 
       // Masked PII (Protected under ABDM / DPDP Act / UIDAI Aadhaar Act)
-      aadhaar_masked: maskAadhaar(user.aadhaar),
-      pan_masked: maskPan(user.pan),
+      aadhaar_masked: maskedAadhaarVal,
+      pan_masked: maskedPanVal,
 
       // Current Session Context
       sessionId: req.sessionId || undefined,

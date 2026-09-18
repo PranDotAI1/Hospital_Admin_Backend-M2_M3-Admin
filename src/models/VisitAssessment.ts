@@ -50,6 +50,10 @@ export interface IWomenHealth {
 
 export interface IDocumentUpload {
   fileName: string;
+  storedFileName?: string;
+  filePath?: string;
+  fileSize?: number;
+  sha256?: string;
   mimeType: string;
   fileData?: Buffer;
   fileUrl?: string;
@@ -145,6 +149,10 @@ const WomenHealthSchema = new Schema<IWomenHealth>(
 const DocumentUploadSchema = new Schema<IDocumentUpload>(
   {
     fileName: { type: String, required: true },
+    storedFileName: { type: String },
+    filePath: { type: String },
+    fileSize: { type: Number },
+    sha256: { type: String },
     mimeType: { type: String, required: true },
     fileData: { type: Buffer },
     fileUrl: { type: String },

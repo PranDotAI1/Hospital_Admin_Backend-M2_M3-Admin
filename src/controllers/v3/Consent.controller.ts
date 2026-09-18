@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { ConsentRequestModel } from "../../models/ConsentRequest";
 import { ConsentArtefactModel } from "../../models/ConsentArtefact";
 import { ConsentService } from "../../services/consent.service";
+import { maskAbha } from "../../utils/sanitizer";
 
 const LOG_PREFIX = "[CONSENT_CTRL]";
 
@@ -101,13 +102,27 @@ export const getConsentRequests = async (req: Request, res: Response) => {
     const requests = await ConsentRequestModel.find(query)
       .sort({ createdAt: -1 })
       .skip(Number(skip))
-      .limit(Number(limit));
+      .limit(Number(limit))
+      .lean();
 
     const total = await ConsentRequestModel.countDocuments(query);
 
+    const maskedRequests = requests.map((reqItem: any) => {
+      if (reqItem.patientAbhaId) {
+        reqItem.patientAbhaId = maskAbha(reqItem.patientAbhaId,7);
+      }
+      if (reqItem.abhaAddress) {
+        reqItem.abhaAddress = maskAbha(reqItem.abhaAddress,7);
+      }
+      if (reqItem.abhaNumber) {
+        reqItem.abhaNumber = maskAbha(reqItem.abhaNumber);
+      }
+      return reqItem;
+    });
+
     return res.status(200).json({
       status: "success",
-      data: requests,
+      data: maskedRequests,
       total,
       page: { limit: Number(limit), skip: Number(skip) },
     });
@@ -169,7 +184,7 @@ export const getConsentArtefacts = async (req: Request, res: Response) => {
   try {
     const {
       consentRequestId,
-      patientAbhaAddress,
+      // patientAbhaAddress,
       status,
       limit = 25,
       skip = 0,
@@ -177,19 +192,27 @@ export const getConsentArtefacts = async (req: Request, res: Response) => {
 
     const query: any = {};
     if (consentRequestId) query.consentRequestId = consentRequestId;
-    if (patientAbhaAddress) query.patientAbhaAddress = patientAbhaAddress;
+    // if (patientAbhaAddress) query.patientAbhaAddress = patientAbhaAddress;
     if (status) query.status = status;
 
     const artefacts = await ConsentArtefactModel.find(query)
       .sort({ createdAt: -1 })
       .skip(Number(skip))
-      .limit(Number(limit));
+      .limit(Number(limit))
+      .lean();
 
     const total = await ConsentArtefactModel.countDocuments(query);
 
+    const maskedArtefacts = artefacts.map((art: any) => {
+      if (art.patientAbhaAddress) {
+        art.patientAbhaAddress = maskAbha(art.patientAbhaAddress);
+      }
+      return art;
+    });
+
     return res.status(200).json({
       status: "success",
-      data: artefacts,
+      data: maskedArtefacts,
       total,
       page: { limit: Number(limit), skip: Number(skip) },
     });

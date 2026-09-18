@@ -610,20 +610,177 @@ export const maskAadhaar = (
  * e.g. "91131503754411@sbx" -> "**** 4411"
  */
 export const maskAbha = (
-  abha: string | undefined | null,
+  abha: string | undefined | null, sliced: number = 4
 ): string => {
   if (!abha || typeof abha !== "string") {
     return "";
   }
   const clean = abha.trim();
   const digits = clean.replace(/\D/g, "");
-  if (digits.length >= 4) {
-    return `**** ${digits.slice(-4)}`;
+  if (digits.length >= sliced) {
+    return `**** ${digits.slice(-sliced)}`;
   }
-  if (clean.length > 4) {
-    return `**** ${clean.slice(-4)}`;
+  if (clean.length > sliced) {
+    return `**** ${clean.slice(-sliced)}`;
   }
   return clean ? `****` : "";
+};
+
+/**
+ * Masks a mobile/telephone number for PII compliance (WASA, DPDP Act, CERT-In).
+ * Retains only the last 4 digits (e.g. 9876543210 -> XXXXXX3210, +919876543210 -> +91-XXXXXX3210).
+ */
+export const maskMobile = (
+  mobile?: string | null,
+): string => {
+  if (!mobile || typeof mobile !== "string") {
+    return "";
+  }
+  const trimmed = mobile.trim();
+  if (!trimmed) return "";
+
+  // If already masked (contains X or *), return as is
+  if (/[X*]{3,}/.test(trimmed)) {
+    return trimmed;
+  }
+
+  const hasCountryCode = trimmed.startsWith("+91");
+  const digits = trimmed.replace(/\D/g, "");
+
+  if (digits.length >= 10) {
+    const last4 = digits.slice(-4);
+    const prefix = hasCountryCode ? "+91-" : "";
+    return `${prefix}XXXXXX${last4}`;
+  }
+
+  if (digits.length >= 4) {
+    const last2 = digits.slice(-2);
+    const maskedLen = Math.max(2, digits.length - 2);
+    return `${"X".repeat(maskedLen)}${last2}`;
+  }
+
+  return "XXXX";
+};
+
+/**
+ * Masks an email address for PII compliance (WASA, DPDP Act).
+ * e.g. "john.doe@example.com" -> "jo****e@example.com"
+ * e.g. "ab@domain.com" -> "a*@domain.com"
+ */
+export const maskEmail = (
+  email?: string | null,
+): string => {
+  if (!email || typeof email !== "string") {
+    return "";
+  }
+  const trimmed = email.trim();
+  if (!trimmed || !trimmed.includes("@")) {
+    return "";
+  }
+
+  // If already masked
+  if (trimmed.includes("***") || trimmed.includes("*****")) {
+    return trimmed;
+  }
+
+  const atIndex = trimmed.lastIndexOf("@");
+  const localPart = trimmed.slice(0, atIndex);
+  const domainPart = trimmed.slice(atIndex + 1);
+
+  if (!localPart || !domainPart) {
+    return trimmed;
+  }
+
+  let maskedLocal = "";
+  if (localPart.length <= 2) {
+    maskedLocal = `${localPart[0]}*`;
+  } else if (localPart.length === 3) {
+    maskedLocal = `${localPart[0]}*${localPart[2]}`;
+  } else {
+    maskedLocal = `${localPart.slice(0, 2)}****${localPart.slice(-1)}`;
+  }
+
+  return `${maskedLocal}@${domainPart}`;
+};
+
+/**
+ * Masks a PAN number for PII compliance (e.g. ABCDE1234F -> XXXXX1234F).
+ */
+export const maskPan = (pan?: string | null): string | undefined => {
+  if (!pan || typeof pan !== "string") return undefined;
+  const trimmed = pan.trim().toUpperCase();
+  if (!trimmed) return undefined;
+  if (trimmed.length === 10) {
+    return `XXXXX${trimmed.slice(5)}`;
+  }
+  if (trimmed.length < 4) return "XXXXX-XXXX";
+  return `XXXXX${trimmed.slice(-4)}`;
+};
+
+/**
+ * Masks HPR ID / Healthcare Professional Registry ID for ABDM & WASA compliance.
+ * e.g. "14-1234-5678-9012" -> "XX-XXXX-XXXX-9012"
+ * e.g. "dr.sharma@hpr.abdm" -> "dr***@hpr.abdm"
+ */
+export const maskHprId = (hprId?: string | null): string => {
+  if (!hprId || typeof hprId !== "string") {
+    return "";
+  }
+  const trimmed = hprId.trim();
+  if (!trimmed) return "";
+
+  if (trimmed.includes("@")) {
+    const [alias, domain] = trimmed.split("@");
+    return `${alias.slice(0, 2)}***@${domain}`;
+  }
+
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length >= 14) {
+    return `XX-XXXX-XXXX-${digits.slice(-4)}`;
+  }
+  if (digits.length >= 4) {
+    return `XXXX-XXXX-${digits.slice(-4)}`;
+  }
+
+  return trimmed.length > 4 ? `****${trimmed.slice(-4)}` : "****";
+};
+
+/**
+ * Masks a physical address to prevent physical PII leakage in WASA audits.
+ * Redacts specific house/door/street details while keeping broad area/city/state/pin.
+ */
+export const maskAddress = (address?: any): any => {
+  if (!address) return undefined;
+
+  if (typeof address === "string") {
+    const trimmed = address.trim();
+    if (!trimmed) return "";
+    if (trimmed.includes("***")) return trimmed;
+
+    const parts = trimmed.split(",").map((p) => p.trim());
+    if (parts.length > 2) {
+      return `***, ***, ${parts.slice(2).join(", ")}`;
+    } else if (parts.length === 2) {
+      return `***, ${parts[1]}`;
+    }
+    return `*** ${trimmed.slice(-6)}`;
+  }
+
+  if (typeof address === "object") {
+    const maskedObj = { ...address };
+    if (maskedObj.line || maskedObj.addressLine1 || maskedObj.line1) {
+      if (maskedObj.line) maskedObj.line = "******";
+      if (maskedObj.addressLine1) maskedObj.addressLine1 = "******";
+      if (maskedObj.line1) maskedObj.line1 = "******";
+    }
+    if (maskedObj.line2 || maskedObj.addressLine2) {
+      if (maskedObj.line2) maskedObj.line2 = "******";
+      if (maskedObj.addressLine2) maskedObj.addressLine2 = "******";
+    }
+    return maskedObj;
+  }
+
+  return "******";
 };
 
 /**

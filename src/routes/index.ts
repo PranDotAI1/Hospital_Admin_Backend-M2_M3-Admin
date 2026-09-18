@@ -1,8 +1,5 @@
 import { NextFunction, Request, Response, Router } from "express";
-import multer from "multer";
-
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+import { secureUploadMiddleware } from "../middlewares/fileSecurity.middleware";
 import {
   addDepartment,
   departmentList,
@@ -385,7 +382,7 @@ router.post(
   "/visit/:visitId/clinical/assessment",
   checkToken,
   requirePermission(PERMISSIONS.CLINICAL_ASSESSMENT_WRITE),
-  upload.any(),
+  secureUploadMiddleware("files"),
   validate(recordAssessmentSchema),
   recordAssessment,
 );

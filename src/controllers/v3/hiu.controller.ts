@@ -258,14 +258,16 @@ import {
   ConsentArtefactStatus,
 } from "../../models/ConsentArtefact";
 import { PHRConsentArtefactModel } from "../../models/PHRConsentArtefact";
+import { PatientModel } from "../../models/Patient";
 import { Types } from "mongoose";
+import { maskAbha } from "../../utils/sanitizer";
 
 export const getExternalRecords = async (req: Request, res: Response) => {
   try {
     const { patientId } = req.params;
     const { page = 1, limit = 20, sourceHipId, consentArtefactId } = req.query;
     // Check if patientId is "undefined" string
-    if (patientId === "undefined" || patientId === "null") {
+    if (patientId === "undefined" || patientId === "null" || !patientId) {
       console.warn("[HIU] Received invalid patientId string:", patientId);
       return res.status(STATUS_CODE.SUCCESS).json({
         status: "success",
@@ -280,12 +282,32 @@ export const getExternalRecords = async (req: Request, res: Response) => {
     );
     const skip = (pageNum - 1) * limitNum;
     let query: any = {};
+    let targetAbhaAddress: string | null = null;
     const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+
     if (objectIdRegex.test(patientId as string)) {
-      query.patientId = new Types.ObjectId(patientId as string);
+      // It's a patient ID -> get patient details and his abha address from DB
+      const patient = await PatientModel.findById(patientId).lean();
+      targetAbhaAddress = patient?.abhaaddress || patient?.ABHANumber || null;
+
+      if (!targetAbhaAddress) {
+        return res.status(STATUS_CODE.SUCCESS).json({
+          status: "success",
+          data: [],
+          pagination: { page: 1, limit: limitNum, total: 0, totalPages: 0 },
+        });
+      }
+
+      query.$or = [
+        { patientAbhaAddress: targetAbhaAddress },
+        { patientId: new Types.ObjectId(patientId as string) },
+      ];
     } else {
+      // It's already an ABHA address -> skip this process
+      targetAbhaAddress = patientId as string;
       query.patientAbhaAddress = patientId;
     }
+
     if (sourceHipId) {
       query.sourceHipId = sourceHipId;
     }
@@ -299,10 +321,6 @@ export const getExternalRecords = async (req: Request, res: Response) => {
     const now = new Date();
 
     // Step 1: Find artefacts that belong to THIS patient and are still valid
-    const patientAbhaAddress = objectIdRegex.test(patientId as string)
-      ? null
-      : patientId;
-
     const patientArtefactFilter: any = {
       status: ConsentArtefactStatus.GRANTED,
       $or: [
@@ -312,8 +330,8 @@ export const getExternalRecords = async (req: Request, res: Response) => {
       ],
     };
     // Scope to this patient's artefacts only
-    if (patientAbhaAddress) {
-      patientArtefactFilter.patientAbhaAddress = patientAbhaAddress;
+    if (targetAbhaAddress) {
+      patientArtefactFilter.patientAbhaAddress = targetAbhaAddress;
     }
 
     const grantedArtefactIds = await ConsentArtefactModel.distinct(
@@ -380,10 +398,17 @@ export const getExternalRecords = async (req: Request, res: Response) => {
 
     const total = countResult.length > 0 ? countResult[0].total : 0;
 
+    // Mask ABHA address for privacy
+    const maskedRecords = records.map((record: any) => {
+      if (record.patientAbhaAddress) {
+        record.patientAbhaAddress = maskAbha(record.patientAbhaAddress,7 );
+      }
+      return record;
+    });
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
-      data: records,
+      data: maskedRecords,
       pagination: {
         page: pageNum,
         limit: limitNum,

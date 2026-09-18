@@ -24,6 +24,9 @@ import {
   isValidDob,
   maskAadhaar,
   maskAbha,
+  maskMobile,
+  maskEmail,
+  maskAddress,
   sanitizePatientOutput,
   escapeRegex,
 } from "../../utils/sanitizer";
@@ -570,7 +573,7 @@ const formatPatientForTable = (patient: any) => {
       sanitized.name ||
       `${sanitized.f_name || ""} ${sanitized.l_name || ""}`.trim() ||
       "Patient",
-    mobile: sanitized.mobile || "",
+    mobile: maskMobile(sanitized.mobile),
     gender: sanitized.gender || "",
     dob: sanitized.dob || "",
     age: sanitized.age || "",
@@ -703,21 +706,21 @@ export const getPatient = async (req: Request, res: Response) => {
           ? sanitized._id.toString().slice(-8).toUpperCase()
           : ""),
       name: patientDetailedName,
-      mobile: sanitized.mobile || "",
+      mobile: maskMobile(sanitized.mobile),
       dob: sanitized.dob || "",
       age: sanitized.age || "",
       gender: sanitized.gender || "",
       bloodGroup: sanitized.bloodGroup || "",
-      address: sanitized.address || "",
+      address: maskAddress(sanitized.address) || "",
       pincode: sanitized.pincode || "",
-      email: sanitized.email || "",
-      emergencyContact: sanitized.emergencyContact || "",
+      email: maskEmail(sanitized.email),
+      emergencyContact: maskMobile(sanitized.emergencyContact),
       status: sanitized.status || "ACTIVE",
 
       // ABHA Healthcare Identity (Always masked - zero raw ABHA leakage)
       isAbhaLinked,
       maskedAbha: maskedAbha || "",
-      abhaAddress: sanitized.abhaaddress || "",
+      abhaAddress: sanitized.abhaaddress ? maskAbha(sanitized.abhaaddress, 7) : "",
       abhaLinkedAt: sanitized.abhaLinkedAt || null,
 
       // Complete sorted visits (newest-first, visits[0] is latest)
@@ -1774,11 +1777,21 @@ export const checkExistingPatients = async (req: Request, res: Response) => {
       )
       .sort({ updatedAt: -1 })
       .lean();
+    const maskedExistingPatients = existingPatients.map((p: any) => ({
+      ...p,
+      mobile: maskMobile(p.mobile),
+      email: maskEmail(p.email),
+      emergencyContact: maskMobile(p.emergencyContact),
+      address: maskAddress(p.address) || "",
+      aadhaarNumber: maskAadhaar(p.aadhaarNumber) || "",
+      ABHANumber: maskAbha(p.ABHANumber),
+      abhaaddress: maskAbha(p.abhaaddress, 8),
+    }));
 
     return res.status(STATUS_CODE.SUCCESS).json({
       status: "success",
       message: `${existingPatients.length} existing patient(s) found`,
-      data: existingPatients,
+      data: maskedExistingPatients,
     });
   } catch (error: any) {
     console.error("Check Existing Patients error:", error);

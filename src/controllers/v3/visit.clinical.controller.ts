@@ -1,5 +1,11 @@
 import { Request, Response } from "express";
+import fs from "fs";
 import { Types } from "mongoose";
+import {
+  validateAndProcessFile,
+  removeSecureFile,
+  ValidatedFileResult,
+} from "../../utils/fileSecurity";
 import { ScanShareVisitModel } from "../../models/ScanShareVisit";
 import { PatientModel } from "../../models/Patient";
 import { CareContextService } from "../../services/carecontext.service";
@@ -666,25 +672,61 @@ export const recordAssessment = async (req: Request, res: Response) => {
       });
     }
 
-    const files = (req.files as Express.Multer.File[]) || [];
-    const validFiles = files.filter(
-      (file) =>
-        file.size > 0 && file.originalname && file.originalname.trim() !== "",
-    );
-    const newUploads: any[] = validFiles.map((file) => ({
-      fileName: file.originalname,
-      mimeType: file.mimetype,
-      fileData: file.buffer,
-      uploadDate: new Date(),
-    }));
+    const newUploads: any[] = [];
 
+    // Process files uploaded via multipart/form-data
+    const secureFiles = (req as any).secureFiles as ValidatedFileResult[] | undefined;
+    if (secureFiles && secureFiles.length > 0) {
+      secureFiles.forEach((file) => {
+        newUploads.push({
+          fileName: file.originalFileName,
+          storedFileName: file.storedFileName,
+          filePath: file.filePath,
+          fileSize: file.fileSize,
+          sha256: file.sha256,
+          mimeType: file.mimeType,
+          fileData: file.buffer,
+          uploadDate: new Date(),
+        });
+      });
+    } else {
+      // Fallback: If multipart files were attached directly
+      const files = (req.files as Express.Multer.File[]) || [];
+      for (const file of files) {
+        if (file.size > 0 && file.originalname && file.originalname.trim() !== "") {
+          const validated = validateAndProcessFile(
+            file.buffer,
+            file.originalname,
+            file.mimetype,
+          );
+          if (!validated.isValid) {
+            return res.status(STATUS_CODE.BAD_REQUEST).json({
+              status: "error",
+              message: `File upload validation failed for "${file.originalname}": ${validated.error}`,
+            });
+          }
+          newUploads.push({
+            fileName: validated.originalFileName,
+            storedFileName: validated.storedFileName,
+            filePath: validated.filePath,
+            fileSize: validated.fileSize,
+            sha256: validated.sha256,
+            mimeType: validated.mimeType,
+            fileData: validated.buffer,
+            uploadDate: new Date(),
+          });
+        }
+      }
+    }
+
+    // Process files optionally passed in request body (e.g. base64 uploads)
     const bodyFiles = (body as any).documentUploads || (body as any).files;
     if (bodyFiles) {
       const parsedFiles = Array.isArray(bodyFiles) ? bodyFiles : parseIfString(bodyFiles);
       if (Array.isArray(parsedFiles)) {
-        parsedFiles.forEach((f: any) => {
+        for (const f of parsedFiles) {
           if (f && (f.fileData || f.buffer || f.data || f.fileUrl)) {
-            let bufferData;
+            let bufferData: Buffer | undefined;
             const dataStr = f.fileData || f.buffer || f.data;
             if (dataStr) {
               if (typeof dataStr === "string") {
@@ -696,17 +738,40 @@ export const recordAssessment = async (req: Request, res: Response) => {
                 bufferData = Buffer.from(dataStr.data);
               }
             }
-            if ((bufferData && bufferData.length > 0) || f.fileUrl) {
+
+            if (bufferData && bufferData.length > 0) {
+              const rawName = f.fileName || f.name || f.originalname || "document.pdf";
+              const validated = validateAndProcessFile(
+                bufferData,
+                rawName,
+                f.mimeType || f.type,
+              );
+              if (!validated.isValid) {
+                return res.status(STATUS_CODE.BAD_REQUEST).json({
+                  status: "error",
+                  message: `File upload validation failed for "${rawName}": ${validated.error}`,
+                });
+              }
               newUploads.push({
-                fileName: f.fileName || f.name || f.originalname || "document",
-                mimeType: f.mimeType || f.type || f.mimetype || "application/octet-stream",
-                ...(bufferData && bufferData.length > 0 ? { fileData: bufferData } : {}),
-                ...(f.fileUrl ? { fileUrl: f.fileUrl } : {}),
+                fileName: validated.originalFileName,
+                storedFileName: validated.storedFileName,
+                filePath: validated.filePath,
+                fileSize: validated.fileSize,
+                sha256: validated.sha256,
+                mimeType: validated.mimeType,
+                fileData: validated.buffer,
+                uploadDate: new Date(),
+              });
+            } else if (f.fileUrl) {
+              newUploads.push({
+                fileName: f.fileName || f.name || "document",
+                mimeType: f.mimeType || f.type || "application/octet-stream",
+                fileUrl: f.fileUrl,
                 uploadDate: new Date(),
               });
             }
           }
-        });
+        }
       }
     }
 
@@ -1086,7 +1151,24 @@ export const getAssessmentDocument = async (
 
     const doc = assessment.documentUploads[docIndex];
 
-    if (!doc.fileData && !doc.fileUrl) {
+    // If the file is stored externally, redirect
+    if (doc.fileUrl) {
+      res.redirect(doc.fileUrl);
+      return;
+    }
+
+    let payload: Buffer | undefined = doc.fileData;
+
+    // If file is stored on disk outside web root, load from disk
+    if (doc.filePath && fs.existsSync(doc.filePath)) {
+      try {
+        payload = fs.readFileSync(doc.filePath);
+      } catch (readErr) {
+        console.warn(`Could not read file from disk path ${doc.filePath}, using DB buffer fallback:`, readErr);
+      }
+    }
+
+    if (!payload || payload.length === 0) {
       res.status(STATUS_CODE.NOT_FOUND).json({
         status: "error",
         message: "Document file data is not available.",
@@ -1094,18 +1176,19 @@ export const getAssessmentDocument = async (
       return;
     }
 
-    // If the file is stored externally, redirect
-    if (doc.fileUrl) {
-      res.redirect(doc.fileUrl);
-      return;
-    }
+    // Sanitize filename for Content-Disposition header (prevent header injection)
+    const rawName = doc.fileName || "document";
+    const safeHeaderName = rawName.replace(/["\r\n\\]/g, "_");
 
     res.set({
       "Content-Type": doc.mimeType || "application/octet-stream",
-      "Content-Disposition": `inline; filename="${doc.fileName}"`,
-      "Content-Length": doc.fileData!.length.toString(),
+      "Content-Disposition": `inline; filename="${safeHeaderName}"; filename*=UTF-8''${encodeURIComponent(safeHeaderName)}`,
+      "Content-Length": payload.length.toString(),
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "private, no-cache, no-transform",
     });
-    res.send(doc.fileData);
+    res.send(payload);
   } catch (error: any) {
     console.error("getAssessmentDocument error:", error);
     res.status(STATUS_CODE.ERROR).json({
@@ -1159,6 +1242,13 @@ export const deleteAssessmentDocument = async (
         message: "Document not found at the specified index.",
       });
       return;
+    }
+
+    const docToDelete = assessment.documentUploads[docIndex];
+
+    // Safely remove the physical file from secure storage if present
+    if (docToDelete.filePath || docToDelete.storedFileName) {
+      removeSecureFile(docToDelete.filePath || docToDelete.storedFileName);
     }
 
     // Remove the element at the given index using $unset + $pull pattern:

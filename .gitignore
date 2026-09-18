@@ -6,3 +6,5 @@ git.pub
 coverage
 envs/.env.prod
 dist/*
+storage/secure_uploads/*
+!storage/secure_uploads/.gitkeep

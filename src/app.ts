@@ -169,6 +169,13 @@ app.use((_req: Request, res: Response) => {
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error("[UNHANDLED_ERROR]", err.message, err.stack);
+  if ((err as any).name === "MulterError") {
+    return res.status(400).json({
+      status: "error",
+      message: `File upload error: ${err.message}`,
+      code: (err as any).code || "FILE_UPLOAD_ERROR",
+    });
+  }
   const statusCode = (err as any).statusCode || 500;
   res.status(statusCode).json({
     status: "error",
