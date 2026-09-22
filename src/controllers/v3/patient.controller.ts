@@ -86,18 +86,24 @@ export const registerPatient = async (req: Request, res: Response) => {
     const f_name = (body.f_name || body.firstName) as string;
     const mobile = body.mobile as string;
     const dob = body.dob as string | undefined;
-    const age = body.age !== undefined && body.age !== null && body.age !== ""
-      ? String(typeof body.age === "number" ? body.age : String(body.age).trim().replace(/\D/g, ""))
-      : undefined;
+    const age =
+      body.age !== undefined && body.age !== null && body.age !== ""
+        ? String(
+            typeof body.age === "number"
+              ? body.age
+              : String(body.age).trim().replace(/\D/g, ""),
+          )
+        : undefined;
 
-    const abhaNumber = body.abhaNumber || body.ABHANumber || body.abha_number || undefined;
+    const abhaNumber =
+      body.abhaNumber || body.ABHANumber || body.abha_number || undefined;
     const abhaAddress =
       body.abhaAddress ||
-        body.abhaaddress ||
-        body.abha_id ||
-        body.abhaId ||
-        body.abha_address || undefined;
-
+      body.abhaaddress ||
+      body.abha_id ||
+      body.abhaId ||
+      body.abha_address ||
+      undefined;
 
     const abhaNumberFormatted = abhaNumber
       ? formatAbhaForStorage(abhaNumber)
@@ -106,7 +112,6 @@ export const registerPatient = async (req: Request, res: Response) => {
     const l_name = (body.l_name || body.lastName) as string | undefined;
 
     const fullName = [f_name, m_name, l_name].filter(Boolean).join(" ");
-
 
     const address = body.address as string | undefined;
     const pincode = body.pincode as string | undefined;
@@ -387,7 +392,9 @@ export const linkAbha = async (req: Request, res: Response) => {
       },
       { new: true },
     );
-    console.info(`[HIP-LINK] linkAbha: ABHA saved for patient=${patient._id}, requesting link token...`);
+    console.info(
+      `[HIP-LINK] linkAbha: ABHA saved for patient=${patient._id}, requesting link token...`,
+    );
 
     let abdmLinked = false;
     let linkTokenRequested = false;
@@ -400,9 +407,13 @@ export const linkAbha = async (req: Request, res: Response) => {
         if (tokenRequested) {
           linkTokenRequested = true;
           abdmLinked = true;
-          console.info(`[HIP-LINK] linkAbha: link token requested successfully for patient=${patient._id}`);
+          console.info(
+            `[HIP-LINK] linkAbha: link token requested successfully for patient=${patient._id}`,
+          );
         } else {
-          console.warn(`[HIP-LINK] linkAbha: requestLinkToken returned false for patient=${patient._id} (cooldown or no abhaaddress)`);
+          console.warn(
+            `[HIP-LINK] linkAbha: requestLinkToken returned false for patient=${patient._id} (cooldown or no abhaaddress)`,
+          );
         }
       } catch (abdmError: any) {
         console.error(
@@ -490,7 +501,6 @@ export const sendDeepLinkSms = async (req: Request, res: Response) => {
     // This is specifically for patients WITHOUT an ABHA address who need to install the app
     if (patient.abhaaddress || patient.ABHANumber) {
       // Optional: We could allow it as a reminder, but the primary use case is "No ABHA"
-
     }
 
     const { SmsNotificationService } =
@@ -529,7 +539,9 @@ const formatPatientForTable = (patient: any) => {
   const now = Date.now();
   const rawVisits = Array.isArray(sanitized.visits) ? sanitized.visits : [];
   const sortedVisits = rawVisits
-    .filter((v: any) => v && v.visitDate && new Date(v.visitDate).getTime() <= now)
+    .filter(
+      (v: any) => v && v.visitDate && new Date(v.visitDate).getTime() <= now,
+    )
     .sort((a: any, b: any) => {
       const timeA = a.visitDate ? new Date(a.visitDate).getTime() : 0;
       const timeB = b.visitDate ? new Date(b.visitDate).getTime() : 0;
@@ -559,13 +571,13 @@ const formatPatientForTable = (patient: any) => {
 
   const isAbhaLinked = Boolean(
     (sanitized.ABHANumber && sanitized.ABHANumber.trim()) ||
-      (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
+    (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
   );
 
-  const maskedAbha = sanitized.ABHANumber || sanitized.abhaaddress;
-    // isAbhaLinked
-    // ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
-    // : "";
+  const maskedAbha = sanitized.abhaaddress;
+  // isAbhaLinked
+  // ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
+  // : "";
 
   return {
     _id: idStr,
@@ -591,8 +603,11 @@ const formatPatientForTable = (patient: any) => {
     department: latestVisit?.department || "",
     visitType: latestVisit?.visitType || "OPD",
     time,
-    lastVisitDate: sanitized.lastVisitDate || (latestVisit ? latestVisit.visitDate : undefined),
-    totalVisits: sanitized.totalVisits || (rawVisits.length > 0 ? rawVisits.length : 1),
+    lastVisitDate:
+      sanitized.lastVisitDate ||
+      (latestVisit ? latestVisit.visitDate : undefined),
+    totalVisits:
+      sanitized.totalVisits || (rawVisits.length > 0 ? rawVisits.length : 1),
   };
 };
 
@@ -651,7 +666,9 @@ export const getPatient = async (req: Request, res: Response) => {
     const now = Date.now();
     const rawVisits = Array.isArray(sanitized.visits) ? sanitized.visits : [];
     const sortedVisits = rawVisits
-      .filter((v: any) => v && v.visitDate && new Date(v.visitDate).getTime() <= now)
+      .filter(
+        (v: any) => v && v.visitDate && new Date(v.visitDate).getTime() <= now,
+      )
       .sort((a: any, b: any) => {
         const timeA = a.visitDate ? new Date(a.visitDate).getTime() : 0;
         const timeB = b.visitDate ? new Date(b.visitDate).getTime() : 0;
@@ -687,13 +704,13 @@ export const getPatient = async (req: Request, res: Response) => {
 
     const isAbhaLinked = Boolean(
       (sanitized.ABHANumber && sanitized.ABHANumber.trim()) ||
-        (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
+      (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
     );
 
     const maskedAbha = sanitized.ABHANumber || sanitized.abhaaddress;
-      // isAbhaLinked
-      // ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
-      // : "";
+    // isAbhaLinked
+    // ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
+    // : "";
 
     const patientDetailedName =
       sanitized.name ||
@@ -704,9 +721,7 @@ export const getPatient = async (req: Request, res: Response) => {
       _id: sanitized._id ? sanitized._id.toString() : "",
       uhid:
         sanitized.uhid ||
-        (sanitized._id
-          ? sanitized._id.toString().slice(-8).toUpperCase()
-          : ""),
+        (sanitized._id ? sanitized._id.toString().slice(-8).toUpperCase() : ""),
       name: patientDetailedName,
       mobile: maskMobile(sanitized.mobile),
       dob: sanitized.dob || "",
@@ -723,17 +738,17 @@ export const getPatient = async (req: Request, res: Response) => {
       isAbhaLinked,
       maskedAbha: maskedAbha || "",
       abhaAddress: sanitized.abhaaddress,
-        // ? maskAbha(sanitized.abhaaddress, 7) : "",
+      // ? maskAbha(sanitized.abhaaddress, 7) : "",
       abhaLinkedAt: sanitized.abhaLinkedAt || null,
 
       // Complete sorted visits (newest-first, visits[0] is latest)
       totalVisits: enhancedVisits.length,
       lastVisitDate: latestVisit
         ? latestVisit.visitDate
-        : (sanitized.lastVisitDate || null),
+        : sanitized.lastVisitDate || null,
       lastVisitedDoctor: latestVisit
-        ? (latestVisit.doctorName || "")
-        : (sanitized.lastVisitedDoctor || ""),
+        ? latestVisit.doctorName || ""
+        : sanitized.lastVisitedDoctor || "",
       visits: enhancedVisits,
 
       // Clinical History & Profile
@@ -1839,17 +1854,30 @@ export const updatePatient = async (req: Request, res: Response) => {
     const l_name = sanitizeString(body.l_name || body.lastName, 100);
 
     if (f_name !== undefined) {
-      if (!isValidPatientName(f_name, { minLength: 2, maxLength: 100, required: true })) {
+      if (
+        !isValidPatientName(f_name, {
+          minLength: 2,
+          maxLength: 100,
+          required: true,
+        })
+      ) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
-          message: "First name must be at least 2 letters and cannot contain numbers, script tags, or objects",
+          message:
+            "First name must be at least 2 letters and cannot contain numbers, script tags, or objects",
         });
       }
       setFields.f_name = f_name;
     }
 
     if (m_name !== undefined) {
-      if (!isValidPatientName(m_name, { minLength: 1, maxLength: 100, required: false })) {
+      if (
+        !isValidPatientName(m_name, {
+          minLength: 1,
+          maxLength: 100,
+          required: false,
+        })
+      ) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
           message: "Middle name contains invalid characters or script tags",
@@ -1859,7 +1887,13 @@ export const updatePatient = async (req: Request, res: Response) => {
     }
 
     if (l_name !== undefined) {
-      if (!isValidPatientName(l_name, { minLength: 1, maxLength: 100, required: false })) {
+      if (
+        !isValidPatientName(l_name, {
+          minLength: 1,
+          maxLength: 100,
+          required: false,
+        })
+      ) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
           message: "Last name contains invalid characters or script tags",
@@ -1881,7 +1915,8 @@ export const updatePatient = async (req: Request, res: Response) => {
       if (!mobile || !isValidMobile(mobile)) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
-          message: "Valid mobile number is required (10 digits starting with 6-9)",
+          message:
+            "Valid mobile number is required (10 digits starting with 6-9)",
         });
       }
       setFields.mobile = mobile;
@@ -1892,7 +1927,8 @@ export const updatePatient = async (req: Request, res: Response) => {
       if (!isValidDob(dob)) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
-          message: "Date of birth must be a valid past date in YYYY-MM-DD format",
+          message:
+            "Date of birth must be a valid past date in YYYY-MM-DD format",
         });
       }
       setFields.dob = dob;
@@ -2027,17 +2063,30 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
     const l_name = sanitizeString(body.l_name || body.lastName, 100);
 
     if (f_name !== undefined) {
-      if (!isValidPatientName(f_name, { minLength: 2, maxLength: 100, required: true })) {
+      if (
+        !isValidPatientName(f_name, {
+          minLength: 2,
+          maxLength: 100,
+          required: true,
+        })
+      ) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
-          message: "First name must be at least 2 letters and cannot contain numbers, script tags, or objects",
+          message:
+            "First name must be at least 2 letters and cannot contain numbers, script tags, or objects",
         });
       }
       setFields.f_name = f_name;
     }
 
     if (m_name !== undefined) {
-      if (!isValidPatientName(m_name, { minLength: 1, maxLength: 100, required: false })) {
+      if (
+        !isValidPatientName(m_name, {
+          minLength: 1,
+          maxLength: 100,
+          required: false,
+        })
+      ) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
           message: "Middle name contains invalid characters or script tags",
@@ -2047,7 +2096,13 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
     }
 
     if (l_name !== undefined) {
-      if (!isValidPatientName(l_name, { minLength: 1, maxLength: 100, required: false })) {
+      if (
+        !isValidPatientName(l_name, {
+          minLength: 1,
+          maxLength: 100,
+          required: false,
+        })
+      ) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
           message: "Last name contains invalid characters or script tags",
@@ -2069,7 +2124,8 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
       if (!mobile || !isValidMobile(mobile)) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
-          message: "Valid mobile number is required (10 digits starting with 6-9)",
+          message:
+            "Valid mobile number is required (10 digits starting with 6-9)",
         });
       }
       setFields.mobile = mobile;
@@ -2080,7 +2136,8 @@ export const updatePatientAndAddVisit = async (req: Request, res: Response) => {
       if (!isValidDob(dob)) {
         return res.status(STATUS_CODE.BAD_REQUEST).json({
           status: "error",
-          message: "Date of birth must be a valid past date in YYYY-MM-DD format",
+          message:
+            "Date of birth must be a valid past date in YYYY-MM-DD format",
         });
       }
       setFields.dob = dob;
