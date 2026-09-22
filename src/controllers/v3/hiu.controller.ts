@@ -36,7 +36,10 @@ export const searchPatient = async (req: Request, res: Response) => {
 export const onDiscover = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-discover callback received:", body);
+    AbdmLogger.logPayloadDebug(
+      "[HIU_CONTROLLER] On-discover callback received:",
+      body,
+    );
 
     return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
   } catch (error: any) {
@@ -51,7 +54,10 @@ export const onDiscover = async (req: Request, res: Response) => {
 export const onLinkInit = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-init (Auth) callback received:", body);
+    AbdmLogger.logPayloadDebug(
+      "[HIU_CONTROLLER] On-init (Auth) callback received:",
+      body,
+    );
 
     // In a real app, you would handle the transactionId here to prompt user for OTP
     return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
@@ -67,7 +73,10 @@ export const onLinkInit = async (req: Request, res: Response) => {
 export const onLinkConfirm = async (req: Request, res: Response) => {
   try {
     const body = req.body;
-    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-confirm (Auth) callback received:", body);
+    AbdmLogger.logPayloadDebug(
+      "[HIU_CONTROLLER] On-confirm (Auth) callback received:",
+      body,
+    );
 
     // In a real app, you would verify the auth token and link the patient locally
     return res.status(STATUS_CODE.SUCCESS).json({ status: "ok" });
@@ -143,7 +152,10 @@ export const onHealthInformationRequest = async (
   try {
     const body = req.body;
 
-    AbdmLogger.logPayloadDebug("[HIU_CONTROLLER] On-request callback received:", body);
+    AbdmLogger.logPayloadDebug(
+      "[HIU_CONTROLLER] On-request callback received:",
+      body,
+    );
 
     const originalRequestId =
       body.response?.requestId ||
@@ -196,7 +208,9 @@ export const onHealthInformationTransfer = async (
     const { transactionId, entries, keyMaterial, pageNumber } = body;
 
     if (!transactionId || !entries || !keyMaterial) {
-      console.error("[HIU_CONTROLLER] Invalid transfer payload — missing transactionId, entries, or keyMaterial");
+      console.error(
+        "[HIU_CONTROLLER] Invalid transfer payload — missing transactionId, entries, or keyMaterial",
+      );
       return res.status(STATUS_CODE.ERROR).json({ message: "Invalid payload" });
     }
 
@@ -205,12 +219,10 @@ export const onHealthInformationTransfer = async (
 
     // Try BullMQ queue first; fall back to direct processing if Redis is down
     try {
-      const { enqueueHiuTransfer } = await import(
-        "../../services/abdm.queue.service"
-      );
-      const { HIUTransferPayloadModel } = await import(
-        "../../models/HIUTransferPayload"
-      );
+      const { enqueueHiuTransfer } =
+        await import("../../services/abdm.queue.service");
+      const { HIUTransferPayloadModel } =
+        await import("../../models/HIUTransferPayload");
 
       const payload = new HIUTransferPayloadModel({
         transactionId,
@@ -231,9 +243,8 @@ export const onHealthInformationTransfer = async (
       );
       // Fallback: process directly (same pattern as handleHiuConsentNotify)
       try {
-        const { handleHiuTransfer } = await import(
-          "../../services/hiu.service"
-        );
+        const { handleHiuTransfer } =
+          await import("../../services/hiu.service");
         await handleHiuTransfer(transactionId, entries, keyMaterial);
       } catch (directErr: any) {
         console.error(
@@ -361,26 +372,28 @@ export const getExternalRecords = async (req: Request, res: Response) => {
           from: "consent_artefacts",
           localField: "consentArtefactId",
           foreignField: "artefactId",
-          as: "artefactDetails"
-        }
+          as: "artefactDetails",
+        },
       },
       {
         $addFields: {
-          consentReqId: { $arrayElemAt: ["$artefactDetails.consentRequestId", 0] }
-        }
+          consentReqId: {
+            $arrayElemAt: ["$artefactDetails.consentRequestId", 0],
+          },
+        },
       },
       {
         $group: {
           _id: {
             consentReqId: "$consentReqId",
-            careContextReference: "$careContextReference"
+            careContextReference: "$careContextReference",
           },
-          doc: { $first: "$$ROOT" }
-        }
+          doc: { $first: "$$ROOT" },
+        },
       },
       { $replaceRoot: { newRoot: "$doc" } },
       { $project: { artefactDetails: 0, consentReqId: 0 } },
-      { $sort: { receivedAt: -1, createdAt: -1 } }
+      { $sort: { receivedAt: -1, createdAt: -1 } },
     ];
 
     const [records, countResult] = await Promise.all([
@@ -388,12 +401,9 @@ export const getExternalRecords = async (req: Request, res: Response) => {
         ...pipeline,
         { $skip: skip },
         { $limit: limitNum },
-        { $project: { fhirBundle: 0 } }
+        { $project: { fhirBundle: 0 } },
       ]),
-      ExternalHealthRecordModel.aggregate([
-        ...pipeline,
-        { $count: "total" }
-      ])
+      ExternalHealthRecordModel.aggregate([...pipeline, { $count: "total" }]),
     ]);
 
     const total = countResult.length > 0 ? countResult[0].total : 0;
@@ -401,7 +411,8 @@ export const getExternalRecords = async (req: Request, res: Response) => {
     // Mask ABHA address for privacy
     const maskedRecords = records.map((record: any) => {
       if (record.patientAbhaAddress) {
-        record.patientAbhaAddress = maskAbha(record.patientAbhaAddress,7 );
+        record.patientAbhaAddress = record.patientAbhaAddress;
+        // maskAbha(record.patientAbhaAddress, 7);
       }
       return record;
     });

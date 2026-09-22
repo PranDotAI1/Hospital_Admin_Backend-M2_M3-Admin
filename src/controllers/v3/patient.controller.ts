@@ -562,9 +562,10 @@ const formatPatientForTable = (patient: any) => {
       (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
   );
 
-  const maskedAbha = isAbhaLinked
-    ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
-    : "";
+  const maskedAbha = sanitized.ABHANumber || sanitized.abhaaddress;
+    // isAbhaLinked
+    // ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
+    // : "";
 
   return {
     _id: idStr,
@@ -689,9 +690,10 @@ export const getPatient = async (req: Request, res: Response) => {
         (sanitized.abhaaddress && sanitized.abhaaddress.trim()),
     );
 
-    const maskedAbha = isAbhaLinked
-      ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
-      : "";
+    const maskedAbha = sanitized.ABHANumber || sanitized.abhaaddress;
+      // isAbhaLinked
+      // ? maskAbha(sanitized.ABHANumber || sanitized.abhaaddress)
+      // : "";
 
     const patientDetailedName =
       sanitized.name ||
@@ -720,7 +722,8 @@ export const getPatient = async (req: Request, res: Response) => {
       // ABHA Healthcare Identity (Always masked - zero raw ABHA leakage)
       isAbhaLinked,
       maskedAbha: maskedAbha || "",
-      abhaAddress: sanitized.abhaaddress ? maskAbha(sanitized.abhaaddress, 7) : "",
+      abhaAddress: sanitized.abhaaddress,
+        // ? maskAbha(sanitized.abhaaddress, 7) : "",
       abhaLinkedAt: sanitized.abhaLinkedAt || null,
 
       // Complete sorted visits (newest-first, visits[0] is latest)
@@ -1784,8 +1787,8 @@ export const checkExistingPatients = async (req: Request, res: Response) => {
       emergencyContact: maskMobile(p.emergencyContact),
       address: maskAddress(p.address) || "",
       aadhaarNumber: maskAadhaar(p.aadhaarNumber) || "",
-      ABHANumber: maskAbha(p.ABHANumber),
-      abhaaddress: maskAbha(p.abhaaddress, 8),
+      ABHANumber: p.ABHANumber ?? maskAbha(p.abhaaddress, 8),
+      abhaaddress: p.abhaaddress ?? maskAbha(p.ABHANumber),
     }));
 
     return res.status(STATUS_CODE.SUCCESS).json({

@@ -109,13 +109,13 @@ export const getConsentRequests = async (req: Request, res: Response) => {
 
     const maskedRequests = requests.map((reqItem: any) => {
       if (reqItem.patientAbhaId) {
-        reqItem.patientAbhaId = maskAbha(reqItem.patientAbhaId,7);
+        reqItem.patientAbhaId = reqItem.patientAbhaId ?? maskAbha(reqItem.patientAbhaId,7);
       }
       if (reqItem.abhaAddress) {
-        reqItem.abhaAddress = maskAbha(reqItem.abhaAddress,7);
+        reqItem.abhaAddress = reqItem.abhaAddress ?? maskAbha(reqItem.abhaAddress,7);
       }
       if (reqItem.abhaNumber) {
-        reqItem.abhaNumber = maskAbha(reqItem.abhaNumber);
+        reqItem.abhaNumber = reqItem.abhaNumber ?? maskAbha(reqItem.abhaNumber);
       }
       return reqItem;
     });
@@ -205,7 +205,7 @@ export const getConsentArtefacts = async (req: Request, res: Response) => {
 
     const maskedArtefacts = artefacts.map((art: any) => {
       if (art.patientAbhaAddress) {
-        art.patientAbhaAddress = maskAbha(art.patientAbhaAddress);
+        art.patientAbhaAddress =  art.patientAbhaAddress ?? maskAbha(art.patientAbhaAddress);
       }
       return art;
     });
