@@ -132,49 +132,76 @@ export const ROLE_PERMISSIONS: Record<number, string[]> = {
   // Strictly barred from clinical write, prescription authoring, and lab result entry
   // ────────────────────────────────────────────────────────────────────────────
   [R.SUPER_ADMIN]: [
-    // User management (platform level)
-    P.USERS_CREATE,
-    P.USERS_READ,
-    P.USERS_UPDATE,
-    P.USERS_DELETE,
-    P.USERS_ASSIGN_ROLE,
-    // Hospital & department
-    P.HOSPITAL_MANAGE,
-    P.DEPARTMENT_MANAGE,
-    P.DEPARTMENT_READ,
-    P.DEPARTMENT_MANAGE_STAFF,
-    // Patient (read / search / history for audit and technical support)
-    P.PATIENTS_READ,
-    P.PATIENTS_SEARCH,
-    P.PATIENTS_VIEW_HISTORY,
-    // OPD (oversight)
-    P.OPD_VIEW_QUEUE,
-    P.OPD_STATS,
-    // Clinical (READ ONLY — Super Admin has NO clinical authoring rights)
-    P.CLINICAL_PRESCRIPTION_READ,
-    P.CLINICAL_SOAP_READ,
-    P.CLINICAL_DISCHARGE_READ,
-    P.CLINICAL_ASSESSMENT_READ,
-    // Lab (READ ONLY)
-    P.LAB_READ,
-    P.LAB_VIEW_TEMPLATES,
-    // Billing (audit & reports)
-    P.BILLING_READ,
-    P.BILLING_REPORTS,
-    // Pharmacy
-    P.PHARMACY_VIEW_ORDERS,
-    P.PHARMACY_DISPENSE,
-    // ABDM
-    P.ABDM_LINK_CARECONTEXT,
-    P.ABDM_CONSENT_INITIATE,
-    P.ABDM_CONSENT_READ,
-    P.ABDM_HIU_FETCH,
-    // Security & system administration
-    P.SYSTEM_AUDIT_LOGS,
-    P.SYSTEM_SESSIONS,
-    P.SMS_SEND,
-    // Terminology
-    P.TERMINOLOGY_SEARCH,
+   P.USERS_CREATE,
+  P.USERS_READ,
+  P.USERS_UPDATE,
+  P.USERS_DELETE,
+  P.USERS_ASSIGN_ROLE,
+
+  // ── Hospital & Department ──
+  P.HOSPITAL_MANAGE,
+  P.DEPARTMENT_MANAGE,
+  P.DEPARTMENT_READ,
+  P.DEPARTMENT_MANAGE_STAFF,
+
+  // ── Patient Management ──
+  P.PATIENTS_REGISTER,
+  P.PATIENTS_READ,
+  P.PATIENTS_UPDATE,
+  P.PATIENTS_SEARCH,
+  P.PATIENTS_LINK_ABHA,
+  P.PATIENTS_VIEW_HISTORY,
+
+  // ── OPD / Queue Management ──
+  P.OPD_ADD_VISIT,
+  P.OPD_VIEW_QUEUE,
+  P.OPD_NEXT_PATIENT,
+  P.OPD_CANCEL_VISIT,
+  P.OPD_STATS,
+  P.OPD_UPDATE_SERVING,
+
+  // ── Clinical Records ──
+  P.CLINICAL_PRESCRIPTION_WRITE,
+  P.CLINICAL_PRESCRIPTION_READ,
+  P.CLINICAL_SOAP_WRITE,
+  P.CLINICAL_SOAP_READ,
+  P.CLINICAL_DISCHARGE_WRITE,
+  P.CLINICAL_DISCHARGE_READ,
+  P.CLINICAL_ASSESSMENT_WRITE,
+  P.CLINICAL_ASSESSMENT_READ,
+  P.CLINICAL_IMMUNIZATION_WRITE,
+
+  // ── Lab Reports ──
+  P.LAB_ORDER,
+  P.LAB_ENTER_RESULTS,
+  P.LAB_FINALIZE,
+  P.LAB_READ,
+  P.LAB_VIEW_TEMPLATES,
+
+  // ── Billing ──
+  P.BILLING_CREATE,
+  P.BILLING_READ,
+  P.BILLING_PROCESS_PAYMENT,
+  P.BILLING_REPORTS,
+
+  // ── Pharmacy ──
+  P.PHARMACY_VIEW_ORDERS,
+  P.PHARMACY_DISPENSE,
+
+  // ── ABDM / Consent / CareContext ──
+  P.ABDM_LINK_CARECONTEXT,
+  P.ABDM_CONSENT_INITIATE,
+  P.ABDM_CONSENT_READ,
+  P.ABDM_HIU_FETCH,
+
+  // ── System / Platform ──
+  P.SYSTEM_CONFIG,
+  P.SYSTEM_AUDIT_LOGS,
+  P.SYSTEM_SESSIONS,
+  P.SMS_SEND,
+
+  // ── Terminology (SNOMED / LOINC lookups) ──
+  P.TERMINOLOGY_SEARCH
   ],
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -496,34 +523,44 @@ export function resolvePermissions(roleId: number): string[] {
 }
 
 /** Role metadata for seed script and API responses */
-export const ROLE_METADATA: Record<number, { name: string; description: string }> = {
+export const ROLE_METADATA: Record<
+  number,
+  { name: string; description: string }
+> = {
   [R.SUPER_ADMIN]: {
     name: "Super Admin",
-    description: "Platform-level administrator managing multi-hospital infrastructure, global users, and security audits.",
+    description:
+      "Platform-level administrator managing multi-hospital infrastructure, global users, and security audits.",
   },
   [R.HOSPITAL_ADMIN]: {
     name: "Hospital Admin",
-    description: "Hospital administrator managing staff, departments, queues, billing, and operational oversight.",
+    description:
+      "Hospital administrator managing staff, departments, queues, billing, and operational oversight.",
   },
   [R.DOCTOR]: {
     name: "Doctor",
-    description: "Treats patients, writes prescriptions, SOAP notes, and discharge summaries.",
+    description:
+      "Treats patients, writes prescriptions, SOAP notes, and discharge summaries.",
   },
   [R.STAFF]: {
     name: "Staff",
-    description: "General admin staff — registration desk, data entry, and support tasks.",
+    description:
+      "General admin staff — registration desk, data entry, and support tasks.",
   },
   [R.NURSE]: {
     name: "Nurse",
-    description: "Clinical support — vitals, assessments, triage, and immunization records.",
+    description:
+      "Clinical support — vitals, assessments, triage, and immunization records.",
   },
   [R.LAB_TECHNICIAN]: {
     name: "Lab Technician",
-    description: "Lab sample collection, result entry, and report finalization.",
+    description:
+      "Lab sample collection, result entry, and report finalization.",
   },
   [R.PHARMACIST]: {
     name: "Pharmacist",
-    description: "Dispenses medications, verifies prescriptions, and manages pharmacy dispensing orders.",
+    description:
+      "Dispenses medications, verifies prescriptions, and manages pharmacy dispensing orders.",
   },
   [R.BILLING]: {
     name: "Billing / Accounts",
@@ -531,14 +568,17 @@ export const ROLE_METADATA: Record<number, { name: string; description: string }
   },
   [R.RECEPTIONIST]: {
     name: "Receptionist / Front Desk",
-    description: "Patient registration, OPD queue management, and appointment handling.",
+    description:
+      "Patient registration, OPD queue management, and appointment handling.",
   },
   [R.DEPARTMENT_HEAD]: {
     name: "Department Head (HOD)",
-    description: "Everything a Doctor can do, plus department staff management and oversight.",
+    description:
+      "Everything a Doctor can do, plus department staff management and oversight.",
   },
   [R.AUDITOR]: {
     name: "Auditor (Read-Only)",
-    description: "Read-only access for compliance audits and reporting. (Phase 2)",
+    description:
+      "Read-only access for compliance audits and reporting. (Phase 2)",
   },
 };
