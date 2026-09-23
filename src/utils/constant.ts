@@ -84,6 +84,7 @@ export const HIP_TYPES = [
   "ImmunizationRecord",
   "HealthDocumentRecord",
   "WellnessRecord",
+  "Invoice",
 ] as const;
 
 export const ABDM_PHR_WEB_BASE_URL =

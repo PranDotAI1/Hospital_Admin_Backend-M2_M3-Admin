@@ -17,6 +17,7 @@ export interface IExternalHealthRecord extends Document {
   careContextDisplay?: string;
 
   fhirBundle: object;
+  clinicalData?: any;
   hiTypes: string[];
   dataEraseAt?: Date;
 
@@ -88,6 +89,9 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
       type: Schema.Types.Mixed,
       required: true,
     },
+    clinicalData: {
+      type: Schema.Types.Mixed,
+    },
     hiTypes: [
       {
         type: String,
@@ -99,6 +103,7 @@ const ExternalHealthRecordSchema = new Schema<IExternalHealthRecord>(
           "ImmunizationRecord",
           "HealthDocumentRecord",
           "WellnessRecord",
+          "Invoice",
         ],
       },
     ],
