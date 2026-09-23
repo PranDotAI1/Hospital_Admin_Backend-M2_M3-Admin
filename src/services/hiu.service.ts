@@ -855,10 +855,6 @@ const resolveHiTypeForExternalRecord = (
   console.warn(`[HITYPE-RESOLVE] cc=${ccRef} → LAST-RESORT→OPConsultation (artefact has no hiTypes)`);
   return ["OPConsultation"];
 };
-  // Priority 1: entry.hiType from the ABDM transfer payload.
-  // Per ABDM v3 data-flow spec, each entry in the transfer SHOULD carry
-
-
 
 
 /** Extract HI types from a FHIR bundle by inspecting resource types and titles (last-resort fallback). */
