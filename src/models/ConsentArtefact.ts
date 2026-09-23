@@ -16,6 +16,7 @@ export enum ConsentArtefactStatus {
 export interface IConsentCareContext {
   patientReference: string;
   careContextReference: string;
+  hiType?: string;
 }
 
 export interface IConsentPermission {
@@ -93,6 +94,7 @@ export const ConsentCareContextSchema = new Schema(
   {
     patientReference: { type: String, required: true },
     careContextReference: { type: String, required: true },
+    hiType: { type: String, required: false },
   },
   { _id: false },
 );

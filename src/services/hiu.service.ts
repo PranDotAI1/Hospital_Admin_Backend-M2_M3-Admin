@@ -410,7 +410,7 @@ export const handleHiuTransfer = async (
   );
   if (allowedCareContexts.size === 0) {
     console.warn(
-      `${LOG_PREFIX} ⚠️ Artefact found but has 0 care contexts! Artefact source: ${artefactSource}, requestPurpose: ${(consentArtefact as any).requestPurpose || "unknown"}`,
+      `${LOG_PREFIX} Artefact found but has 0 care contexts! Artefact source: ${artefactSource}, requestPurpose: ${(consentArtefact as any).requestPurpose || "unknown"}`,
     );
   }
 
@@ -422,9 +422,8 @@ export const handleHiuTransfer = async (
 
       if (allowedCareContexts.size > 0 && !allowedCareContexts.has(ccRef)) {
         console.warn(
-          `${LOG_PREFIX} [SECURITY] Care Context ${ccRef} is NOT in allowed list for consent ${hiuRequest.consentArtefactId}. DROPPING RECORD.`,
+          `${LOG_PREFIX} [WARN] Care Context ${ccRef} not in local artefact list for consent ${hiuRequest.consentArtefactId}. Storing anyway — ABDM pushed it under a GRANTED consent.`,
         );
-        continue;
       }
 
       if (
@@ -635,25 +634,51 @@ const extractSourceHipInfo = (
 
 /** ABDM FHIR Composition type code → hiType mapping (ABDM NDHM FHIR IG). */
 const COMPOSITION_TYPE_CODE_MAP: Record<string, string> = {
-  // LOINC codes used by ABDM
-  "11503-0": "OPConsultation", // Medical records
-  "57133-1": "OPConsultation", // Referral note
-  "34133-9": "OPConsultation", // Summarization of episode note
-  "18842-5": "DischargeSummary", // Discharge summary
-  "56445-0": "Prescription",    // Medication summary
-  "52040-3": "DiagnosticReport", // DXA Bone density
-  "11502-2": "DiagnosticReport", // Lab report
-  "18748-4": "DiagnosticReport", // Diagnostic imaging study
+  // ── LOINC codes used by ABDM ──
+  "11503-0": "OPConsultation",    // Medical records
+  "57133-1": "OPConsultation",    // Referral note
+  "34133-9": "OPConsultation",    // Summarization of episode note
+  "51845-0": "OPConsultation",    // Outpatient consultation
+  "11488-4": "OPConsultation",    // Consult note
+  "11506-3": "OPConsultation",    // Progress note
+  "18842-5": "DischargeSummary",  // Discharge summary
+  "56445-0": "Prescription",      // Medication summary
+  "57828-6": "Prescription",      // Prescription list
+  "52040-3": "DiagnosticReport",  // DXA Bone density
+  "11502-2": "DiagnosticReport",  // Lab report
+  "18748-4": "DiagnosticReport",  // Diagnostic imaging study
   "11369-6": "ImmunizationRecord", // Immunization history
-  "51845-0": "OPConsultation", // Outpatient consultation
-  // ABDM / NDHM custom codes (as used by Indian HIPs)
+  "87273-9": "ImmunizationRecord", // Immunization note
+  // ── ABDM / NDHM custom SNOMED codes (as used by Indian HIPs) ──
+  // OPConsultation
   "425173008": "OPConsultation",
   "408443003": "OPConsultation",
+  "371525003": "OPConsultation",  // Clinical procedure report
+  "371530004": "OPConsultation",  // Clinical consultation report
+  "308467007": "OPConsultation",  // Outpatient visit to general practitioner
+  "11488002": "OPConsultation",   // Consultation (procedure)
+  "185347001": "OPConsultation",  // Encounter for problem
+  "310362001": "OPConsultation",  // Follow-up encounter
+  "410620009": "OPConsultation",  // Well child visit
+  "11429006":  "OPConsultation",  // Consultation
+  // Prescription
   "440545006": "Prescription",
+  "182840001": "Prescription",    // Drug prescription
+  "16076005":  "Prescription",    // Prescription (procedure)
+  // DiagnosticReport
   "721981007": "DiagnosticReport",
+  "4241000179101": "DiagnosticReport", // Laboratory report
+  "371526004": "DiagnosticReport",  // Clinical laboratory report
+  // DischargeSummary
   "373942005": "DischargeSummary",
+  "78549003":  "DischargeSummary",  // Discharge summary (document)
+  // ImmunizationRecord
   "41000179103": "ImmunizationRecord",
-  "371525003": "OPConsultation", // Clinical procedure report
+  // WellnessRecord
+  "53576008":  "WellnessRecord",   // Office visit
+  // HealthDocumentRecord
+  "371529009": "HealthDocumentRecord", // Health history document
+  "422735006": "HealthDocumentRecord", // Summary clinical document
 };
 
 /** Map ABDM hiType strings the sending HIP might use (handles minor casing/alias variants). */
@@ -701,6 +726,15 @@ const extractHiTypeFromCompositionCode = (bundle: any): string | null => {
     if (text.includes("immunization")) return "ImmunizationRecord";
     if (text.includes("wellness")) return "WellnessRecord";
     if (text.includes("health document")) return "HealthDocumentRecord";
+    // Check for OPConsultation keywords in .text
+    if (
+      text.includes("consultation") ||
+      text.includes("outpatient") ||
+      text.includes("op consult") ||
+      text.includes("clinic visit") ||
+      text.includes("visit note")
+    )
+      return "OPConsultation";
   }
   return null;
 };
@@ -711,9 +745,17 @@ const resolveHiTypeForExternalRecord = (
   consentArtefact: any,
   ccRef: string,
 ): string[] => {
-  // Priority 1: entry.hiType from the ABDM transfer payload.
-  // Per ABDM v3 data-flow spec, each entry in the transfer SHOULD carry
-  // the hiType the sending HIP used. This is the most authoritative source.
+  // ─── Pre-compute artefact types (used by multiple priorities below) ───────
+  const artefactTypes: string[] = consentArtefact?.hiTypes || [];
+  const validArtefactTypes = artefactTypes.filter((t) => VALID_HI_TYPES.has(t));
+
+  // ── DIAGNOSTIC LOG (remove once stable) ───────────────────────────────────
+  console.log(
+    `[HITYPE-RESOLVE] cc=${ccRef} | artefact.hiTypes=${JSON.stringify(validArtefactTypes)} | entry.hiType=${entry?.hiType ?? "none"}`,
+  );
+
+  // ─── Priority 1: entry.hiType from the ABDM transfer payload ─────────────
+  // Per ABDM v3 data-flow spec, each entry SHOULD carry the hiType.
   const entryHiTypeRaw = entry?.hiType || entry?.hi_type || entry?.hitype;
   if (entryHiTypeRaw) {
     const normalised =
@@ -722,68 +764,101 @@ const resolveHiTypeForExternalRecord = (
         ? String(entryHiTypeRaw).trim()
         : null);
     if (normalised) {
-      // console.log(
-      //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P1(entry.hiType)=${normalised}`,
-      // );
+      console.log(`[HITYPE-RESOLVE] cc=${ccRef} → P1(entry.hiType)=${normalised}`);
       return [normalised];
     }
   }
 
-  // Priority 2: FHIR Composition.type.coding — structured code, not keyword sniffing.
-  const compositionCode = extractHiTypeFromCompositionCode(bundle);
-  if (compositionCode) {
-    // console.log(
-    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P2(Composition.type.coding)=${compositionCode}`,
-    // );
-    return [compositionCode];
+  // ─── Priority 1.5: per-care-context hiType on the consent artefact ────────
+  if (consentArtefact?.careContexts && Array.isArray(consentArtefact.careContexts)) {
+    const matchedCc = consentArtefact.careContexts.find(
+      (cc: any) => cc.careContextReference?.trim() === ccRef?.trim(),
+    );
+    if (matchedCc?.hiType) {
+      const normalised =
+        NORMALISE_ABDM_HITYPE[String(matchedCc.hiType).toLowerCase().trim()] ||
+        (VALID_HI_TYPES.has(String(matchedCc.hiType).trim())
+          ? String(matchedCc.hiType).trim()
+          : null);
+      if (normalised) {
+        console.log(`[HITYPE-RESOLVE] cc=${ccRef} → P1.5(artefact.careContexts.hiType)=${normalised}`);
+        return [normalised];
+      }
+    }
   }
 
-  // Priority 3: consentArtefact.hiTypes — if the consent was granted for exactly
-  // one type, we know this entry must belong to that type.
-  const artefactTypes: string[] = consentArtefact?.hiTypes || [];
-  const validArtefactTypes = artefactTypes.filter((t) => VALID_HI_TYPES.has(t));
+  // ─── Priority 2: Single artefact hiType (most authoritative for unambiguous consents) ──
+  // When consent was for EXACTLY one type, every entry MUST be that type.
+  // ABDM guarantees this — only data matching the consented hiTypes is pushed.
+  // This must run BEFORE FHIR code lookup because sending HIPs often use generic
+  // LOINC codes (e.g., 11503-0) even for WellnessRecord or Prescription bundles.
   if (validArtefactTypes.length === 1) {
-    // console.log(
-    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P3(single consentArtefact.hiType)=${validArtefactTypes[0]}`,
-    // );
+    console.log(`[HITYPE-RESOLVE] cc=${ccRef} → P2(single artefact.hiType)=${validArtefactTypes[0]}`);
     return [validArtefactTypes[0]];
   }
 
-  // Priority 4: keyword-sniff as last resort (existing logic).
-  const sniffed = extractHiTypesFromBundle(bundle);
-  if (sniffed.length > 0) {
-    // If sniffed returns multiple, use consent artefact to narrow it down.
-    if (sniffed.length > 1 && validArtefactTypes.length > 0) {
-      const intersection = sniffed.filter((t) => validArtefactTypes.includes(t));
-      if (intersection.length === 1) {
-        // console.log(
-        //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff∩consent)=${intersection[0]}`,
-        // );
-        return [intersection[0]];
-      }
-      // If still multiple, prefer the most specific (non-OPConsultation).
-      const specific = intersection.find((t) => t !== "OPConsultation") ||
-        sniffed.find((t) => t !== "OPConsultation");
-      if (specific) {
-        console.warn(
-          `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff-specific)=${specific} (from multiple sniffed=${JSON.stringify(sniffed)})`,
-        );
-        return [specific];
-      }
+  // ─── Priority 3: FHIR Composition.type.coding ─────────────────────────────
+  // Only used for multi-type consents to disambiguate. Constrain to types the
+  // consent actually allows — never return a type outside validArtefactTypes.
+  const compositionCode = extractHiTypeFromCompositionCode(bundle);
+  if (compositionCode) {
+    // If it's in the consent's allowed types → use it
+    if (validArtefactTypes.length === 0 || validArtefactTypes.includes(compositionCode)) {
+      console.log(`[HITYPE-RESOLVE] cc=${ccRef} → P3(FHIR code)=${compositionCode}`);
+      return [compositionCode];
     }
-    // Single sniffed result or prefer first.
-    // console.log(
-    //   `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} P4(sniff)=${sniffed[0]}`,
-    // );
-    return [sniffed[0]];
+    // FHIR code contradicts the consent (e.g., code says OPConsultation but
+    // consent was for WellnessRecord). Don't trust the code — fall through.
+    console.warn(
+      `[HITYPE-RESOLVE] cc=${ccRef} P3 FHIR code=${compositionCode} NOT in consent ${JSON.stringify(validArtefactTypes)}. Ignoring.`,
+    );
   }
 
-  // Ultimate fallback: ABDM default.
-  console.warn(
-    `[HITYPE-DEBUG] resolveHiTypeForExternalRecord: cc=${ccRef} FALLBACK→OPConsultation (no source resolved)`,
-  );
+  // ─── Priority 4: Keyword sniffer with clinical priority order ────────────
+  const sniffed = extractHiTypesFromBundle(bundle);
+  if (sniffed.length > 0) {
+    // Constrain to artefact types when we have them
+    const pool = validArtefactTypes.length > 0
+      ? sniffed.filter((t) => validArtefactTypes.includes(t))
+      : sniffed;
+
+    const CLINICAL_PRIORITY: string[] = [
+      "Prescription",
+      "DiagnosticReport",
+      "DischargeSummary",
+      "ImmunizationRecord",
+      "WellnessRecord",
+      "OPConsultation",
+      "HealthDocumentRecord",
+    ];
+
+    const finalPool = pool.length > 0 ? pool : sniffed;
+    for (const candidate of CLINICAL_PRIORITY) {
+      if (finalPool.includes(candidate)) {
+        console.warn(`[HITYPE-RESOLVE] cc=${ccRef} → P4(sniffer)=${candidate} (pool=${JSON.stringify(finalPool)})`);
+        return [candidate];
+      }
+    }
+  }
+
+  // ─── Final fallback: use artefact hiTypes ─────────────────────────────────
+  // NEVER hardcode OPConsultation — use what the consent actually requested.
+  // ABDM guarantees the data matches the consent's hiTypes.
+  if (validArtefactTypes.length > 0) {
+    console.warn(
+      `[HITYPE-RESOLVE] cc=${ccRef} → FALLBACK(artefact first type)=${validArtefactTypes[0]} (all resolution failed, using consent truth)`,
+    );
+    return [validArtefactTypes[0]];
+  }
+
+  // Absolute last resort — no artefact types known
+  console.warn(`[HITYPE-RESOLVE] cc=${ccRef} → LAST-RESORT→OPConsultation (artefact has no hiTypes)`);
   return ["OPConsultation"];
 };
+  // Priority 1: entry.hiType from the ABDM transfer payload.
+  // Per ABDM v3 data-flow spec, each entry in the transfer SHOULD carry
+
+
 
 
 /** Extract HI types from a FHIR bundle by inspecting resource types and titles (last-resort fallback). */
@@ -851,14 +926,17 @@ const extractHiTypesFromBundle = (bundle: any): string[] => {
       }
 
       // 3. Check loose resources (legacy or split bundles)
+      // NOTE: DocumentReference is intentionally excluded here.
+      // OPConsultation bundles routinely contain DocumentReference resources
+      // (for clinical notes/attachments), so mapping DocumentReference → HealthDocumentRecord
+      // at the resource level causes false HealthDocumentRecord classification.
+      // HealthDocumentRecord is only added when the Composition title/sections explicitly indicate it.
       if (resource.resourceType === "MedicationRequest")
         types.add("Prescription");
       if (resource.resourceType === "DiagnosticReport")
         types.add("DiagnosticReport");
       if (resource.resourceType === "Immunization")
         types.add("ImmunizationRecord");
-      if (resource.resourceType === "DocumentReference")
-        types.add("HealthDocumentRecord");
     }
 
     return Array.from(types);

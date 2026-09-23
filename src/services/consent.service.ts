@@ -1441,7 +1441,7 @@ export const storeArtefactDetails = async (
     // so we never lose care contexts (ABDM may send in batches or we may get multiple callbacks).
     const normalizeCareContext = (
       cc: any,
-    ): { patientReference: string; careContextReference: string } | null => {
+    ): { patientReference: string; careContextReference: string; hiType?: string } | null => {
       const careContextRef =
         cc.careContextReference ??
         cc.reference ??
@@ -1449,15 +1449,19 @@ export const storeArtefactDetails = async (
       const patientRef =
         cc.patientReference ?? cc.patientId ?? cc.patient?.id ?? "";
       if (!careContextRef || typeof careContextRef !== "string") return null;
+      const hiType: string | undefined =
+        cc.hiType ?? cc.hi_type ?? cc.hitype ?? undefined;
       return {
         patientReference: patientRef || "",
         careContextReference: String(careContextRef).trim(),
+        ...(hiType ? { hiType: String(hiType).trim() } : {}),
       };
     };
 
     const incomingCareContexts: Array<{
       patientReference: string;
       careContextReference: string;
+      hiType?: string;
     }> = [];
     if (
       consentDetail.careContexts &&
@@ -1524,7 +1528,7 @@ export const storeArtefactDetails = async (
       const existingList = existing?.careContexts || [];
       const byRef = new Map<
         string,
-        { patientReference: string; careContextReference: string }
+        { patientReference: string; careContextReference: string; hiType?: string }
       >();
       existingList.forEach((ec: any) => {
         const ref = ec.careContextReference?.trim();
@@ -1532,12 +1536,29 @@ export const storeArtefactDetails = async (
           byRef.set(ref, {
             patientReference: ec.patientReference || "",
             careContextReference: ref,
+            // Preserve existing hiType only if present
+            ...(ec.hiType ? { hiType: ec.hiType } : {}),
           });
       });
       incomingCareContexts.forEach((ic) => {
-        if (ic.careContextReference) byRef.set(ic.careContextReference, ic);
+        if (ic.careContextReference) {
+          const existing = byRef.get(ic.careContextReference);
+          byRef.set(ic.careContextReference, {
+            patientReference: ic.patientReference,
+            careContextReference: ic.careContextReference,
+            // Incoming hiType wins (ABDM may send updated type); fall back to existing
+            hiType: ic.hiType ?? existing?.hiType,
+          });
+        }
       });
-      updateData.careContexts = Array.from(byRef.values());
+      updateData.careContexts = Array.from(byRef.values()).map((cc) => {
+        // Remove hiType key if undefined to keep documents clean
+        if (cc.hiType === undefined) {
+          const { hiType: _, ...rest } = cc;
+          return rest;
+        }
+        return cc;
+      });
     }
 
     // Extract hiTypes
