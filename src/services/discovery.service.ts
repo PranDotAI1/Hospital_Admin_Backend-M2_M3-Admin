@@ -135,6 +135,9 @@ const buildDiscoveryResult = async (
 ): Promise<DiscoveryPatientResult> => {
   const careContexts = await CareContextModel.find({
     patientId: patient._id,
+    // linkingStatus: {
+    //   $nin: [CareContextStatus.LINKED],
+    // },
   })
     .sort({ createdAt: -1 })
     .lean();
@@ -145,17 +148,16 @@ const buildDiscoveryResult = async (
   const referenceNumber = patient.uhid || patient._id.toString();
   return {
     referenceNumber: referenceNumber,
-    display: `${displayName}'s records`,
+    display: displayName,
     // Include hiType from the CC's canonical field.
-    // onDiscover groups by (cc as any).hiType || "OPConsultation" — without
-    // this field every CC defaults to OPConsultation in the on-discover
-    // response, so ABDM stores ALL CCs as OPConsultation. This is wrong and
-    // causes PHR to show two hiTypes when the correct type arrives later via
-    // the HIP-initiated link/notify flow.
+    // onDiscover groups by (cc as any).hiType || "OPConsultation"
     careContexts: careContexts.map((cc) => ({
       referenceNumber: cc.careContextReference,
       display: cc.display,
-      hiType: (cc as any).hiType || undefined,
+      hiType:
+        (cc as any).hiType ||
+        ((cc as any).hiTypes && (cc as any).hiTypes[0]) ||
+        "OPConsultation",
     })),
     matchedBy,
   };
@@ -183,62 +185,126 @@ export const discoverPatient = async (
     { patient: IPatient; matchedBy: Set<string> }
   >();
 
-  // --- Step 1: Search by ABHA Address (primary match) ---
-  const abhaQueries: { abhaaddress: string }[] = [];
-  if (patientInfo.id?.trim()) {
-    abhaQueries.push({ abhaaddress: patientInfo.id.trim() });
-  }
-  const abhaFromVerified = (patientInfo.verifiedIdentifiers || []).find((id) =>
+  // --- Step 1: Search by ABHA Address or 14-digit ABHA Number ---
+  const targetAbha = (patientInfo.id || "").trim().toLowerCase();
+  const allIdentifiers = [
+    ...(patientInfo.verifiedIdentifiers || []),
+    ...(patientInfo.unverifiedIdentifiers || []),
+  ];
+
+  const abhaFromVerified = allIdentifiers.find((id) =>
     ["ABHA_ADDRESS", "healthId", "NDHM_HEALTH_ID"].includes(id.type),
   );
-  if (abhaFromVerified?.value?.trim()) {
-    abhaQueries.push({ abhaaddress: abhaFromVerified.value.trim() });
-  }
+  const abhaAddressToMatch =
+    targetAbha || (abhaFromVerified?.value?.trim().toLowerCase() ?? "");
 
-  if (abhaQueries.length > 0) {
-    const abhaOrQuery = abhaQueries.map((q) => ({
+  // Anti-conflict guard: Candidate patients must NOT be linked to a DIFFERENT ABHA address!
+  const noConflictingAbhaFilter: any = abhaAddressToMatch
+    ? {
+        $or: [
+          { abhaaddress: { $exists: false } },
+          { abhaaddress: null },
+          { abhaaddress: "" },
+          {
+            abhaaddress: new RegExp(
+              `^${abhaAddressToMatch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+              "i",
+            ),
+          },
+        ],
+      }
+    : {};
+
+  // Stage 1A: Direct ABHA Address match (Authoritative: this exact account)
+  if (abhaAddressToMatch) {
+    const byExactAbha = (await PatientModel.find({
       abhaaddress: new RegExp(
-        `^${String(q.abhaaddress).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        `^${abhaAddressToMatch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
         "i",
       ),
-    }));
-    const abhaPatients = (await PatientModel.find({
-      $or: abhaOrQuery,
       isMerged: { $ne: true },
       status: { $ne: "merged" },
     }).lean()) as unknown as IPatient[];
-    if (abhaPatients.length > 0) {
-      for (const p of abhaPatients) {
-        addPatientToMap(resultsMap, p, ["ABHA_ADDRESS"]);
+
+    if (byExactAbha.length > 0) {
+      for (const p of byExactAbha) {
+        addPatientToMap(resultsMap, p, ["ABHA_NUMBER"]);
       }
-      const sortedItems = Array.from(resultsMap.values()).sort((a, b) => {
-        const getCreationTime = (p: IPatient) => {
-          if (p.createdAt) return new Date(p.createdAt).getTime();
-          if (p._id && typeof (p._id as any).getTimestamp === "function") {
-            return (p._id as any).getTimestamp().getTime();
-          }
-          return 0;
-        };
-        return getCreationTime(b.patient) - getCreationTime(a.patient);
-      });
       const results: DiscoveryPatientResult[] = [];
-      for (const item of sortedItems) {
+      for (const item of resultsMap.values()) {
         results.push(
           await buildDiscoveryResult(item.patient, Array.from(item.matchedBy)),
         );
       }
-      // Only return ABHA-matched results if at least one has care contexts.
-      // Otherwise fall through to mobile/demographic search so the real
-      // patient (with care contexts) can be discovered.
       const withCareContexts = results.filter((r) => r.careContexts.length > 0);
       if (withCareContexts.length > 0) return withCareContexts;
-      // Clear resultsMap so mobile search starts fresh
-      resultsMap.clear();
+
+      // If this exact patient has no care contexts, return [] immediately.
+      // NEVER fall through to other patients with the same ABHA number or mobile!
+      return [];
     }
   }
 
-  // --- Step 2: If no match, search with Mobile number — only return patients without ABHA already linked ---
-  const mobileIdentifier = (patientInfo.verifiedIdentifiers || []).find(
+  // Stage 1B: Search unlinked patient by 14-digit ABHA Number
+  const abhaNumberTypes = [
+    "ABHA_NUMBER",
+    "abha_number",
+    "HEALTH_NUMBER",
+    "healthNumber",
+    "HEALTH_ID_NUMBER",
+    "healthIdNumber",
+    "abhaNumber",
+    "ABHANumber",
+  ];
+
+  const abhaNumObj = allIdentifiers.find(
+    (id) =>
+      abhaNumberTypes.includes(id.type) &&
+      !id.value?.includes("@") &&
+      id.value?.replace(/\D/g, "").length >= 14,
+  );
+
+  if (abhaNumObj?.value) {
+    const rawNum = abhaNumObj.value;
+    const cleanDigits = rawNum.replace(/\D/g, "");
+    const formatted = formatAbhaForStorage(rawNum);
+
+    const abhaNumQueries: any[] = [];
+    if (formatted) abhaNumQueries.push({ ABHANumber: formatted });
+    if (cleanDigits) abhaNumQueries.push({ ABHANumber: cleanDigits });
+    if (cleanDigits.length === 14) {
+      const hyphenated = `${cleanDigits.slice(0, 2)}-${cleanDigits.slice(2, 6)}-${cleanDigits.slice(6, 10)}-${cleanDigits.slice(10, 14)}`;
+      abhaNumQueries.push({ ABHANumber: hyphenated });
+    }
+
+    const byAbhaNum = (await PatientModel.find({
+      $and: [
+        { $or: abhaNumQueries },
+        noConflictingAbhaFilter,
+        { isMerged: { $ne: true } },
+        { status: { $ne: "merged" } },
+      ],
+    }).lean()) as unknown as IPatient[];
+
+    if (byAbhaNum.length > 0) {
+      for (const p of byAbhaNum) {
+        addPatientToMap(resultsMap, p, ["ABHA_NUMBER"]);
+      }
+      const results: DiscoveryPatientResult[] = [];
+      for (const item of resultsMap.values()) {
+        results.push(
+          await buildDiscoveryResult(item.patient, Array.from(item.matchedBy)),
+        );
+      }
+      const withCareContexts = results.filter((r) => r.careContexts.length > 0);
+      if (withCareContexts.length > 0) return withCareContexts;
+
+      return [];
+    }
+  }
+
+  // --- Step 2: Demographic / Mobile Fallback ---
+  const mobileIdentifier = allIdentifiers.find(
     (id) => id.type === "MOBILE",
   );
   const mobileRaw = mobileIdentifier?.value?.trim();
@@ -249,23 +315,9 @@ export const discoverPatient = async (
     const mobilePatients = (await PatientModel.find({
       $and: [
         { $or: [{ mobile }, { mobile: mobileNorm }] },
+        noConflictingAbhaFilter,
         { isMerged: { $ne: true } },
         { status: { $ne: "merged" } },
-        // Only return patients without ABHA address or ABHA number already linked
-        {
-          $or: [
-            { abhaaddress: { $exists: false } },
-            { abhaaddress: null },
-            { abhaaddress: "" },
-          ],
-        },
-        {
-          $or: [
-            { ABHANumber: { $exists: false } },
-            { ABHANumber: null },
-            { ABHANumber: "" },
-          ],
-        },
       ],
     }).lean()) as unknown as IPatient[];
 
@@ -281,6 +333,12 @@ export const discoverPatient = async (
       : "";
     const reqYoB = patientInfo.yearOfBirth || 0;
     const reqName = patientInfo.name?.trim() || "";
+
+    const mobileCandidates: {
+      patient: IPatient;
+      tags: string[];
+      demographicScore: number;
+    }[] = [];
 
     for (const patient of mobilePatients) {
       const tags: string[] = ["MOBILE"];
@@ -326,7 +384,37 @@ export const discoverPatient = async (
       // Filter out patients where both gender AND yearOfBirth mismatch
       if (demographicScore < -1) continue;
 
-      addPatientToMap(resultsMap, patient, tags);
+      mobileCandidates.push({ patient, tags, demographicScore });
+    }
+
+    if (mobileCandidates.length > 0) {
+      const candidatePatientIds = mobileCandidates.map((c) => c.patient._id);
+      const patientIdsWithCC = new Set(
+        (
+          await CareContextModel.distinct("patientId", {
+            patientId: { $in: candidatePatientIds },
+          })
+        ).map((id: any) => id.toString()),
+      );
+
+      mobileCandidates.sort((a, b) => {
+        if (b.demographicScore !== a.demographicScore)
+          return b.demographicScore - a.demographicScore;
+        const aHasCC = patientIdsWithCC.has(a.patient._id.toString()) ? 1 : 0;
+        const bHasCC = patientIdsWithCC.has(b.patient._id.toString()) ? 1 : 0;
+        if (bHasCC !== aHasCC) return bHasCC - aHasCC;
+        const getTime = (p: IPatient) => {
+          if (p.createdAt) return new Date(p.createdAt).getTime();
+          if (p._id && typeof (p._id as any).getTimestamp === "function") {
+            return (p._id as any).getTimestamp().getTime();
+          }
+          return 0;
+        };
+        return getTime(b.patient) - getTime(a.patient);
+      });
+
+      const best = mobileCandidates[0];
+      addPatientToMap(resultsMap, best.patient, best.tags);
     }
   }
 
@@ -348,7 +436,8 @@ export const discoverPatient = async (
     );
   }
 
-  return results;
+  // Filter out any matched candidates who have 0 care contexts
+  return results.filter((r) => r.careContexts.length > 0);
 };
 
 export interface LinkInitProfile {
@@ -415,44 +504,115 @@ export const identifyPatientForLink = async (
 ): Promise<IPatient | null> => {
   if (!profile) return null;
 
+  const linkTargetAbha = (profile.id || "").trim().toLowerCase();
+
+  // Priority 1: Direct referenceNumber match (UHID or ObjectId)
   const ref = profile.referenceNumber?.trim();
   if (ref) {
-    const byUhid = await PatientModel.findOne({
-      uhid: new RegExp(`^${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(ref);
+    const byRef = await PatientModel.findOne({
+      $or: [
+        {
+          uhid: new RegExp(
+            `^${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+            "i",
+          ),
+        },
+        ...(isObjectId ? [{ _id: ref }] : []),
+      ],
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
     }).lean();
-    if (byUhid) return byUhid as unknown as IPatient;
+    if (byRef) {
+      const candidateAbha = ((byRef as any).abhaaddress || "")
+        .trim()
+        .toLowerCase();
+      if (
+        !candidateAbha ||
+        !linkTargetAbha ||
+        candidateAbha === linkTargetAbha
+      ) {
+        return byRef as unknown as IPatient;
+      }
+    }
   }
 
-  const abhaValues: string[] = [];
-  if (profile.id?.trim()) abhaValues.push(profile.id.trim());
-  (profile.verifiedIdentifiers || []).forEach((id) => {
-    if (
-      id.type &&
-      id.value &&
-      ["ABHA_ADDRESS", "healthId", "NDHM_HEALTH_ID"].includes(id.type)
-    ) {
-      abhaValues.push(id.value.trim());
-    }
-  });
-  (profile.unverifiedIdentifiers || []).forEach((id) => {
-    if (
-      id.type &&
-      id.value &&
-      ["ABHA_ADDRESS", "healthId", "NDHM_HEALTH_ID"].includes(id.type)
-    ) {
-      abhaValues.push(id.value.trim());
-    }
-  });
+  // Priority 2: Match by ABHA Number or ABHA Address
+  const allIds = [
+    ...(profile.verifiedIdentifiers || []),
+    ...(profile.unverifiedIdentifiers || []),
+  ];
 
-  if (abhaValues.length > 0) {
-    const orAbha = abhaValues.map((v) => ({
+  const abhaNumberTypes = [
+    "ABHA_NUMBER",
+    "abha_number",
+    "HEALTH_NUMBER",
+    "healthNumber",
+    "HEALTH_ID_NUMBER",
+    "healthIdNumber",
+    "abhaNumber",
+    "ABHANumber",
+  ];
+  const numId = allIds.find(
+    (id) =>
+      abhaNumberTypes.includes(id.type) &&
+      !id.value?.includes("@") &&
+      id.value?.replace(/\D/g, "").length >= 14,
+  );
+
+  const targetAbha = (profile.id || "").trim().toLowerCase();
+
+  // Anti-conflict filter: A candidate patient must NOT be linked to a different ABHA address!
+  const noConflictingAbhaFilter: any = targetAbha
+    ? {
+        $or: [
+          { abhaaddress: { $exists: false } },
+          { abhaaddress: null },
+          { abhaaddress: "" },
+          {
+            abhaaddress: new RegExp(
+              `^${targetAbha.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+              "i",
+            ),
+          },
+        ],
+      }
+    : {};
+
+  // Priority 2A: Direct ABHA Address match
+  if (targetAbha) {
+    const byExactAbha = await PatientModel.findOne({
       abhaaddress: new RegExp(
-        `^${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        `^${targetAbha.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
         "i",
       ),
-    }));
-    const byAbha = await PatientModel.findOne({ $or: orAbha }).lean();
-    if (byAbha) return byAbha as unknown as IPatient;
+      isMerged: { $ne: true },
+      status: { $ne: "merged" },
+    }).lean();
+    if (byExactAbha) return byExactAbha as unknown as IPatient;
+  }
+
+  // Priority 2B: Match unlinked patient by ABHA Number
+  if (numId?.value) {
+    const cleanDigits = numId.value.replace(/\D/g, "");
+    const formatted = formatAbhaForStorage(numId.value);
+    const abhaNumQueries: any[] = [];
+    if (formatted) abhaNumQueries.push({ ABHANumber: formatted });
+    if (cleanDigits) abhaNumQueries.push({ ABHANumber: cleanDigits });
+    if (cleanDigits.length === 14) {
+      const hyphenated = `${cleanDigits.slice(0, 2)}-${cleanDigits.slice(2, 6)}-${cleanDigits.slice(6, 10)}-${cleanDigits.slice(10, 14)}`;
+      abhaNumQueries.push({ ABHANumber: hyphenated });
+    }
+
+    const byAbhaNum = await PatientModel.findOne({
+      $and: [
+        { $or: abhaNumQueries },
+        noConflictingAbhaFilter,
+        { isMerged: { $ne: true } },
+        { status: { $ne: "merged" } },
+      ],
+    }).lean();
+    if (byAbhaNum) return byAbhaNum as unknown as IPatient;
   }
 
   let mobile: string | undefined;
@@ -468,11 +628,20 @@ export const identifyPatientForLink = async (
   if (!mobile) return null;
 
   const mobileNorm = normalizeMobile(mobile);
-  const byMobile = await PatientModel.find({
-    $or: [{ mobile }, { mobile: mobileNorm }],
-    isMerged: { $ne: true },
-    status: { $ne: "merged" },
-  }).lean();
+
+  // If a target ABHA address is specified, strictly exclude patients who already
+  // have a different, non-empty ABHA address. A patient with ABHA A can NEVER be
+  // matched for an ABHA B link request!
+  const mobileQuery: any = {
+    $and: [
+      { $or: [{ mobile }, { mobile: mobileNorm }] },
+      noConflictingAbhaFilter,
+      { isMerged: { $ne: true } },
+      { status: { $ne: "merged" } },
+    ],
+  };
+
+  const byMobile = await PatientModel.find(mobileQuery).lean();
   if (byMobile.length === 0) return null;
   if (byMobile.length === 1) return byMobile[0] as unknown as IPatient;
 
@@ -509,6 +678,18 @@ export const identifyPatientForLink = async (
 import { LinkOTPModel } from "../models/LinkOTP";
 import { generateOTP, sendOTPUnified } from "./twilio.otp.service";
 
+const LINK_REDIS_PREFIX = "abdm_user_initiated_linking__";
+const LINK_TTL_SECONDS = 15 * 60; // 15 minutes (900 seconds)
+
+const getRedisClient = () => {
+  try {
+    const { getRedisConnection } = require("../config/redis");
+    return getRedisConnection();
+  } catch {
+    return null;
+  }
+};
+
 export const generateLinkOTP = async (
   transactionId: string,
   patientId: string,
@@ -518,8 +699,9 @@ export const generateLinkOTP = async (
   abhaNumber?: string,
 ): Promise<string> => {
   const otp = generateOTP();
+  const expiresAt = new Date(Date.now() + LINK_TTL_SECONDS * 1000);
 
-  // Store OTP in DB first (so it's available for verification even if SMS delivery is slow)
+  // 1. Store OTP in DB
   await LinkOTPModel.create({
     transactionId,
     otp,
@@ -528,15 +710,39 @@ export const generateLinkOTP = async (
     careContextRefs,
     abhaAddress: abhaAddress || undefined,
     abhaNumber: abhaNumber || undefined,
-    expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    expiresAt,
   });
 
+  // 2. Also cache in Redis with 15-minute TTL per ABDM reference implementation
+  try {
+    const redis = getRedisClient();
+    if (redis) {
+      const redisPayload = JSON.stringify({
+        reference_id: transactionId,
+        otp,
+        abha_address: abhaAddress || undefined,
+        abha_number: abhaNumber || undefined,
+        patient_id: patientId,
+        mobile,
+        care_contexts: careContextRefs,
+      });
+      await redis.set(
+        `${LINK_REDIS_PREFIX}${transactionId}`,
+        redisPayload,
+        "EX",
+        LINK_TTL_SECONDS,
+      );
+    }
+  } catch (err: any) {
+    console.warn(`[HIP-LINK] Failed to cache link OTP in Redis: ${err?.message}`);
+  }
+
+  // 3. Dispatch SMS OTP
   const result = await sendOTPUnified(mobile, otp);
   if (!result.success) {
     console.error(
       `Discovery: SMS delivery failed for transaction ${transactionId}, mobile ${mobile}: ${result.error}. OTP ${otp} stored in DB.`,
     );
-  } else {
   }
 
   return otp;
@@ -554,14 +760,38 @@ export const verifyLinkOTP = async (
   abhaNumber?: string;
   error?: string;
 }> => {
-  const stored = await LinkOTPModel.findOne({ transactionId });
+  let stored = await LinkOTPModel.findOne({ transactionId });
 
+  // Fallback to Redis if Mongo record is missing or lagged
   if (!stored) {
+    try {
+      const redis = getRedisClient();
+      if (redis) {
+        const raw = await redis.get(`${LINK_REDIS_PREFIX}${transactionId}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.otp === otp) {
+            await redis.del(`${LINK_REDIS_PREFIX}${transactionId}`);
+            return {
+              valid: true,
+              patientId: parsed.patient_id,
+              careContextRefs: parsed.care_contexts || [],
+              abhaAddress: parsed.abha_address,
+              abhaNumber: parsed.abha_number,
+            };
+          }
+        }
+      }
+    } catch (_) {}
     return { valid: false, error: "OTP transaction expired or invalid" };
   }
 
   if (stored.expiresAt < new Date()) {
     await LinkOTPModel.deleteOne({ _id: stored._id });
+    try {
+      const redis = getRedisClient();
+      if (redis) await redis.del(`${LINK_REDIS_PREFIX}${transactionId}`);
+    } catch (_) {}
     return { valid: false, error: "OTP has expired" };
   }
 
@@ -570,6 +800,10 @@ export const verifyLinkOTP = async (
     if (attempts >= 3) {
       // Exceeded max attempts: delete OTP immediately to prevent brute force
       await LinkOTPModel.deleteOne({ _id: stored._id });
+      try {
+        const redis = getRedisClient();
+        if (redis) await redis.del(`${LINK_REDIS_PREFIX}${transactionId}`);
+      } catch (_) {}
       return {
         valid: false,
         error: "Too many failed attempts. OTP has been invalidated.",
@@ -581,6 +815,10 @@ export const verifyLinkOTP = async (
 
   // Single-use guarantee: Invalidate and delete immediately upon successful verification
   await LinkOTPModel.deleteOne({ _id: stored._id });
+  try {
+    const redis = getRedisClient();
+    if (redis) await redis.del(`${LINK_REDIS_PREFIX}${transactionId}`);
+  } catch (_) {}
 
   return {
     valid: true,

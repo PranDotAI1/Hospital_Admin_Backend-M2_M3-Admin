@@ -132,9 +132,61 @@ const getCachedDiscoveryAbha = async (
   }
 };
 
+/**
+ * Outbound Gateway caller with automatic session token refresh on 401 or code 900901.
+ */
+export const callGatewayWithRetry = async (
+  endpoint: string,
+  payload: any,
+  hipId?: string,
+) => {
+  const baseUrl = process.env.ABDM_BASE_URL;
+  if (!baseUrl) {
+    throw new Error("ABDM_BASE_URL environment variable not set");
+  }
+  const targetHipId = hipId || X_HIP_ID || facilityId;
+
+  const buildHeaders = (token: string) => ({
+    "Content-Type": "application/json",
+    "REQUEST-ID": generateUID(),
+    TIMESTAMP: new Date().toISOString(),
+    "X-CM-ID": X_CM_ID,
+    "X-HIP-ID": targetHipId,
+    Authorization: token,
+  });
+
+  let token = await AbdmTokenService.getToken();
+  try {
+    return await axios.post(`${baseUrl}${endpoint}`, payload, {
+      headers: buildHeaders(token),
+    });
+  } catch (error: any) {
+    const status = error.response?.status;
+    const errData = error.response?.data;
+    const isTokenExpired =
+      status === 401 ||
+      errData?.code === 900901 ||
+      errData?.error?.code === 900901 ||
+      (typeof errData === "string" && errData.includes("900901"));
+
+    if (isTokenExpired) {
+      console.warn(
+        `[ABDM-GATEWAY] Token error (${status} / 900901). Refreshing token and retrying outbound call to ${endpoint}...`,
+      );
+      AbdmTokenService.invalidate();
+      token = await AbdmTokenService.refresh();
+      return await axios.post(`${baseUrl}${endpoint}`, payload, {
+        headers: buildHeaders(token),
+      });
+    }
+    throw error;
+  }
+};
+
 export const onDiscover = async (req: Request, res: Response) => {
   try {
     const requestId = req.headers["request-id"] || req.headers["REQUEST-ID"];
+    const hipId = (req.headers["x-hip-id"] as string) || X_HIP_ID || facilityId;
 
     const rawTxn = req.body.transactionId;
     const txnIdFromRequest =
@@ -187,7 +239,8 @@ export const onDiscover = async (req: Request, res: Response) => {
       if (results && results.length > 0) {
         const allMatchedBy = new Set<string>();
         results.forEach((r) => r.matchedBy.forEach((t) => allMatchedBy.add(t)));
-        onDiscoverPayload.matchedBy = Array.from(allMatchedBy);
+        onDiscoverPayload.matchedBy =
+          allMatchedBy.size > 0 ? Array.from(allMatchedBy) : ["ABHA_NUMBER"];
         const patientResults: any[] = [];
         results.forEach((result) => {
           const grouped = new Map<string, typeof result.careContexts>();
@@ -234,8 +287,15 @@ export const onDiscover = async (req: Request, res: Response) => {
               // Cache the patient ID from discover so link/init can identify the
               // EXACT same patient even if ABDM strips the referenceNumber.
               let cachedPatientId: string | undefined;
-              if (patientResults.length === 1) {
-                const discoverUhid = patientResults[0].referenceNumber;
+              const uniqueUhids = Array.from(
+                new Set(
+                  patientResults
+                    .map((r: any) => r.referenceNumber)
+                    .filter(Boolean),
+                ),
+              );
+              if (uniqueUhids.length === 1) {
+                const discoverUhid = uniqueUhids[0];
                 const discoverPatient = await PatientModel.findOne({
                   uhid: discoverUhid,
                   isMerged: { $ne: true },
@@ -269,21 +329,10 @@ export const onDiscover = async (req: Request, res: Response) => {
         };
       }
 
-      const responseRequestId = generateUID();
-      const authToken = await AbdmTokenService.getToken();
-      await axios.post(
-        `${process.env.ABDM_BASE_URL}${ENDPOINTS.ON_DISCOVER}`,
+      await callGatewayWithRetry(
+        ENDPOINTS.ON_DISCOVER,
         onDiscoverPayload,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "REQUEST-ID": responseRequestId,
-            TIMESTAMP: new Date().toISOString(),
-            "X-CM-ID": X_CM_ID,
-            "X-HIP-ID": X_HIP_ID || facilityId,
-            Authorization: authToken,
-          },
-        },
+        hipId,
       );
     } catch (discoverError: any) {
       const errBody = discoverError.response?.data;
@@ -316,6 +365,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
       req.headers["request-id"] ||
       req.headers["REQUEST-ID"] ||
       req.body.requestId;
+    const hipId = (req.headers["x-hip-id"] as string) || X_HIP_ID || facilityId;
 
     const { transactionId, patient } = req.body;
     const txnId = transactionId ?? req.body.txn_id;
@@ -333,13 +383,20 @@ export const onLinkInit = async (req: Request, res: Response) => {
     });
 
     try {
-      const patientData = Array.isArray(patient) ? patient[0] : patient;
+      const patientBlocks: any[] = Array.isArray(patient) ? patient : [patient];
+      const patientData = patientBlocks[0] || {};
 
-      const careContextsList =
-        patientData.careContexts ?? patientData.care_contexts ?? [];
-      const careContextRefs = careContextsList.map(
-        (cc: any) => cc.referenceNumber ?? cc.ref_num ?? cc.reference_number,
-      );
+      // Flatten careContexts across all hiType patient blocks
+      const careContextRefs: string[] = [];
+      for (const block of patientBlocks) {
+        const ccs = block.careContexts ?? block.care_contexts ?? [];
+        for (const cc of ccs) {
+          const ref = cc.referenceNumber ?? cc.ref_num ?? cc.reference_number;
+          if (ref && !careContextRefs.includes(ref)) {
+            careContextRefs.push(ref);
+          }
+        }
+      }
 
       const bodyAbha = req.body.abhaAddress ?? req.body.abha_address;
 
@@ -357,37 +414,103 @@ export const onLinkInit = async (req: Request, res: Response) => {
         verifiedIdentifiers: verifiedIds,
         unverifiedIdentifiers: patientData.unverifiedIdentifiers ?? [],
       } as LinkInitProfile;
-      // --- Multi-strategy patient identification ---
-      // Priority 1: Care context references (most reliable — they're OUR data returned from discover)
+      // --- Multi-strategy patient identification with cross-validation ---
       let dbPatient: import("../../models/Patient").IPatient | null = null;
-      if (careContextRefs.length > 0) {
+
+      // Extract linking ABHA address and number for validation & OTP generation
+      const cached = await getCachedDiscoveryAbha(txnId);
+      const { abhaAddress: extractedAbha, abhaNumber: abhaNumFromProfile } =
+        extractAbhaFromProfile(profile);
+      const abhaAddress = (
+        extractedAbha ||
+        cached?.abhaAddress ||
+        bodyAbha ||
+        profile.id ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+      const abhaNumber = abhaNumFromProfile || cached?.abhaNumber;
+
+      // Priority 1: Direct UHID match from ABDM profile referenceNumber (Authoritative)
+      if (profile.referenceNumber?.trim()) {
+        const ref = profile.referenceNumber.trim();
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(ref);
+        const candidateByUhid = (await PatientModel.findOne({
+          $or: [
+            {
+              uhid: new RegExp(
+                `^${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+                "i",
+              ),
+            },
+            ...(isObjectId ? [{ _id: ref }] : []),
+          ],
+          isMerged: { $ne: true },
+          status: { $ne: "merged" },
+        }).lean()) as any;
+
+        if (candidateByUhid) {
+          // Cross-validate: Candidate must not have a conflicting existing ABHA address
+          const candAbha = (candidateByUhid.abhaaddress || "")
+            .trim()
+            .toLowerCase();
+          if (!candAbha || !abhaAddress || candAbha === abhaAddress) {
+            dbPatient = candidateByUhid;
+          } else {
+            console.warn(
+              `[HIP-LINK] onLinkInit: Patient ${candidateByUhid._id} (UHID ${candidateByUhid.uhid}) has conflicting ABHA ("${candAbha}" vs linking "${abhaAddress}"). Refusing match.`,
+            );
+          }
+        }
+      }
+
+      // Priority 2: Cached patientId from discover step (same transactionId)
+      if (!dbPatient && cached?.patientId) {
+        const candidateByCache = (await PatientModel.findById(
+          cached.patientId,
+        ).lean()) as any;
+        if (candidateByCache) {
+          const candAbha = (candidateByCache.abhaaddress || "")
+            .trim()
+            .toLowerCase();
+          if (!candAbha || !abhaAddress || candAbha === abhaAddress) {
+            dbPatient = candidateByCache;
+          } else {
+            console.warn(
+              `[HIP-LINK] onLinkInit: Cached patient ${candidateByCache._id} has conflicting ABHA ("${candAbha}" vs linking "${abhaAddress}"). Refusing match.`,
+            );
+          }
+        }
+      }
+
+      // Priority 3: Care context references (validated against linking patient)
+      if (!dbPatient && careContextRefs.length > 0) {
         const ccDoc = await CareContextModel.findOne({
           careContextReference: { $in: careContextRefs },
         }).lean();
         if (ccDoc?.patientId) {
-          dbPatient = (await PatientModel.findById(
+          const candidateByCC = (await PatientModel.findById(
             ccDoc.patientId,
           ).lean()) as any;
-          if (dbPatient) {
+          if (candidateByCC) {
+            const candAbha = (candidateByCC.abhaaddress || "")
+              .trim()
+              .toLowerCase();
+            if (!candAbha || !abhaAddress || candAbha === abhaAddress) {
+              dbPatient = candidateByCC;
+            } else {
+              console.warn(
+                `[HIP-LINK] onLinkInit: CareContext ${ccDoc.careContextReference} belongs to patient ${candidateByCC._id} with conflicting ABHA ("${candAbha}" vs linking "${abhaAddress}"). Refusing match.`,
+              );
+            }
           }
         }
       }
-      // Priority 2: Cached patientId from discover step (same transactionId)
-      if (!dbPatient && txnId) {
-        const cachedDiscover = await getCachedDiscoveryAbha(txnId);
-        if (cachedDiscover?.patientId) {
-          dbPatient = (await PatientModel.findById(
-            cachedDiscover.patientId,
-          ).lean()) as any;
-          if (dbPatient) {
-          }
-        }
-      }
-      // Priority 3: identifyPatientForLink (UHID / ABHA / mobile+demographics fallback)
+
+      // Priority 4: identifyPatientForLink (UHID / ABHA / mobile+demographics fallback)
       if (!dbPatient) {
         dbPatient = await DiscoveryService.identifyPatientForLink(profile);
-        if (dbPatient) {
-        }
       }
 
       const onInitPayload: any = {
@@ -405,14 +528,6 @@ export const onLinkInit = async (req: Request, res: Response) => {
           message: "Patient not found",
         };
       } else {
-        const { abhaAddress, abhaNumber: abhaNumFromProfile } =
-          extractAbhaFromProfile(profile);
-
-        // Link/init body from ABDM typically only has abhaAddress, not ABHA number.
-        // Retrieve ABHA number from the discover step's cached data (same transactionId).
-        const cached = await getCachedDiscoveryAbha(txnId);
-        const abhaNumber = abhaNumFromProfile || cached?.abhaNumber;
-
         // Store the ABDM profile name in cache so link/confirm can use it
         const abdmName = profile.name?.trim();
         if (txnId && abdmName) {
@@ -426,7 +541,7 @@ export const onLinkInit = async (req: Request, res: Response) => {
           dbPatient._id.toString(),
           dbPatient.mobile,
           careContextRefs,
-          abhaAddress,
+          abhaAddress || undefined,
           abhaNumber,
         );
         onInitPayload.link = {
@@ -438,27 +553,16 @@ export const onLinkInit = async (req: Request, res: Response) => {
               ? `XXXXXX${dbPatient.mobile.slice(-4)}`
               : "XXXXXX",
             communicationExpiry: new Date(
-              Date.now() + 10 * 60 * 1000,
+              Date.now() + 15 * 60 * 1000,
             ).toISOString(),
           },
         };
       }
 
-      const responseRequestId = generateUID();
-      const authToken = await AbdmTokenService.getToken();
-      await axios.post(
-        `${process.env.ABDM_BASE_URL}${ENDPOINTS.ON_LINK_INIT}`,
+      await callGatewayWithRetry(
+        ENDPOINTS.ON_LINK_INIT,
         onInitPayload,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "REQUEST-ID": responseRequestId,
-            TIMESTAMP: new Date().toISOString(),
-            "X-CM-ID": X_CM_ID,
-            "X-HIP-ID": X_HIP_ID || facilityId,
-            Authorization: authToken,
-          },
-        },
+        hipId,
       );
     } catch (initError: any) {
       console.error(
@@ -481,6 +585,7 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
       req.headers["request-id"] ||
       req.headers["REQUEST-ID"] ||
       req.body.requestId;
+    const hipId = (req.headers["x-hip-id"] as string) || X_HIP_ID || facilityId;
 
     const { transactionId, token, confirmation } = req.body;
     const linkRefNumber = confirmation?.linkRefNumber;
@@ -488,13 +593,14 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
     const finalTransactionId = transactionId || linkRefNumber;
 
     if (!finalTransactionId || !requestId) {
-      return res.status(STATUS_CODE.SUCCESS).json({
+      return res.status(STATUS_CODE.ACCEPTED).json({
         status: "success",
         message: "Acknowledged",
       });
     }
 
-    res.status(STATUS_CODE.SUCCESS).json({
+    // ABDM M2 spec: /confirm must immediately respond with HTTP 202 Accepted
+    res.status(STATUS_CODE.ACCEPTED).json({
       status: "success",
       message: "Link confirm received",
     });
@@ -528,14 +634,66 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
             message: "Patient not found",
           };
         } else {
+          const normalizedAbha = (abhaAddress || "").trim().toLowerCase();
+          const existingPatientAbha = (
+            (patient as any).abhaaddress || ""
+          )
+            .trim()
+            .toLowerCase();
+
+          // GUARD 1: Prevent identity hijacking. If patient already has a DIFFERENT ABHA address, reject!
+          if (
+            existingPatientAbha &&
+            normalizedAbha &&
+            existingPatientAbha !== normalizedAbha
+          ) {
+            console.error(
+              `[HIP-LINK] onLinkConfirm: SECURITY REJECTION - Patient ${patient._id} already has ABHA "${existingPatientAbha}". Cannot overwrite with "${normalizedAbha}".`,
+            );
+            onConfirmPayload.error = {
+              code: 1004,
+              message:
+                "Patient record is already linked to a different ABHA address",
+            };
+          } else if (normalizedAbha && normalizedAbha !== existingPatientAbha) {
+            // GUARD 2: Prevent assigning an ABHA address already owned by another patient
+            const conflicting = await PatientModel.findOne({
+              abhaaddress: new RegExp(
+                `^${normalizedAbha.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+                "i",
+              ),
+              _id: { $ne: patient._id },
+              isMerged: { $ne: true },
+              status: { $ne: "merged" },
+            })
+              .select("_id")
+              .lean();
+            if (conflicting) {
+              console.error(
+                `[HIP-LINK] onLinkConfirm: ABHA "${normalizedAbha}" is already owned by patient ${conflicting._id}. Cannot assign to ${patient._id}.`,
+              );
+              onConfirmPayload.error = {
+                code: 1005,
+                message:
+                  "ABHA address is already linked to another patient profile",
+              };
+            }
+          }
+
+          if (onConfirmPayload.error) {
+            // Error detected by guards — dispatch error response immediately without DB changes
+            await callGatewayWithRetry(
+              ENDPOINTS.ON_LINK_CONFIRM,
+              onConfirmPayload,
+              hipId,
+            );
+            return;
+          }
+
           // --- Persist ABHA address/number and name on patient upon successful link confirm ---
           const abhaUpdateData: Record<string, unknown> = {};
-          if (
-            abhaAddress &&
-            abhaAddress.toLowerCase() !==
-              ((patient as any).abhaaddress || "").toLowerCase()
-          ) {
-            abhaUpdateData.abhaaddress = abhaAddress;
+          if (normalizedAbha && normalizedAbha !== existingPatientAbha) {
+            abhaUpdateData.abhaaddress = normalizedAbha;
           }
           if (abhaNumber && abhaNumber !== (patient as any).ABHANumber) {
             abhaUpdateData.ABHANumber = abhaNumber;
@@ -578,8 +736,8 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
               linkedAt: new Date(),
               linkError: null,
             };
-            if (abhaAddress) {
-              ccUpdateData.abhaAddress = abhaAddress;
+            if (normalizedAbha) {
+              ccUpdateData.abhaAddress = normalizedAbha;
             }
             await CareContextModel.updateMany(
               {
@@ -678,21 +836,10 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
         }
       }
 
-      const responseRequestId = generateUID();
-      const authToken = await AbdmTokenService.getToken();
-      await axios.post(
-        `${process.env.ABDM_BASE_URL}${ENDPOINTS.ON_LINK_CONFIRM}`,
+      await callGatewayWithRetry(
+        ENDPOINTS.ON_LINK_CONFIRM,
         onConfirmPayload,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "REQUEST-ID": responseRequestId,
-            TIMESTAMP: new Date().toISOString(),
-            "X-CM-ID": X_CM_ID,
-            "X-HIP-ID": X_HIP_ID || facilityId,
-            Authorization: authToken,
-          },
-        },
+        hipId,
       );
     } catch (confirmError: any) {
       console.error(
@@ -702,7 +849,7 @@ export const onLinkConfirm = async (req: Request, res: Response) => {
     }
   } catch (error: any) {
     console.error("Discovery: link/confirm handler error", error);
-    return res.status(STATUS_CODE.SUCCESS).json({
+    return res.status(STATUS_CODE.ACCEPTED).json({
       status: "error",
       message: error.message,
     });

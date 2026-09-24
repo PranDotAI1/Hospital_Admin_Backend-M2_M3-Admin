@@ -97,13 +97,17 @@ export const registerPatient = async (req: Request, res: Response) => {
 
     const abhaNumber =
       body.abhaNumber || body.ABHANumber || body.abha_number || undefined;
-    const abhaAddress =
+    const rawAbhaAddress =
       body.abhaAddress ||
       body.abhaaddress ||
       body.abha_id ||
       body.abhaId ||
       body.abha_address ||
       undefined;
+    const abhaAddress =
+      typeof rawAbhaAddress === "string" && rawAbhaAddress.trim()
+        ? rawAbhaAddress.trim().toLowerCase()
+        : undefined;
 
     const abhaNumberFormatted = abhaNumber
       ? formatAbhaForStorage(abhaNumber)
@@ -300,6 +304,28 @@ export const registerPatient = async (req: Request, res: Response) => {
 
     if (!patientRecord) {
       throw new Error("Failed to create or retrieve patient record");
+    }
+
+    if (patientRecord && (patientRecord.abhaaddress || patientRecord.ABHANumber)) {
+      setImmediate(async () => {
+        try {
+          const { CareContextService } = await import(
+            "../../services/carecontext.service"
+          );
+          if (visitInfo.visitId) {
+            await CareContextService.createCareContextForVisit(
+              patientRecord._id,
+              visitInfo.visitId,
+              ["OPConsultation"],
+            );
+          }
+        } catch (err: any) {
+          console.warn(
+            "registerPatient: Initial CareContext creation error:",
+            err?.message,
+          );
+        }
+      });
     }
 
     return res.status(STATUS_CODE.CREATED).json({

@@ -24,7 +24,7 @@ const LinkOTPSchema: Schema = new Schema(
     abhaNumber: { type: String, trim: true },
     attempts: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now },
-    expiresAt: { type: Date, required: true, expires: 60 * 10 }, // TTL index
+    expiresAt: { type: Date, required: true, expires: 60 * 15 }, // TTL index (15 minutes)
   },
   { timestamps: true },
 );
