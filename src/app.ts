@@ -17,6 +17,7 @@ import V2router from "./routes/v2";
 import v3router from "./routes/v3";
 import webook from "./routes/webhook";
 import V4router from "./routes/v4";
+import chatRouter from "./routes/chat";
 import { proxyRequest } from "./controllers/proxy.controller";
 import { apiLimiter } from "./middlewares/rate.limiter";
 import { csrfProtection } from "./middlewares/csrf.protection";
@@ -153,6 +154,8 @@ app.use("/api/v2", V2router);
 
 // Use the v4 router for version 2 API routes
 app.use("/api/v4", V4router);
+app.use("/api/chat", chatRouter);
+app.use("/chat", chatRouter);
 
 // ALL OTHERS ROUTES
 app.use("/api", apiLimiter, indexRouter);

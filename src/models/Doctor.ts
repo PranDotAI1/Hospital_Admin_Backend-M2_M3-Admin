@@ -1,5 +1,11 @@
 import { Schema, model, Types } from 'mongoose';
 
+export interface IDoctorSlot {
+    day: string;
+    startTime: string;
+    endTime: string;
+}
+
 export interface IDoctor {
     _id?: Types.ObjectId;
     firstName: string;
@@ -12,6 +18,8 @@ export interface IDoctor {
     experience?: number;
     qualification?: string;
     consultationFee?: number;
+    languages?: string[];
+    availableSlots?: IDoctorSlot[];
     isActive: boolean;
     createdAt?: Date;
     updatedAt?: Date;
@@ -28,6 +36,7 @@ const DoctorSchema = new Schema({
     experience: { type: Number, required: false },
     qualification: { type: String, required: false, trim: true },
     consultationFee: { type: Number, required: false },
+    languages: [{ type: String, trim: true }],
     availableSlots: [{
         day: { type: String, required: true },
         startTime: { type: String, required: true },
