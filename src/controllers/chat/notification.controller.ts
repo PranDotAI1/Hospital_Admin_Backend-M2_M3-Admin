@@ -223,10 +223,14 @@ export const sendNotification = async (req: Request, res: Response) => {
         result = await sendConfirmationEmail(recipient, data || {}, message);
         break;
       case "sms":
-        result = await sendConfirmationSMS(recipient, data || {});
+        // result = await sendConfirmationSMS(recipient, data || {});
+        result = await sendConfirmationEmail(recipient, data || {}, message);
+
         break;
       case "whatsapp":
-        result = await sendConfirmationWhatsApp(recipient, data || {});
+        // result = await sendConfirmationWhatsApp(recipient, data || {});
+        result = await sendConfirmationEmail(recipient, data || {}, message);
+
         break;
       default:
         return res.status(STATUS_CODE.BAD_REQUEST).json({
